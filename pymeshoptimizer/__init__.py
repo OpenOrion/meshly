@@ -28,13 +28,13 @@ from .io import (
     load_encoded_array_from_file,
     save_array_to_file,
     load_array_from_file,
-    
+
     # Mesh ZIP I/O
     save_encoded_mesh_to_zip,
     load_encoded_mesh_from_zip,
     save_mesh_to_zip,
     load_mesh_from_zip,
-    
+
     # Array ZIP I/O
     save_encoded_array_to_zip,
     load_encoded_array_from_zip,
@@ -42,10 +42,13 @@ from .io import (
     load_array_from_zip,
     save_arrays_to_zip,
     load_arrays_from_zip,
-    
+
+
     # Combined data I/O
     save_combined_data_to_zip,
-    load_combined_data_from_zip,
+    load_combined_data,
+    get_combined_data_as_bytes,
+
 )
 
 __all__ = [
@@ -54,24 +57,24 @@ __all__ = [
     'EncodedMesh',
     'encode_mesh',
     'decode_mesh',
-    
+
     # Array utilities
     'EncodedArray',
     'encode_array',
     'decode_array',
-    
+
     # Array file I/O
     'save_encoded_array_to_file',
     'load_encoded_array_from_file',
     'save_array_to_file',
     'load_array_from_file',
-    
+
     # Mesh ZIP I/O
     'save_encoded_mesh_to_zip',
     'load_encoded_mesh_from_zip',
     'save_mesh_to_zip',
     'load_mesh_from_zip',
-    
+
     # Array ZIP I/O
     'save_encoded_array_to_zip',
     'load_encoded_array_from_zip',
@@ -79,8 +82,9 @@ __all__ = [
     'load_array_from_zip',
     'save_arrays_to_zip',
     'load_arrays_from_zip',
-    
+
     # Combined data I/O
     'save_combined_data_to_zip',
-    'load_combined_data_from_zip',
+    'load_combined_data',
+    'get_combined_data_as_bytes'
 ]

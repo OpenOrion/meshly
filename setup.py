@@ -10,7 +10,7 @@ with open("requirements.txt", encoding="utf-8") as f:
 
 setup(
     name="pymeshoptimizer",
-    version="0.2.2",  # Updated version for new functionality
+    version="0.2.3",  # Updated version for new functionality
     description="High-level abstractions and utilities for working with meshoptimizer",
     long_description=long_description,
     long_description_content_type="text/markdown",

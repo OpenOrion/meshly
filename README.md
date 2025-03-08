@@ -44,7 +44,7 @@ import numpy as np
 from pymeshoptimizer import Mesh, encode_mesh, decode_array, encode_array
 from pymeshoptimizer.io import (
     MeshMetadata, ArrayMetadata,
-    save_combined_data_to_zip, get_combined_data_as_bytes, load_combined_data_from_zip
+    save_combined_data_to_zip, get_combined_data_as_bytes, load_combined_data
 )
 
 # Create a simple cube mesh
@@ -95,8 +95,8 @@ combined_data_bytes = get_combined_data_as_bytes(
 )
 
 # Load from file or bytes
-loaded_mesh, loaded_arrays, loaded_metadata = load_combined_data_from_zip("cube_with_data.zip")
-# Or: load_combined_data_from_zip(combined_data_bytes)
+loaded_mesh, loaded_arrays, loaded_metadata = load_combined_data("cube_with_data.zip")
+# Or: load_combined_data(combined_data_bytes)
 
 # Use the loaded data
 print(f"Loaded mesh with {loaded_mesh.vertex_count} vertices")

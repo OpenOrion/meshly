@@ -36,7 +36,7 @@ class TestMeshIntegrity(unittest.TestCase):
             4, 5, 1, 1, 0, 4   # bottom
         ], dtype=np.uint32)
         
-        self.mesh = Mesh(self.vertices, self.indices)
+        self.mesh = Mesh(vertices=self.vertices, indices=self.indices)
     
     def get_triangles_set(self, vertices, indices):
         """
@@ -61,10 +61,10 @@ class TestMeshIntegrity(unittest.TestCase):
         original_triangles = self.get_triangles_set(self.mesh.vertices, self.mesh.indices)
         
         # Encode the mesh
-        encoded = self.mesh.encode()
+        encoded_data = self.mesh.encode()
         
         # Decode the mesh
-        decoded_mesh = Mesh.decode(encoded)
+        decoded_mesh = Mesh.decode(encoded_data['mesh'])
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
@@ -75,7 +75,7 @@ class TestMeshIntegrity(unittest.TestCase):
     def test_mesh_integrity_optimize_encode_decode(self):
         """Test that mesh vertices indexed by indices are preserved during optimization, encoding, and decoding."""
         # Create a copy of the mesh
-        optimized_mesh = Mesh(self.vertices.copy(), self.indices.copy())
+        optimized_mesh = Mesh(vertices=self.vertices.copy(), indices=self.indices.copy())
         
         # Optimize the mesh
         optimized_mesh.optimize_vertex_cache()
@@ -86,10 +86,10 @@ class TestMeshIntegrity(unittest.TestCase):
         optimized_triangles = self.get_triangles_set(optimized_mesh.vertices, optimized_mesh.indices)
         
         # Encode the optimized mesh
-        encoded = optimized_mesh.encode()
+        encoded_data = optimized_mesh.encode()
         
         # Decode the mesh
-        decoded_mesh = Mesh.decode(encoded)
+        decoded_mesh = Mesh.decode(encoded_data['mesh'])
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
@@ -135,20 +135,20 @@ class TestMeshIntegrity(unittest.TestCase):
         
         sphere_vertices = np.array(vertices, dtype=np.float32)
         sphere_indices = np.array(indices, dtype=np.uint32)
-        sphere_mesh = Mesh(sphere_vertices, sphere_indices)
+        sphere_mesh = Mesh(vertices=sphere_vertices, indices=sphere_indices)
         
         # Simplify the mesh
-        simplified_mesh = Mesh(sphere_vertices.copy(), sphere_indices.copy())
+        simplified_mesh = Mesh(vertices=sphere_vertices.copy(), indices=sphere_indices.copy())
         simplified_mesh.simplify(target_ratio=0.5)  # Keep 50% of triangles
         
         # Get the simplified triangles
         simplified_triangles = self.get_triangles_set(simplified_mesh.vertices, simplified_mesh.indices)
         
         # Encode the simplified mesh
-        encoded = simplified_mesh.encode()
+        encoded_data = simplified_mesh.encode()
         
         # Decode the mesh
-        decoded_mesh = Mesh.decode(encoded)
+        decoded_mesh = Mesh.decode(encoded_data['mesh'])
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
@@ -162,10 +162,10 @@ class TestMeshIntegrity(unittest.TestCase):
         original_triangles = self.get_triangles_set(self.mesh.vertices, self.mesh.indices)
         
         # Encode the mesh
-        encoded = self.mesh.encode()
+        encoded_data = self.mesh.encode()
         
         # Decode the mesh
-        decoded_mesh = Mesh.decode(encoded)
+        decoded_mesh = Mesh.decode(encoded_data['mesh'])
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)

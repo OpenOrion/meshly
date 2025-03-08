@@ -17,35 +17,50 @@ pip install pymeshoptimizer
 
 ### Mesh Representation
 
-- `Mesh` class: A high-level representation of a 3D mesh with methods for optimization and simplification
+- `Mesh` class: A Pydantic-based representation of a 3D mesh with methods for optimization and simplification
+- Support for custom mesh subclasses with additional attributes
+- Automatic encoding/decoding of numpy array attributes
 - `EncodedMesh` class: A container for encoded mesh data
-- Encoding and decoding functions for meshes
 
 ### Metadata Models
 
 - `ArrayMetadata`: Pydantic model for array metadata validation and serialization
 - `MeshMetadata`: Pydantic model for mesh metadata validation and serialization
-- `ArraysMetadata`: Container for multiple array metadata entries
+- `MeshFileMetadata`: Pydantic model for storing class and module information
+- `ModelData`: Container for non-array model data
 
 ### File I/O
 
-- Save and load arrays to/from files
-- Save and load meshes to/from ZIP files
-- Save and load multiple arrays to/from ZIP files
-- Combined storage of meshes and arrays in a single ZIP file
+- Save and load meshes to/from ZIP files with `save_to_zip` and `load_from_zip` methods
+- Automatic preservation of custom attributes during serialization/deserialization
+- Support for storing and loading custom mesh subclasses
 - In-memory operations with binary data
 
 ## Usage Example
 
-The following example demonstrates the key functionality of pymeshoptimizer, including mesh optimization, metadata handling, and combined storage:
+The following example demonstrates the key functionality of pymeshoptimizer, including custom mesh subclasses, optimization, and serialization:
 
 ```python
 import numpy as np
-from pymeshoptimizer import Mesh, encode_mesh, decode_array, encode_array
-from pymeshoptimizer.io import (
-    MeshMetadata, ArrayMetadata,
-    save_combined_data_to_zip, get_combined_data_as_bytes, load_combined_data
-)
+from typing import Optional, List
+from pydantic import Field
+from pymeshoptimizer import Mesh, encode_array, decode_array
+
+# Create a custom mesh subclass with additional attributes
+class TexturedMesh(Mesh):
+    """
+    A mesh with texture coordinates and normals.
+    
+    This demonstrates how to create a custom Mesh subclass with additional
+    numpy array attributes that will be automatically encoded/decoded.
+    """
+    # Add texture coordinates and normals as additional numpy arrays
+    texture_coords: np.ndarray = Field(..., description="Texture coordinates")
+    normals: Optional[np.ndarray] = Field(None, description="Vertex normals")
+    
+    # Add non-array attributes
+    material_name: str = Field("default", description="Material name")
+    tags: List[str] = Field(default_factory=list, description="Tags for the mesh")
 
 # Create a simple cube mesh
 vertices = np.array([
@@ -62,51 +77,78 @@ indices = np.array([
     4, 5, 1, 1, 0, 4   # bottom face
 ], dtype=np.uint32)
 
-# Create and optimize a mesh
-mesh = Mesh(vertices, indices)
+# Create texture coordinates and normals
+texture_coords = np.array([
+    [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+    [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]
+], dtype=np.float32)
+
+normals = np.array([
+    [0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0],
+    [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]
+], dtype=np.float32)
+
+# Create the textured mesh
+mesh = TexturedMesh(
+    vertices=vertices,
+    indices=indices,
+    texture_coords=texture_coords,
+    normals=normals,
+    material_name="cube_material",
+    tags=["cube", "example"]
+)
+
+# Optimize the mesh
 mesh.optimize_vertex_cache()
 mesh.optimize_overdraw()
 mesh.optimize_vertex_fetch()
 mesh.simplify(target_ratio=0.8)  # Keep 80% of triangles
 
-# Create additional data (normals and colors)
-normals = np.random.random((mesh.vertex_count, 3)).astype(np.float32)
-colors = np.random.random((mesh.vertex_count, 4)).astype(np.float32)
+# Encode the mesh (includes all numpy array attributes automatically)
+encoded_data = mesh.encode()
+print(f"Encoded mesh: {len(encoded_data['mesh'].vertices)} bytes for vertices")
+print(f"Encoded arrays: {list(encoded_data['arrays'].keys())}")
 
-# Encode the mesh and arrays
-encoded_mesh = mesh.encode()
-encoded_normals = encode_array(normals)
-encoded_colors = encode_array(colors)
+# Save the mesh to a zip file
+zip_path = "textured_cube.zip"
+mesh.save_to_zip(zip_path)
 
+# Load the mesh from the zip file
+loaded_mesh = TexturedMesh.load_from_zip(zip_path)
 
-# Save to file
-save_combined_data_to_zip(
-    encoded_mesh=encoded_mesh,
-    encoded_arrays={"normals": encoded_normals, "colors": encoded_colors},
-    metadata={"name": "Cube", "version": "1.0"},
-    zip_path="cube_with_data.zip"
-)
-
-# Get as bytes (for in-memory operations)
-combined_data_bytes = get_combined_data_as_bytes(
-    encoded_mesh=encoded_mesh,
-    encoded_arrays={"normals": encoded_normals, "colors": encoded_colors},
-    metadata={"name": "Cube", "version": "1.0"}
-)
-
-# Load from file or bytes
-loaded_mesh, loaded_arrays, loaded_metadata = load_combined_data("cube_with_data.zip")
-# Or: load_combined_data(combined_data_bytes)
-
-# Use the loaded data
+# Use the loaded mesh
 print(f"Loaded mesh with {loaded_mesh.vertex_count} vertices")
-print(f"Loaded arrays: {list(loaded_arrays.keys())}")
-print(f"Metadata: {loaded_metadata}")
+print(f"Material name: {loaded_mesh.material_name}")
+print(f"Tags: {loaded_mesh.tags}")
+print(f"Texture coordinates shape: {loaded_mesh.texture_coords.shape}")
+print(f"Normals shape: {loaded_mesh.normals.shape}")
 ```
 
 For more detailed examples, see the Jupyter notebooks in the [examples](examples/) directory:
 - [array_example.ipynb](examples/array_example.ipynb): Working with arrays, compression, and file I/O
-- [mesh_example.ipynb](examples/mesh_example.ipynb): Working with meshes, optimization, and metadata
+- [mesh_example.ipynb](examples/mesh_example.ipynb): Working with Pydantic-based meshes, custom subclasses, and serialization
+
+## Custom Mesh Subclasses
+
+One of the key features of the Pydantic-based Mesh class is the ability to create custom subclasses with additional attributes:
+
+```python
+class SkinnedMesh(Mesh):
+    """A mesh with skinning information for animation."""
+    # Add bone weights and indices as additional numpy arrays
+    bone_weights: np.ndarray = Field(..., description="Bone weights for each vertex")
+    bone_indices: np.ndarray = Field(..., description="Bone indices for each vertex")
+    
+    # Add non-array attributes
+    skeleton_name: str = Field("default", description="Skeleton name")
+    animation_names: List[str] = Field(default_factory=list, description="Animation names")
+```
+
+Benefits of custom mesh subclasses:
+- Automatic validation of required fields
+- Type checking and conversion (e.g., arrays are automatically converted to the correct dtype)
+- Automatic encoding/decoding of all numpy array attributes
+- Preservation of non-array attributes during serialization/deserialization
 
 ## Integration with Other Tools
 
@@ -116,6 +158,7 @@ This package is designed to work well with other tools and libraries:
 - Export optimized meshes to game engines
 - Store compressed mesh data efficiently
 - Process large datasets with minimal memory usage
+- Leverage Pydantic's validation and serialization capabilities
 
 ## Performance Considerations
 
@@ -124,6 +167,7 @@ This package is designed to work well with other tools and libraries:
 - Optimized meshes render faster on GPUs
 - Simplified meshes maintain visual quality with fewer triangles
 - Pydantic models provide efficient validation with minimal overhead
+- Automatic handling of array attributes reduces boilerplate code
 
 ## Development and Contributing
 
@@ -148,7 +192,7 @@ To release a new version:
 
 1. Update dependencies in `requirements.txt` if needed
 2. Update the version number in `setup.py`
-3. Create a new release on GitHub with a tag matching the version (e.g., `v0.1.2`)
+3. Create a new release on GitHub with a tag matching the version
 4. The GitHub Actions workflow will automatically build and publish the package to PyPI
 
 Note: Publishing to PyPI requires a PyPI API token stored as a GitHub secret named `PYPI_API_TOKEN`.

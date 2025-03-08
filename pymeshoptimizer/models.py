@@ -106,3 +106,7 @@ class MeshFileMetadata(BaseModel):
         None, 
         description="Dictionary of model fields that aren't numpy arrays"
     )
+
+    model_config = {
+        "protected_namespaces": ()  # Disable protected namespace checking
+    }

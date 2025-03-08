@@ -5,18 +5,19 @@ import os
 with open("README.md", encoding="utf-8") as f:
     long_description = f.read()
 
+# Read requirements from requirements.txt
+with open("requirements.txt", encoding="utf-8") as f:
+    requirements = [line.strip() for line in f if line.strip()]
+
 setup(
     name="pymeshoptimizer",
-    version="0.1.1",
+    version="0.2.0",  # Updated version for new functionality
     description="High-level abstractions and utilities for working with meshoptimizer",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/username/pymeshoptimizer",
     packages=find_packages(),
-    install_requires=[
-        "numpy>=1.19.0",
-        "meshoptimizer==0.2.20a4",
-    ],
+    install_requires=requirements,
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",

@@ -27,6 +27,9 @@ from pymeshoptimizer.io import (
     load_encoded_mesh_from_zip,
     save_mesh_to_zip,
     load_mesh_from_zip,
+    save_combined_data_to_zip,
+    get_combined_data_as_bytes,
+    load_combined_data_from_zip,
 )
 
 class TestIO(unittest.TestCase):
@@ -299,6 +302,127 @@ class TestIO(unittest.TestCase):
         self.assertEqual(loaded_encoded_mesh.index_size, self.encoded_mesh.index_size)
         self.assertEqual(loaded_encoded_mesh.vertices, self.encoded_mesh.vertices)
         self.assertEqual(loaded_encoded_mesh.indices, self.encoded_mesh.indices)
+    
+    def test_save_load_combined_data(self):
+        """Test saving and loading combined data (mesh and arrays) to/from a zip file."""
+        # Create a temporary file
+        zip_path = os.path.join(self.temp_dir, "test_combined_data.zip")
+        
+        # Create encoded arrays
+        encoded_array1 = encode_array(self.array_1d)
+        encoded_array2 = encode_array(self.array_2d)
+        encoded_arrays = {
+            "array1": encoded_array1,
+            "array2": encoded_array2
+        }
+        
+        # Create metadata
+        metadata = {
+            "name": "Test Mesh",
+            "version": "1.0",
+            "description": "A test mesh with arrays"
+        }
+        
+        # Save the combined data to the zip file
+        save_combined_data_to_zip(
+            encoded_mesh=self.encoded_mesh,
+            encoded_arrays=encoded_arrays,
+            metadata=metadata,
+            zip_path=zip_path
+        )
+        
+        # Load the combined data from the zip file
+        loaded_mesh, loaded_arrays, loaded_metadata = load_combined_data_from_zip(zip_path)
+        
+        # Check that the loaded mesh has the correct attributes
+        self.assertEqual(loaded_mesh.vertex_count, self.encoded_mesh.vertex_count)
+        self.assertEqual(loaded_mesh.vertex_size, self.encoded_mesh.vertex_size)
+        self.assertEqual(loaded_mesh.index_count, self.encoded_mesh.index_count)
+        self.assertEqual(loaded_mesh.index_size, self.encoded_mesh.index_size)
+        self.assertEqual(loaded_mesh.vertices, self.encoded_mesh.vertices)
+        self.assertEqual(loaded_mesh.indices, self.encoded_mesh.indices)
+        
+        # Check that the loaded arrays have the correct attributes
+        self.assertEqual(set(loaded_arrays.keys()), set(encoded_arrays.keys()))
+        for name, encoded_array in encoded_arrays.items():
+            loaded_array = loaded_arrays[name]
+            self.assertEqual(loaded_array.shape, encoded_array.shape)
+            self.assertEqual(loaded_array.dtype, encoded_array.dtype)
+            self.assertEqual(loaded_array.itemsize, encoded_array.itemsize)
+            self.assertEqual(loaded_array.data, encoded_array.data)
+        
+        # Check that the loaded metadata matches the original
+        self.assertEqual(loaded_metadata, metadata)
+    
+    def test_get_combined_data_as_bytes(self):
+        """Test getting combined data as bytes and loading it back."""
+        # Create encoded arrays
+        encoded_array1 = encode_array(self.array_1d)
+        encoded_array2 = encode_array(self.array_2d)
+        encoded_arrays = {
+            "array1": encoded_array1,
+            "array2": encoded_array2
+        }
+        
+        # Create metadata
+        metadata = {
+            "name": "Test Mesh",
+            "version": "1.0",
+            "description": "A test mesh with arrays"
+        }
+        
+        # Get the combined data as bytes
+        zip_bytes = get_combined_data_as_bytes(
+            encoded_mesh=self.encoded_mesh,
+            encoded_arrays=encoded_arrays,
+            metadata=metadata
+        )
+        
+        # Verify that we got bytes
+        self.assertIsInstance(zip_bytes, bytes)
+        self.assertTrue(len(zip_bytes) > 0)
+        
+        # Load the combined data from the bytes
+        loaded_mesh, loaded_arrays, loaded_metadata = load_combined_data_from_zip(zip_bytes)
+        
+        # Check that the loaded mesh has the correct attributes
+        self.assertEqual(loaded_mesh.vertex_count, self.encoded_mesh.vertex_count)
+        self.assertEqual(loaded_mesh.vertex_size, self.encoded_mesh.vertex_size)
+        self.assertEqual(loaded_mesh.index_count, self.encoded_mesh.index_count)
+        self.assertEqual(loaded_mesh.index_size, self.encoded_mesh.index_size)
+        self.assertEqual(loaded_mesh.vertices, self.encoded_mesh.vertices)
+        self.assertEqual(loaded_mesh.indices, self.encoded_mesh.indices)
+        
+        # Check that the loaded arrays have the correct attributes
+        self.assertEqual(set(loaded_arrays.keys()), set(encoded_arrays.keys()))
+        for name, encoded_array in encoded_arrays.items():
+            loaded_array = loaded_arrays[name]
+            self.assertEqual(loaded_array.shape, encoded_array.shape)
+            self.assertEqual(loaded_array.dtype, encoded_array.dtype)
+            self.assertEqual(loaded_array.itemsize, encoded_array.itemsize)
+            self.assertEqual(loaded_array.data, encoded_array.data)
+        
+        # Check that the loaded metadata matches the original
+        self.assertEqual(loaded_metadata, metadata)
+        
+        # Compare with file-based approach
+        zip_path = os.path.join(self.temp_dir, "test_combined_data_comparison.zip")
+        save_combined_data_to_zip(
+            encoded_mesh=self.encoded_mesh,
+            encoded_arrays=encoded_arrays,
+            metadata=metadata,
+            zip_path=zip_path
+        )
+        
+        # Load from file for comparison
+        file_loaded_mesh, file_loaded_arrays, file_loaded_metadata = load_combined_data_from_zip(zip_path)
+        
+        # Check that both approaches yield the same results
+        self.assertEqual(loaded_mesh.vertices, file_loaded_mesh.vertices)
+        self.assertEqual(loaded_mesh.indices, file_loaded_mesh.indices)
+        for name in encoded_arrays.keys():
+            self.assertEqual(loaded_arrays[name].data, file_loaded_arrays[name].data)
+        self.assertEqual(loaded_metadata, file_loaded_metadata)
 
 if __name__ == '__main__':
     unittest.main()

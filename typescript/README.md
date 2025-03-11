@@ -1,4 +1,4 @@
-# Mesh Decoder
+# Meshly
 
 A TypeScript library for decoding Python meshoptimizer zip files into THREE.js geometries.
 
@@ -9,49 +9,6 @@ npm install meshly
 ```
 
 ## Development
-
-### Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/meshly.git
-cd meshly
-
-# Install dependencies
-pnpm install
-```
-
-### Build
-
-The project uses TypeScript and builds to the `dist` directory:
-
-```bash
-pnpm run build
-```
-
-### Test
-
-```bash
-pnpm test
-```
-
-### CI/CD
-
-This project uses GitHub Actions for continuous integration and deployment:
-
-- **CI**: On every push and pull request, the code is built and tested.
-- **Testing**: A dedicated test workflow runs tests on multiple Node.js versions (16.x, 18.x, 20.x) to ensure compatibility across different environments.
-- **CD**: When a new release is created on GitHub, the package is automatically published to npm.
-
-The GitHub Actions workflows are located in the root `.github/workflows` directory:
-- `npm-publish.yml`: Handles building, testing, and publishing the package
-- `npm-test.yml`: Runs tests across multiple Node.js versions
-
-To publish a new version:
-
-1. Update the version in `package.json`
-2. Create a new release on GitHub
-3. GitHub Actions will automatically build and publish the package to npm
 
 ## Usage
 
@@ -157,6 +114,53 @@ This library is designed to work with the Python meshoptimizer library's zip for
 - `mesh/metadata.json`: Metadata about the mesh
 - `arrays/`: Additional arrays (normals, colors, etc.)
 - `metadata.json`: General metadata about the mesh
+
+
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/OpenOrion/meshly.git
+cd meshly
+
+# Install dependencies
+pnpm install
+```
+
+### Build
+
+The project uses TypeScript and builds to the `dist` directory:
+
+```bash
+pnpm run build
+```
+
+### Test
+
+```bash
+pnpm test
+```
+
+### CI/CD
+
+This project uses GitHub Actions for continuous integration and deployment:
+
+- **CI**: On every push and pull request, the code is built and tested.
+- **Testing**: A dedicated test workflow runs tests on multiple Node.js versions (16.x, 18.x, 20.x) to ensure compatibility across different environments.
+- **CD**: When a new release is created on GitHub, the package is automatically published to npm.
+
+The GitHub Actions workflows are located in the root `.github/workflows` directory:
+- `npm-publish.yml`: Handles building, testing, and publishing the package
+- `npm-test.yml`: Runs tests across multiple Node.js versions
+
+To publish a new version:
+
+1. Update the version in `package.json`
+2. Create a new release on GitHub
+3. GitHub Actions will automatically build and publish the package to npm
+
+
 
 ## License
 

@@ -6,8 +6,15 @@ A Python library for mesh optimization and encoding/decoding.
 
 This repository contains two main components:
 
-1. **Python Library**: The main `meshly` package for mesh optimization and encoding/decoding.
-2. **TypeScript Library**: A TypeScript implementation for decoding Python meshoptimizer zip files into THREE.js geometries.
+1. **Python Library**: The Python `meshly` package for mesh optimization and encoding/decoding.
+```bash
+pip install meshly
+```
+
+2. **TypeScript Library**: The TypeScript `meshly` package for decoding Python meshoptimizer zip generated from Python into THREE.js geometries.
+```bash
+npm install meshly
+```
 
 ### Python Library
 

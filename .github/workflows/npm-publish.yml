@@ -4,34 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18.x'
-        registry-url: 'https://registry.npmjs.org'
-    
-    - name: Install pnpm
-      uses: pnpm/action-setup@v2
-      with:
-        version: 8
-    
-    - name: Install dependencies
-      run: cd typescript && pnpm install
-    
-    - name: Build
-      run: cd typescript && pnpm run build
-    
-    - name: Test
-      run: cd typescript && pnpm test
-
   publish:
-    needs: build
     runs-on: ubuntu-latest
     
     steps:

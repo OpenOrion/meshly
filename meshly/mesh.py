@@ -7,12 +7,11 @@ This module provides:
 3. Functions for encoding and decoding meshes
 """
 
-import inspect
 import json
 from pathlib import Path
 import zipfile
 from io import BytesIO
-from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple, Type, TypeVar, Union, get_type_hints
+from typing import ClassVar, Dict, Optional, Set, Type, TypeVar, Union, get_type_hints
 
 import numpy as np
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -33,10 +32,8 @@ from meshoptimizer import (
 from .arrayutils import EncodedArray, encode_array, decode_array
 from .models import (
     EncodedMeshModel,
-    EncodedMeshData,
     ArrayMetadata,
     MeshMetadata,
-    ModelData,
     MeshFileMetadata
 )
 

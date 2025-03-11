@@ -1,0 +1,40 @@
+{
+  "name": "pymeshoptimizer",
+  "version": "0.1.0",
+  "description": "TypeScript library to decode Python meshoptimizer zip files into THREE.js geometries",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "jest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mesh",
+    "three.js",
+    "meshoptimizer",
+    "3d"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "three": "^0.162.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.11.24",
+    "@types/three": "^0.162.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.3",
+    "@typescript-eslint/eslint-plugin": "^8.26.0",
+    "@typescript-eslint/parser": "^8.26.0",
+    "eslint": "^9.21.0",
+    "eslint-plugin-jest": "^28.11.0",
+    "typescript-eslint": "^8.26.0"
+  },
+  "files": [
+    "dist/**/*"
+  ]
+}

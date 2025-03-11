@@ -1,0 +1,45 @@
+name: Node.js Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [16.x, 18.x, 20.x]
+        # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+    
+    - name: Install pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: 8
+    
+    - name: Install dependencies
+      run: |
+        cd typescript
+        pnpm install
+    
+    - name: Run tests
+      run: |
+        cd typescript
+        pnpm test
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        directory: ./typescript/coverage
+        fail_ci_if_error: false

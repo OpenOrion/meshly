@@ -11,7 +11,7 @@ import unittest
 from typing import Optional, List
 from pydantic import Field
 
-from pymeshoptimizer import Mesh, EncodedMesh
+from meshly import Mesh, EncodedMesh
 
 class TestEncodedMesh(unittest.TestCase):
     """Test EncodedMesh functionality."""

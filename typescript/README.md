@@ -5,7 +5,7 @@ A TypeScript library for decoding Python meshoptimizer zip files into THREE.js g
 ## Installation
 
 ```bash
-npm install pymeshoptimizer
+npm install meshly
 ```
 
 ## Development
@@ -14,8 +14,8 @@ npm install pymeshoptimizer
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pymeshoptimizer.git
-cd pymeshoptimizer
+git clone https://github.com/yourusername/meshly.git
+cd meshly
 
 # Install dependencies
 pnpm install
@@ -59,7 +59,7 @@ To publish a new version:
 
 ```typescript
 import * as THREE from 'three';
-import { loadMeshFromZip } from 'pymeshoptimizer';
+import { loadMeshFromZip } from 'meshly';
 
 // Load a mesh from a zip file
 async function loadMesh(zipData: ArrayBuffer) {
@@ -88,7 +88,7 @@ async function loadMeshFromURL(url: string) {
 You can also use the lower-level functions to extract and decode the mesh data:
 
 ```typescript
-import { extractMeshFromZip, convertToBufferGeometry } from 'pymeshoptimizer';
+import { extractMeshFromZip, convertToBufferGeometry } from 'meshly';
 
 async function loadMeshManually(zipData: ArrayBuffer) {
   // Extract the mesh data from the zip file

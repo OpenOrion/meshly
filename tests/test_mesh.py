@@ -11,7 +11,7 @@ import unittest
 from typing import Optional, List, Dict, Any
 from pydantic import Field, ValidationError
 
-from pymeshoptimizer import Mesh
+from meshly import Mesh
 
 
 class TestPydanticMesh(unittest.TestCase):

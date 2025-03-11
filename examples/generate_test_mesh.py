@@ -1,11 +1,11 @@
 """
-Generate a test mesh using pymeshoptimizer and save it to a zip file.
+Generate a test mesh using meshly and save it to a zip file.
 This will be used to test the TypeScript library's import functionality.
 """
 
 import os
 import numpy as np
-from pymeshoptimizer import Mesh
+from meshly import Mesh
 
 def generate_cube_mesh():
     """Generate a simple cube mesh."""

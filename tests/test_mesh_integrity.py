@@ -7,7 +7,7 @@ is preserved correctly.
 """
 import numpy as np
 import unittest
-from pymeshoptimizer import Mesh
+from meshly import Mesh
 
 class TestMeshIntegrity(unittest.TestCase):
     """Test mesh integrity during encoding/decoding."""

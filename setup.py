@@ -9,12 +9,12 @@ with open("requirements.txt", encoding="utf-8") as f:
     requirements = [line.strip() for line in f if line.strip()]
 
 setup(
-    name="pymeshoptimizer",
-    version="0.3.1",  # Updated version for new functionality
+    name="meshly",
+    version="0.4.0",  # Updated version for new functionality
     description="High-level abstractions and utilities for working with meshoptimizer",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/username/pymeshoptimizer",
+    url="https://github.com/username/meshly",
     packages=find_packages(),
     install_requires=requirements,
     include_package_data=True,  # Include files specified in MANIFEST.in

@@ -1,5 +1,5 @@
 /**
- * Build script for the pymeshoptimizer library
+ * Build script for the meshly library
  */
 const { execSync } = require('child_process');
 const fs = require('fs');

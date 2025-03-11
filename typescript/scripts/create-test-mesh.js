@@ -84,21 +84,21 @@ function mockEncodeArray(array) {
 async function createTestMesh() {
   // Create a new zip file
   const zip = new JSZip();
-  
+
   // Encode the vertex buffer
   const encodedVertices = mockEncodeVertexBuffer(vertices);
-  
+
   // Encode the index buffer
   const encodedIndices = mockEncodeIndexBuffer(indices);
-  
+
   // Encode the normals and colors
   const encodedNormals = mockEncodeArray(normals);
   const encodedColors = mockEncodeArray(colors);
-  
+
   // Add the encoded buffers to the zip file
   zip.file('mesh/vertices.bin', encodedVertices);
   zip.file('mesh/indices.bin', encodedIndices);
-  
+
   // Add the mesh metadata
   const meshMetadata = {
     vertex_count: vertices.length / 3,
@@ -106,44 +106,44 @@ async function createTestMesh() {
     index_count: indices.length,
     index_size: 4 // 4 bytes per index (uint32)
   };
-  
+
   zip.file('mesh/metadata.json', JSON.stringify(meshMetadata, null, 2));
-  
+
   // Add the general metadata
   const fileMetadata = {
     class_name: 'ColoredMesh',
-    module_name: 'pymeshoptimizer.mesh'
+    module_name: 'meshly.mesh'
   };
-  
+
   zip.file('metadata.json', JSON.stringify(fileMetadata, null, 2));
-  
+
   // Add the normals and colors as additional arrays
   zip.file('arrays/normals.bin', encodedNormals);
   zip.file('arrays/colors.bin', encodedColors);
-  
+
   // Add the array metadata
   const normalsMetadata = {
     shape: [8, 3], // 8 vertices, 3 components per vertex
     dtype: 'float32',
     itemsize: 4 // 4 bytes per float32
   };
-  
+
   const colorsMetadata = {
     shape: [8, 4], // 8 vertices, 4 components per vertex (RGBA)
     dtype: 'float32',
     itemsize: 4 // 4 bytes per float32
   };
-  
+
   zip.file('arrays/normals_metadata.json', JSON.stringify(normalsMetadata, null, 2));
   zip.file('arrays/colors_metadata.json', JSON.stringify(colorsMetadata, null, 2));
-  
+
   // Generate the zip file
   const content = await zip.generateAsync({ type: 'nodebuffer' });
-  
+
   // Save the zip file
   const outputPath = path.join(__dirname, 'test-mesh.zip');
   fs.writeFileSync(outputPath, content);
-  
+
   console.log(`Test mesh saved to ${outputPath}`);
   return outputPath;
 }
@@ -154,7 +154,7 @@ if (require.main === module) {
 }
 
 // Export the createTestMesh function and mesh data for use in other scripts
-module.exports = { 
+module.exports = {
   createTestMesh,
   vertices,
   indices,

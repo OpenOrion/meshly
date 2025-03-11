@@ -3,7 +3,7 @@ Tests for the arrayutils module.
 """
 import unittest
 import numpy as np
-from pymeshoptimizer.arrayutils import encode_array, decode_array
+from meshly.arrayutils import encode_array, decode_array
 
 class TestArrayUtils(unittest.TestCase):
     """Test cases for the arrayutils module."""

@@ -102,11 +102,7 @@ class MeshFileMetadata(BaseModel):
     """
     class_name: str = Field(..., description="Name of the mesh class")
     module_name: str = Field(..., description="Name of the module containing the mesh class")
-    model_data: Optional[Dict[str, Any]] = Field(
+    field_data: Optional[Dict[str, Any]] = Field(
         None, 
         description="Dictionary of model fields that aren't numpy arrays"
     )
-
-    model_config = {
-        "protected_namespaces": ()  # Disable protected namespace checking
-    }

@@ -9,7 +9,7 @@ with open("requirements.txt", encoding="utf-8") as f:
 
 setup(
     name="meshly",
-    version="0.4.0",  # Updated version for new functionality
+    version="0.5.0",  # Updated version for new functionality
     description="High-level abstractions and utilities for working with meshoptimizer",
     long_description=long_description,
     long_description_content_type="text/markdown",

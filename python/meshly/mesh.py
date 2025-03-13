@@ -361,7 +361,7 @@ class Mesh(BaseModel):
                 model_data[field_name] = field_value
         
         if model_data:
-            metadata.model_data = model_data
+            metadata.field_data = model_data
         
         with zipfile.ZipFile(source, 'w', zipfile.ZIP_DEFLATED) as zipf:
             # Save mesh data
@@ -498,8 +498,8 @@ class Mesh(BaseModel):
             }
             
             # Add non-array model data if present
-            if metadata.model_data is not None:
-                mesh_data.update(metadata.model_data)
+            if metadata.field_data is not None:
+                mesh_data.update(metadata.field_data)
             
             return target_cls(**mesh_data)
     

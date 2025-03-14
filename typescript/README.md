@@ -16,11 +16,11 @@ npm install meshly
 
 ```typescript
 import * as THREE from 'three';
-import { loadMeshFromZip } from 'meshly';
+import { loadZipAsBufferGeometry } from 'meshly';
 
 // Load a mesh from a zip file
 async function loadMesh(zipData: ArrayBuffer) {
-  const geometry = await loadMeshFromZip(zipData, {
+  const geometry = await loadZipAsBufferGeometry(zipData, {
     normalize: true,
     computeNormals: true
   });
@@ -63,7 +63,7 @@ async function loadMeshManually(zipData: ArrayBuffer) {
 
 ## API Reference
 
-### `loadMeshFromZip(zipData: ArrayBuffer, options?: DecodeMeshOptions): Promise<THREE.BufferGeometry>`
+### `loadZipAsBufferGeometry(zipData: ArrayBuffer, options?: DecodeMeshOptions): Promise<THREE.BufferGeometry>`
 
 Loads a mesh from a zip file and converts it to a THREE.js BufferGeometry.
 

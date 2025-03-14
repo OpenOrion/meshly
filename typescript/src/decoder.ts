@@ -24,8 +24,8 @@ export function decodeVertexBuffer(vertexCount: number, vertexSize: number, data
   // The first byte is the header
   const header = data[0];
   
-  // Check if the header is valid (should be 0xA0 for vertex buffer)
-  if (header !== 0xA0) {
+  // Check if the header is valid (should be 0xA0 or 0xA1 for vertex buffer)
+  if (header !== 0xA0 && header !== 0xA1) {
     throw new Error(`Invalid vertex buffer header: ${header.toString(16)}`);
   }
   
@@ -71,8 +71,8 @@ export function decodeIndexBuffer(indexCount: number, indexSize: number, data: U
   // The first byte is the header
   const header = data[0];
   
-  // Check if the header is valid (should be 0xE0 for index buffer)
-  if (header !== 0xE0) {
+  // Check if the header is valid (should be 0xE0 or 0xE1 for index buffer)
+  if (header !== 0xE0 && header !== 0xE1) {
     throw new Error(`Invalid index buffer header: ${header.toString(16)}`);
   }
   

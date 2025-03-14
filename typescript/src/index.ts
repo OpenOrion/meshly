@@ -5,13 +5,13 @@
  */
 
 // Export types
-export * from './types';
+export * from './types'
 
 // Export decoder functions
-export { extractMeshFromZip, decodeVertexBuffer, decodeIndexBuffer, decodeArray } from './decoder';
+export { decodeArray, decodeIndexBuffer, decodeVertexBuffer, extractMeshFromZip } from './decoder'
 
 // Export converter functions
-export { convertToBufferGeometry } from './converter';
+export { convertToBufferGeometry } from './converter'
 
 /**
  * Main function to load a mesh from a zip file and convert it to a THREE.js BufferGeometry
@@ -20,13 +20,13 @@ export { convertToBufferGeometry } from './converter';
  * @param options Options for the conversion
  * @returns Promise that resolves to a THREE.js BufferGeometry
  */
-export async function loadMeshFromZip(
-  zipData: ArrayBuffer, 
+export async function loadZipAsBufferGeometry(
+  zipData: ArrayBuffer,
   options?: import('./types').DecodeMeshOptions
 ): Promise<import('three').BufferGeometry> {
-  const { extractMeshFromZip } = await import('./decoder');
-  const { convertToBufferGeometry } = await import('./converter');
-  
-  const mesh = await extractMeshFromZip(zipData);
-  return convertToBufferGeometry(mesh, options);
+  const { extractMeshFromZip } = await import('./decoder')
+  const { convertToBufferGeometry } = await import('./converter')
+
+  const mesh = await extractMeshFromZip(zipData)
+  return convertToBufferGeometry(mesh, options)
 }

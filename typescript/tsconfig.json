@@ -1,8 +1,7 @@
 {
   "compilerOptions": {
     "target": "es2020",
-    "module": "es2020",
-    "moduleResolution": "node",
+    "module": "commonjs",
     "declaration": true,
     "outDir": "./dist",
     "rootDir": "./src",
@@ -11,9 +10,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "lib": ["es2020", "dom"],
-    "types": ["vitest", "node"],
+    "types": ["node"],
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/__tests__"]
+  "exclude": ["node_modules", "dist"]
 }

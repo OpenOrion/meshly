@@ -5,10 +5,40 @@ This module provides functions for compressing numpy arrays using meshoptimizer'
 encoding functions and storing/loading them as encoded data.
 """
 import ctypes
-from typing import Tuple
+from typing import List, Tuple
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from meshoptimizer._loader import lib
+
+
+class EncodedArrayModel(BaseModel):
+    """
+    Pydantic model representing an encoded numpy array with metadata.
+
+    This is a Pydantic version of the EncodedArray class in arrayutils.py.
+    """
+
+    data: bytes = Field(..., description="Encoded data as bytes")
+    shape: Tuple[int, ...] = Field(..., description="Original array shape")
+    dtype: str = Field(..., description="Original array data type as string")
+    itemsize: int = Field(..., description="Size of each item in bytes")
+
+    class Config:
+        """Pydantic configuration."""
+
+        arbitrary_types_allowed = True
+
+class ArrayMetadata(BaseModel):
+    """
+    Pydantic model representing metadata for an encoded array.
+
+    Used in the save_to_zip method to store array metadata.
+    """
+
+    shape: List[int] = Field(..., description="Shape of the array")
+    dtype: str = Field(..., description="Data type of the array as string")
+    itemsize: int = Field(..., description="Size of each item in bytes")
+
 
 class EncodedArray(BaseModel):
     """

@@ -11,10 +11,18 @@ import json
 from pathlib import Path
 import zipfile
 from io import BytesIO
-from typing import ClassVar, Dict, Optional, Set, Type, TypeVar, Union, get_type_hints
-
+from typing import (
+    Dict,
+    Optional,
+    Set,
+    Type,
+    Any,
+    TypeVar,
+    Union,
+    get_type_hints,
+)
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 # Use meshoptimizer directly
 from meshoptimizer import (
@@ -29,14 +37,65 @@ from meshoptimizer import (
     simplify,
 )
 
-from .array import EncodedArray, ArrayUtils
-from .models import EncodedMesh, ArrayMetadata, MeshMetadata, MeshFileMetadata
+from .array import ArrayMetadata, EncodedArray, ArrayUtils
 
 PathLike = Union[str, Path]
 
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
+
+
+class EncodedMesh(BaseModel):
+    """
+    Pydantic model representing an encoded mesh with its vertices and indices.
+
+    This is a Pydantic version of the EncodedMesh class in mesh.py.
+    """
+
+    vertices: bytes = Field(..., description="Encoded vertex buffer")
+    indices: Optional[bytes] = Field(
+        None, description="Encoded index buffer (optional)"
+    )
+    vertex_count: int = Field(..., description="Number of vertices")
+    vertex_size: int = Field(..., description="Size of each vertex in bytes")
+    index_count: Optional[int] = Field(None, description="Number of indices (optional)")
+    index_size: int = Field(..., description="Size of each index in bytes")
+
+    class Config:
+        """Pydantic configuration."""
+
+        arbitrary_types_allowed = True
+
+
+class MeshSize(BaseModel):
+    """
+    Pydantic model representing size metadata for an encoded mesh.
+
+    Used in the save_to_zip method to store mesh size information.
+    """
+
+    vertex_count: int = Field(..., description="Number of vertices")
+    vertex_size: int = Field(..., description="Size of each vertex in bytes")
+    index_count: Optional[int] = Field(None, description="Number of indices (optional)")
+    index_size: int = Field(..., description="Size of each index in bytes")
+
+
+class MeshMetadata(BaseModel):
+    """
+    Pydantic model representing general metadata for a mesh file.
+
+    Used in the save_to_zip method to store general metadata.
+    """
+
+    class_name: str = Field(..., description="Name of the mesh class")
+    module_name: str = Field(
+        ..., description="Name of the module containing the mesh class"
+    )
+    field_data: Optional[Dict[str, Any]] = Field(
+        None, description="Dictionary of model fields that aren't numpy arrays"
+    )
+    mesh_size: MeshSize = Field(description="Size metadata for the encoded mesh")
 
 
 class Mesh(BaseModel):
@@ -53,54 +112,37 @@ class Mesh(BaseModel):
         None, description="Index data as a numpy array"
     )
 
-    # Private attributes to store computed values
-    _vertex_count: int = PrivateAttr(0)
-    _index_count: int = PrivateAttr(0)
-    _array_fields: ClassVar[Set[str]] = set()
-
-    class Config:
-        """Pydantic configuration."""
-        arbitrary_types_allowed = True
-
-    def __init__(self, **data):
-        """Initialize a mesh with vertices and optional indices."""
-        super().__init__(**data)
-        self._update_counts()
-        self._initialize_array_fields()
-
-    def _update_counts(self):
-        """Update vertex and index counts."""
-        self._vertex_count = len(self.vertices)
-        self._index_count = len(self.indices) if self.indices is not None else 0
-
-    def _initialize_array_fields(self):
-        """Identify all numpy array fields in this class."""
-        cls = self.__class__
-        type_hints = get_type_hints(cls)
-
-        # Find all fields that are numpy arrays
-        for field_name, field_type in type_hints.items():
-            if field_name in self.__private_attributes__:
-                continue
-
-            try:
-                value = getattr(self, field_name, None)
-                if isinstance(value, np.ndarray):
-                    cls._array_fields.add(field_name)
-            except AttributeError:
-                # Skip attributes that don't exist
-                pass
-
     @property
     def vertex_count(self) -> int:
         """Get the number of vertices."""
-        return self._vertex_count
+        return len(self.vertices)
 
     @property
     def index_count(self) -> int:
         """Get the number of indices."""
-        return self._index_count
+        return len(self.indices) if self.indices is not None else 0
 
+    @property
+    def array_fields(self) -> Set[str]:
+        """Identify all numpy array fields in this class."""
+        result = set()
+        type_hints = get_type_hints(self.__class__)
+        
+        # Find all fields that are numpy arrays
+        for field_name, field_type in type_hints.items():
+            if field_name in self.__private_attributes__:
+                continue
+            try:
+                value = getattr(self, field_name, None)
+                if isinstance(value, np.ndarray):
+                    result.add(field_name)
+            except AttributeError:
+                # Skip attributes that don't exist
+                pass
+        
+        return result
+    class Config:
+        arbitrary_types_allowed = True
     @model_validator(mode="after")
     def validate_arrays(self) -> "Mesh":
         """Validate and convert arrays to the correct types."""
@@ -112,8 +154,6 @@ class Mesh(BaseModel):
         if self.indices is not None:
             self.indices = np.asarray(self.indices, dtype=np.uint32)
 
-        # Update counts
-        self._update_counts()
         return self
 
 
@@ -138,7 +178,7 @@ class MeshUtils:
 
         optimized_indices = np.zeros_like(mesh.indices)
         optimize_vertex_cache(
-            optimized_indices, mesh.indices, mesh._index_count, mesh._vertex_count
+            optimized_indices, mesh.indices, mesh.index_count, mesh.vertex_count
         )
 
         mesh.indices = optimized_indices
@@ -164,8 +204,8 @@ class MeshUtils:
             optimized_indices,
             mesh.indices,
             mesh.vertices,
-            mesh._index_count,
-            mesh._vertex_count,
+            mesh.index_count,
+            mesh.vertex_count,
             mesh.vertices.itemsize * mesh.vertices.shape[1],
             threshold,
         )
@@ -192,18 +232,21 @@ class MeshUtils:
             optimized_vertices,
             mesh.indices,
             mesh.vertices,
-            mesh._index_count,
-            mesh._vertex_count,
+            mesh.index_count,
+            mesh.vertex_count,
             mesh.vertices.itemsize * mesh.vertices.shape[1],
         )
 
         mesh.vertices = optimized_vertices[:unique_vertex_count]
-        mesh._vertex_count = unique_vertex_count
+        # No need to update vertex_count as it's calculated on-the-fly
         return mesh
 
     @staticmethod
     def simplify(
-        mesh: Mesh, target_ratio: float = 0.25, target_error: float = 0.01, options: int = 0
+        mesh: Mesh,
+        target_ratio: float = 0.25,
+        target_error: float = 0.01,
+        options: int = 0,
     ) -> Mesh:
         """
         Simplify the mesh.
@@ -220,16 +263,16 @@ class MeshUtils:
         if mesh.indices is None:
             raise ValueError("Mesh has no indices to simplify")
 
-        target_index_count = int(mesh._index_count * target_ratio)
-        simplified_indices = np.zeros(mesh._index_count, dtype=np.uint32)
+        target_index_count = int(mesh.index_count * target_ratio)
+        simplified_indices = np.zeros(mesh.index_count, dtype=np.uint32)
 
         result_error = np.array([0.0], dtype=np.float32)
         new_index_count = simplify(
             simplified_indices,
             mesh.indices,
             mesh.vertices,
-            mesh._index_count,
-            mesh._vertex_count,
+            mesh.index_count,
+            mesh.vertex_count,
             mesh.vertices.itemsize * mesh.vertices.shape[1],
             target_index_count,
             target_error,
@@ -238,7 +281,7 @@ class MeshUtils:
         )
 
         mesh.indices = simplified_indices[:new_index_count]
-        mesh._index_count = new_index_count
+        # No need to update index_count as it's calculated on-the-fly
         return mesh
 
     @staticmethod
@@ -257,7 +300,7 @@ class MeshUtils:
         # Encode vertex buffer
         encoded_vertices = encode_vertex_buffer(
             mesh.vertices,
-            mesh._vertex_count,
+            mesh.vertex_count,
             mesh.vertices.itemsize * mesh.vertices.shape[1],
         )
 
@@ -265,22 +308,22 @@ class MeshUtils:
         encoded_indices = None
         if mesh.indices is not None:
             encoded_indices = encode_index_buffer(
-                mesh.indices, mesh._index_count, mesh.indices.itemsize
+                mesh.indices, mesh.index_count, mesh.indices.itemsize
             )
 
         # Create encoded mesh
         encoded_mesh = EncodedMesh(
             vertices=encoded_vertices,
             indices=encoded_indices,
-            vertex_count=mesh._vertex_count,
+            vertex_count=mesh.vertex_count,
             vertex_size=mesh.vertices.itemsize * mesh.vertices.shape[1],
-            index_count=mesh._index_count if mesh.indices is not None else None,
+            index_count=mesh.index_count if mesh.indices is not None else None,
             index_size=mesh.indices.itemsize if mesh.indices is not None else 4,
         )
 
         # Encode additional array fields
         encoded_arrays = {}
-        for field_name in mesh.__class__._array_fields:
+        for field_name in mesh.array_fields:
             if field_name in ("vertices", "indices"):
                 continue  # Skip the main vertices and indices
 
@@ -307,19 +350,12 @@ class MeshUtils:
         encoded_mesh = encoded_data["mesh"]
         encoded_arrays = encoded_data["arrays"]
 
-        # Create metadata
-        metadata = MeshFileMetadata(
-            class_name=mesh.__class__.__name__, module_name=mesh.__class__.__module__
-        )
-
         # Add model fields that aren't numpy arrays
         model_data = {}
         for field_name, field_value in mesh.model_dump().items():
-            if field_name not in mesh.__class__._array_fields:
+            if field_name not in mesh.array_fields:
                 model_data[field_name] = field_value
 
-        if model_data:
-            metadata.field_data = model_data
 
         with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as zipf:
             # Save mesh data
@@ -327,15 +363,20 @@ class MeshUtils:
             if encoded_mesh.indices is not None:
                 zipf.writestr("mesh/indices.bin", encoded_mesh.indices)
 
-            # Save mesh metadata
-            mesh_metadata = MeshMetadata(
+            # Create mesh size metadata
+            mesh_size = MeshSize(
                 vertex_count=encoded_mesh.vertex_count,
                 vertex_size=encoded_mesh.vertex_size,
                 index_count=encoded_mesh.index_count,
                 index_size=encoded_mesh.index_size,
             )
-            zipf.writestr(
-                "mesh/metadata.json", json.dumps(mesh_metadata.model_dump(), indent=2)
+
+            # Create metadata
+            metadata = MeshMetadata(
+                class_name=mesh.__class__.__name__,
+                module_name=mesh.__class__.__module__,
+                mesh_size=mesh_size,
+                field_data=model_data
             )
 
             # Save array data
@@ -372,7 +413,7 @@ class MeshUtils:
             # Load general metadata
             with zipf.open("metadata.json") as f:
                 metadata_dict = json.loads(f.read().decode("utf-8"))
-                metadata = MeshFileMetadata(**metadata_dict)
+                metadata = MeshMetadata(**metadata_dict)
 
             # Check if the class matches
             class_name = metadata.class_name
@@ -380,21 +421,14 @@ class MeshUtils:
 
             # If the class doesn't match, try to import it
             if class_name != cls.__name__ or module_name != cls.__module__:
-                try:
-                    import importlib
-
-                    module = importlib.import_module(module_name)
-                    target_cls = getattr(module, class_name)
-                except (ImportError, AttributeError):
-                    # Fall back to the provided class
-                    target_cls = cls
+                raise ValueError(
+                    f"Class mismatch: expected {cls.__name__} but got {class_name} from {module_name}"
+                )
             else:
                 target_cls = cls
 
-            # Load mesh metadata
-            with zipf.open("mesh/metadata.json") as f:
-                mesh_metadata_dict = json.loads(f.read().decode("utf-8"))
-                mesh_metadata = MeshMetadata(**mesh_metadata_dict)
+            # Get mesh size metadata from the file metadata
+            mesh_size = metadata.mesh_size
 
             # Load mesh data
             with zipf.open("mesh/vertices.bin") as f:
@@ -409,10 +443,10 @@ class MeshUtils:
             encoded_mesh = EncodedMesh(
                 vertices=encoded_vertices,
                 indices=encoded_indices,
-                vertex_count=mesh_metadata.vertex_count,
-                vertex_size=mesh_metadata.vertex_size,
-                index_count=mesh_metadata.index_count,
-                index_size=mesh_metadata.index_size,
+                vertex_count=mesh_size.vertex_count,
+                vertex_size=mesh_size.vertex_size,
+                index_count=mesh_size.index_count,
+                index_size=mesh_size.index_size,
             )
 
             # Decode mesh data
@@ -435,12 +469,12 @@ class MeshUtils:
 
             # Load additional array data
             arrays = {}
-            for name in [
-                n
-                for n in zipf.namelist()
-                if n.startswith("arrays/") and n.endswith(".bin")
+            for array_file_name in [
+                file_name
+                for file_name in zipf.namelist()
+                if file_name.startswith("arrays/") and file_name.endswith(".bin")
             ]:
-                array_name = name.split("/")[1].split(".")[0]
+                array_name = array_file_name.split("/")[1].split(".")[0]
 
                 # Load array metadata
                 with zipf.open(f"arrays/{array_name}_metadata.json") as f:
@@ -448,7 +482,7 @@ class MeshUtils:
                     array_metadata = ArrayMetadata(**array_metadata_dict)
 
                 # Load array data
-                with zipf.open(name) as f:
+                with zipf.open(array_file_name) as f:
                     encoded_data = f.read()
 
                 # Create encoded array
@@ -463,13 +497,12 @@ class MeshUtils:
                 arrays[array_name] = ArrayUtils.decode_array(encoded_array)
 
             # Create mesh object with all data
-            mesh_data = {"vertices": vertices, "indices": indices, **arrays}
-
-            # Add non-array model data if present
-            if metadata.field_data is not None:
-                mesh_data.update(metadata.field_data)
-
-            return target_cls(**mesh_data)
+            return target_cls(
+                vertices=vertices,
+                indices=indices,
+                **arrays,
+                **(metadata.field_data or {}),
+            )
 
     @staticmethod
     def decode(cls: Type[T], encoded_mesh: EncodedMesh) -> T:

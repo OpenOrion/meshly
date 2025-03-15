@@ -1,18 +1,9 @@
 /**
  * Build script for the meshly library
  */
-import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
-
-// Get __dirname equivalent in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Create a require function to load JSON
-const require = createRequire(import.meta.url);
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 // Clean up any existing build artifacts
 console.log('Cleaning up...');

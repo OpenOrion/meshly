@@ -14,37 +14,30 @@ meshoptimizer, including:
 
 from .mesh import (
     Mesh,
+    EncodedMesh,
+    MeshSize,
+    MeshMetadata,
     MeshUtils,
 )
 
 from .array import (
     EncodedArray,
-    ArrayUtils,
-)
-
-from .models import (
-    EncodedMesh,
-    EncodedArrayModel,
     ArrayMetadata,
-    MeshMetadata,
-    ModelData,
-    MeshFileMetadata,
+    EncodedArrayModel,
+    ArrayUtils,
 )
 
 
 __all__ = [
     # Mesh classes
     "Mesh",
-    "MeshUtils",
     "EncodedMesh",
+    "MeshSize",
+    "MeshMetadata",
+    "MeshUtils",
     # Array utilities
     "EncodedArray",
-    "ArrayUtils",
-    # Pydantic models
-    "EncodedMesh",
     "EncodedArrayModel",
     "ArrayMetadata",
-    "MeshMetadata",
-    "ModelData",
-    "MeshFileMetadata",
+    "ArrayUtils",
 ]

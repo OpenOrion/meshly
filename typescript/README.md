@@ -8,19 +8,17 @@ A TypeScript library for decoding Python meshoptimizer zip files into THREE.js g
 npm install meshly
 ```
 
-## Development
-
 ## Usage
 
 ### Basic Usage
 
 ```typescript
 import * as THREE from 'three';
-import { loadZipAsBufferGeometry } from 'meshly';
+import { MeshUtils } from 'meshly';
 
 // Load a mesh from a zip file
 async function loadMesh(zipData: ArrayBuffer) {
-  const geometry = await loadZipAsBufferGeometry(zipData, {
+  const geometry = await MeshUtils.loadZipAsBufferGeometry(zipData, {
     normalize: true,
     computeNormals: true
   });
@@ -45,14 +43,14 @@ async function loadMeshFromURL(url: string) {
 You can also use the lower-level functions to extract and decode the mesh data:
 
 ```typescript
-import { loadMeshFromZip, convertToBufferGeometry } from 'meshly';
+import { MeshUtils } from 'meshly';
 
 async function loadMeshManually(zipData: ArrayBuffer) {
   // Extract the mesh data from the zip file
-  const decodedMesh = await loadMeshFromZip(zipData);
+  const decodedMesh = await MeshUtils.loadMeshFromZip(zipData);
   
   // Convert the decoded mesh to a THREE.js geometry
-  const geometry = convertToBufferGeometry(decodedMesh, {
+  const geometry = MeshUtils.convertToBufferGeometry(decodedMesh, {
     normalize: true,
     computeNormals: true
   });
@@ -61,49 +59,128 @@ async function loadMeshManually(zipData: ArrayBuffer) {
 }
 ```
 
+### Array Utilities
+
+The library also provides utilities for working with arrays:
+
+```typescript
+import { ArrayUtils } from 'meshly';
+
+// Encode a Float32Array
+const array = new Float32Array([1.0, 2.0, 3.0, 4.0, 5.0]);
+const encoded = ArrayUtils.encodeArray(array);
+console.log(`Original size: ${array.byteLength} bytes`);
+console.log(`Encoded size: ${encoded.data.byteLength} bytes`);
+
+// Decode an array
+const decoded = ArrayUtils.decodeArray(encoded.data, {
+  shape: encoded.shape,
+  dtype: encoded.dtype,
+  itemsize: encoded.itemsize
+});
+console.log(`Decoded array length: ${decoded.length}`);
+```
+
 ## API Reference
 
-### `loadZipAsBufferGeometry(zipData: ArrayBuffer, options?: DecodeMeshOptions): Promise<THREE.BufferGeometry>`
+### MeshUtils
+
+#### `MeshUtils.loadZipAsBufferGeometry(zipData: ArrayBuffer, options?: DecodeMeshOptions): Promise<THREE.BufferGeometry>`
 
 Loads a mesh from a zip file and converts it to a THREE.js BufferGeometry.
 
-#### Parameters
+##### Parameters
 
 - `zipData`: The zip file data as an ArrayBuffer
 - `options`: Options for decoding the mesh
   - `normalize`: Whether to normalize the mesh to fit within a unit cube (default: `false`)
   - `computeNormals`: Whether to compute normals if they don't exist (default: `true`)
 
-#### Returns
+##### Returns
 
 A Promise that resolves to a THREE.js BufferGeometry.
 
-### `loadMeshFromZip(zipData: ArrayBuffer): Promise<DecodedMesh>`
+#### `MeshUtils.loadMeshFromZip(zipData: ArrayBuffer): Promise<Mesh>`
 
 Extracts and decodes a mesh from a zip file.
 
-#### Parameters
+##### Parameters
 
 - `zipData`: The zip file data as an ArrayBuffer
 
-#### Returns
+##### Returns
 
-A Promise that resolves to a DecodedMesh object.
+A Promise that resolves to a Mesh object.
 
-### `convertToBufferGeometry(mesh: DecodedMesh, options?: DecodeMeshOptions): THREE.BufferGeometry`
+#### `MeshUtils.convertToBufferGeometry(mesh: Mesh, options?: DecodeMeshOptions): THREE.BufferGeometry`
 
 Converts a decoded mesh to a THREE.js BufferGeometry.
 
-#### Parameters
+##### Parameters
 
 - `mesh`: The decoded mesh data
 - `options`: Options for the conversion
   - `normalize`: Whether to normalize the mesh to fit within a unit cube (default: `false`)
   - `computeNormals`: Whether to compute normals if they don't exist (default: `true`)
 
-#### Returns
+##### Returns
 
 A THREE.js BufferGeometry.
+
+#### `MeshUtils.decodeVertexBuffer(vertexCount: number, vertexSize: number, data: Uint8Array): Float32Array`
+
+Decodes a vertex buffer using the meshoptimizer algorithm.
+
+##### Parameters
+
+- `vertexCount`: Number of vertices
+- `vertexSize`: Size of each vertex in bytes
+- `data`: Encoded vertex buffer
+
+##### Returns
+
+Decoded vertex buffer as a Float32Array.
+
+#### `MeshUtils.decodeIndexBuffer(indexCount: number, indexSize: number, data: Uint8Array): Uint32Array`
+
+Decodes an index buffer using the meshoptimizer algorithm.
+
+##### Parameters
+
+- `indexCount`: Number of indices
+- `indexSize`: Size of each index in bytes
+- `data`: Encoded index buffer
+
+##### Returns
+
+Decoded index buffer as a Uint32Array.
+
+### ArrayUtils
+
+#### `ArrayUtils.encodeArray(data: Float32Array): EncodedArray`
+
+Encodes a Float32Array using the meshoptimizer algorithm.
+
+##### Parameters
+
+- `data`: Float32Array to encode
+
+##### Returns
+
+EncodedArray object containing the encoded data and metadata.
+
+#### `ArrayUtils.decodeArray(data: Uint8Array, metadata: ArrayMetadata): Float32Array`
+
+Decodes an encoded array using the meshoptimizer algorithm.
+
+##### Parameters
+
+- `data`: Encoded array data
+- `metadata`: Array metadata
+
+##### Returns
+
+Decoded array as a Float32Array.
 
 ## Python Mesh Format
 
@@ -111,9 +188,14 @@ This library is designed to work with the Python meshoptimizer library's zip for
 
 - `mesh/vertices.bin`: Encoded vertex buffer
 - `mesh/indices.bin`: Encoded index buffer
-- `mesh/metadata.json`: Metadata about the mesh
 - `arrays/`: Additional arrays (normals, colors, etc.)
-- `metadata.json`: General metadata about the mesh
+- `metadata.json`: General metadata about the mesh, including mesh size information
+
+The metadata.json file contains:
+- `class_name`: Name of the mesh class
+- `module_name`: Name of the module containing the mesh class
+- `field_data`: Dictionary of model fields that aren't numpy arrays
+- `mesh_size`: Size metadata for the encoded mesh (vertex_count, vertex_size, index_count, index_size)
 
 
 

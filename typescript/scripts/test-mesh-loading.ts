@@ -5,7 +5,8 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { MeshUtils } from '../src/index'
+import { Mesh, MeshUtils } from '../src/index'
+
 
 // Path to the meshes directory
 const MESHES_DIR = path.resolve(__dirname, '../../python/examples/meshes')
@@ -47,12 +48,12 @@ async function testMeshLoading() {
 
       // Load the mesh
       const geometry = await MeshUtils.loadZipAsBufferGeometry(zipData.buffer, options)
+      const mesh = await MeshUtils.loadMeshFromZip<Mesh>(zipData.buffer)
 
       // Check if the geometry is valid
       if (!geometry.getAttribute('position')) {
         throw new Error('Geometry does not have position attribute')
       }
-      console.log(geometry.getAttribute('position'))
       // Log success
       process.stdout.write('✓\n')
       results.success++

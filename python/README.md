@@ -16,12 +16,17 @@ pip install meshly
 - Automatic encoding/decoding of numpy array attributes
 - `EncodedMesh` class: A container for encoded mesh data
 
+### Utility Classes
+
+- `MeshUtils`: Static methods for mesh operations (encoding, decoding, optimization)
+- `ArrayUtils`: Static methods for array operations (encoding, decoding)
 ### Metadata Models
 
 - `ArrayMetadata`: Pydantic model for array metadata validation and serialization
-- `MeshMetadata`: Pydantic model for mesh metadata validation and serialization
-- `MeshFileMetadata`: Pydantic model for storing class and module information
-- `ModelData`: Container for non-array model data
+- `MeshSize`: Pydantic model for mesh size information (vertex/index counts and sizes)
+- `MeshMetadata`: Pydantic model for storing class, module, and mesh size information
+- `EncodedArray`: Container for encoded array data with metadata
+- `EncodedArray`: Container for encoded array data with metadata
 
 ### File I/O
 
@@ -38,7 +43,7 @@ The following example demonstrates the key functionality of meshly, including cu
 import numpy as np
 from typing import Optional, List
 from pydantic import Field
-from meshly import Mesh, encode_array, decode_array
+from meshly import Mesh
 
 # Create a custom mesh subclass with additional attributes
 class TexturedMesh(Mesh):
@@ -92,7 +97,16 @@ mesh = TexturedMesh(
     tags=["cube", "example"]
 )
 
-# Optimize the mesh
+# Optimize the mesh using MeshUtils methods
+from meshly import MeshUtils
+
+# Option 1: Use MeshUtils static methods
+MeshUtils.optimize_vertex_cache(mesh)
+MeshUtils.optimize_overdraw(mesh)
+MeshUtils.optimize_vertex_fetch(mesh)
+MeshUtils.simplify(mesh, target_ratio=0.8)  # Keep 80% of triangles
+
+# Option 2: Use convenience methods on the Mesh instance
 mesh.optimize_vertex_cache()
 mesh.optimize_overdraw()
 mesh.optimize_vertex_fetch()
@@ -116,6 +130,32 @@ print(f"Material name: {loaded_mesh.material_name}")
 print(f"Tags: {loaded_mesh.tags}")
 print(f"Texture coordinates shape: {loaded_mesh.texture_coords.shape}")
 print(f"Normals shape: {loaded_mesh.normals.shape}")
+```
+
+## Array Utilities
+
+The package also provides utilities for working with arrays:
+
+```python
+import numpy as np
+from meshly import ArrayUtils
+
+# Create a numpy array
+array = np.random.random((100, 3)).astype(np.float32)
+
+# Encode the array
+encoded_array = ArrayUtils.encode_array(array)
+print(f"Original size: {array.nbytes} bytes")
+print(f"Encoded size: {len(encoded_array.data)} bytes")
+print(f"Compression ratio: {array.nbytes / len(encoded_array.data):.2f}x")
+
+# Decode the array
+decoded_array = ArrayUtils.decode_array(encoded_array)
+print(f"Decoded shape: {decoded_array.shape}")
+print(f"Decoded dtype: {decoded_array.dtype}")
+
+# Verify that the decoded array matches the original
+np.testing.assert_allclose(array, decoded_array)
 ```
 
 For more detailed examples, see the Jupyter notebooks in the [examples](examples/) directory:

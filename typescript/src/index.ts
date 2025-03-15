@@ -8,5 +8,6 @@
 export * from './mesh'
 
 // Export utility classes
-export { ArrayUtils, EncodedArray, ArrayMetadata } from './array'
-export { MeshUtils, Mesh, MeshMetadata } from './mesh'
+export { ArrayMetadata, ArrayUtils, EncodedArray } from './array'
+export { Mesh, MeshMetadata, MeshSize, MeshUtils } from './mesh'
+

@@ -9,13 +9,23 @@ import { ArrayMetadata, ArrayUtils } from './array'
  */
 
 /**
- * Metadata for a mesh
+ * Size metadata for a mesh
  */
-export interface MeshMetadata {
+export interface MeshSize {
   vertex_count: number
   vertex_size: number
   index_count: number | null
   index_size: number
+}
+
+/**
+ * File metadata for a mesh
+ */
+export interface MeshMetadata {
+  class_name: string
+  module_name: string
+  field_data?: any
+  mesh_size: MeshSize
 }
 
 /**
@@ -52,7 +62,7 @@ export interface Mesh {
   /**
    * Additional properties that can be any type of array
    */
-  [key: string]: Float32Array | Uint32Array | undefined
+  [key: string]: Float32Array | Uint32Array | undefined | any
 }
 
 /**
@@ -144,17 +154,20 @@ export class MeshUtils {
    * @param zipData Zip file data as an ArrayBuffer
    * @returns Promise that resolves to the decoded mesh
    */
-  static async loadMeshFromZip(zipData: ArrayBuffer): Promise<Mesh> {
+  static async loadMeshFromZip<MeshType extends Mesh>(zipData: ArrayBuffer): Promise<MeshType> {
     // Load the zip file
     const zip = await JSZip.loadAsync(zipData)
 
-    // Extract the mesh metadata
-    const meshMetadataJson = await zip.file('mesh/metadata.json')?.async('string')
-    if (!meshMetadataJson) {
-      throw new Error('Mesh metadata not found in zip file')
+    // Extract the file metadata
+    const metadataJson = await zip.file('metadata.json')?.async('string')
+    if (!metadataJson) {
+      throw new Error('File metadata not found in zip file')
     }
+    const metadata: MeshMetadata = JSON.parse(metadataJson)
 
-    const meshMetadata: MeshMetadata = JSON.parse(meshMetadataJson)
+    // Get mesh size metadata
+    const meshSize: MeshSize = metadata.mesh_size
+
 
     // Extract the vertex data
     const vertexData = await zip.file('mesh/vertices.bin')?.async('uint8array')
@@ -164,28 +177,29 @@ export class MeshUtils {
 
     // Decode the vertex data
     const vertices = MeshUtils.decodeVertexBuffer(
-      meshMetadata.vertex_count,
-      meshMetadata.vertex_size,
+      meshSize.vertex_count,
+      meshSize.vertex_size,
       vertexData
     )
 
     // Extract and decode the index data if it exists
     let indices: Uint32Array | undefined
-    if (meshMetadata.index_count !== null) {
+    if (meshSize.index_count !== null) {
       const indexData = await zip.file('mesh/indices.bin')?.async('uint8array')
       if (indexData) {
         indices = MeshUtils.decodeIndexBuffer(
-          meshMetadata.index_count,
-          meshMetadata.index_size,
+          meshSize.index_count,
+          meshSize.index_size,
           indexData
         )
       }
     }
 
     // Create the result object
-    const result: Mesh = {
+    const result: MeshType = {
       vertices,
-      indices
+      indices,
+      ...(metadata.field_data || {})
     }
 
     // Extract and decode additional arrays
@@ -211,8 +225,11 @@ export class MeshUtils {
       // Decode the array
       const decodedArray = ArrayUtils.decodeArray(arrayData, arrayMetadata)
 
-      // Add the array to the result
-      result[arrayName] = decodedArray
+      // Create a temporary object with the new property
+      const tempObj = { [arrayName]: decodedArray }
+      
+      // Merge the temporary object with the result using Object.assign
+      Object.assign(result, tempObj)
     }
 
     return result

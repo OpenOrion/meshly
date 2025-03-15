@@ -1,4 +1,5 @@
 import { MeshoptEncoder, MeshoptDecoder } from 'meshoptimizer';
+import { beforeAll } from 'vitest';
 
 // Initialize meshoptimizer before running tests
 beforeAll(async () => {

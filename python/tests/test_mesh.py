@@ -11,7 +11,7 @@ import unittest
 from typing import Optional, List, Dict, Any
 from pydantic import Field, ValidationError
 
-from meshly import Mesh
+from meshly import Mesh, MeshUtils
 
 
 class TestPydanticMesh(unittest.TestCase):
@@ -81,24 +81,24 @@ class TestPydanticMesh(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
         
         # Test optimize_vertex_cache
-        mesh.optimize_vertex_cache()
+        MeshUtils.optimize_vertex_cache(mesh)
         self.assertEqual(mesh.vertex_count, len(self.vertices))
         self.assertEqual(mesh.index_count, len(self.indices))
         
         # Test optimize_overdraw
-        mesh.optimize_overdraw()
+        MeshUtils.optimize_overdraw(mesh)
         self.assertEqual(mesh.vertex_count, len(self.vertices))
         self.assertEqual(mesh.index_count, len(self.indices))
         
         # Test optimize_vertex_fetch
         original_vertex_count = mesh.vertex_count
-        mesh.optimize_vertex_fetch()
+        MeshUtils.optimize_vertex_fetch(mesh)
         self.assertLessEqual(mesh.vertex_count, original_vertex_count)
         self.assertEqual(mesh.index_count, len(self.indices))
         
         # Test simplify
         original_index_count = mesh.index_count
-        mesh.simplify(target_ratio=0.5)
+        MeshUtils.simplify(mesh, target_ratio=0.5)
         self.assertLessEqual(mesh.index_count, original_index_count)
 
 
@@ -222,10 +222,10 @@ class TestCustomMesh(unittest.TestCase):
         
         try:
             # Save the mesh to a zip file
-            mesh.save_to_zip(temp_path)
+            MeshUtils.save_to_zip(mesh, temp_path)
             
             # Load the mesh from the zip file
-            loaded_mesh = CustomMesh.load_from_zip(temp_path)
+            loaded_mesh = MeshUtils.load_from_zip(CustomMesh, temp_path)
             
             # Check that the loaded mesh has the correct attributes
             self.assertEqual(loaded_mesh.vertex_count, mesh.vertex_count)
@@ -251,24 +251,24 @@ class TestCustomMesh(unittest.TestCase):
         )
         
         # Test optimize_vertex_cache
-        mesh.optimize_vertex_cache()
+        MeshUtils.optimize_vertex_cache(mesh)
         self.assertEqual(mesh.vertex_count, len(self.vertices))
         self.assertEqual(mesh.index_count, len(self.indices))
         
         # Test optimize_overdraw
-        mesh.optimize_overdraw()
+        MeshUtils.optimize_overdraw(mesh)
         self.assertEqual(mesh.vertex_count, len(self.vertices))
         self.assertEqual(mesh.index_count, len(self.indices))
         
         # Test optimize_vertex_fetch
         original_vertex_count = mesh.vertex_count
-        mesh.optimize_vertex_fetch()
+        MeshUtils.optimize_vertex_fetch(mesh)
         self.assertLessEqual(mesh.vertex_count, original_vertex_count)
         self.assertEqual(mesh.index_count, len(self.indices))
         
         # Test simplify
         original_index_count = mesh.index_count
-        mesh.simplify(target_ratio=0.5)
+        MeshUtils.simplify(mesh, target_ratio=0.5)
         self.assertLessEqual(mesh.index_count, original_index_count)
 
 

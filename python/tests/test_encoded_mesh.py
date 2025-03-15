@@ -11,7 +11,7 @@ import unittest
 from typing import Optional, List
 from pydantic import Field
 
-from meshly import Mesh, EncodedMesh
+from meshly import Mesh, MeshUtils, EncodedMesh
 
 class TestEncodedMesh(unittest.TestCase):
     """Test EncodedMesh functionality."""
@@ -60,9 +60,9 @@ class TestEncodedMesh(unittest.TestCase):
         return triangles
     
     def test_mesh_encode_decode(self):
-        """Test that the Mesh.encode and Mesh.decode methods work."""
-        # Encode the mesh using the Mesh.encode method
-        encoded_data = self.mesh.encode()
+        """Test that the MeshUtils.encode and MeshUtils.decode methods work."""
+        # Encode the mesh using the MeshUtils.encode method
+        encoded_data = MeshUtils.encode(self.mesh)
         
         # Check that the encoded_data is a dictionary with 'mesh' and 'arrays' keys
         self.assertIsInstance(encoded_data, dict)
@@ -73,8 +73,8 @@ class TestEncodedMesh(unittest.TestCase):
         encoded_mesh = encoded_data['mesh']
         self.assertIsInstance(encoded_mesh, EncodedMesh)
         
-        # Decode the mesh using the Mesh.decode method
-        decoded_mesh = Mesh.decode(encoded_mesh)
+        # Decode the mesh using the MeshUtils.decode method
+        decoded_mesh = MeshUtils.decode(Mesh, encoded_mesh)
         
         # Check that the decoded vertices match the original
         np.testing.assert_array_almost_equal(self.mesh.vertices, decoded_mesh.vertices)
@@ -166,10 +166,10 @@ class TestCustomMesh(unittest.TestCase):
         
         try:
             # Save the mesh to a zip file
-            self.mesh.save_to_zip(temp_path)
+            MeshUtils.save_to_zip(self.mesh, temp_path)
             
             # Load the mesh from the zip file
-            loaded_mesh = CustomMesh.load_from_zip(temp_path)
+            loaded_mesh = MeshUtils.load_from_zip(CustomMesh, temp_path)
             
             # Check that the loaded mesh has the correct attributes
             self.assertEqual(loaded_mesh.vertex_count, self.mesh.vertex_count)

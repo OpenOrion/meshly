@@ -45,11 +45,11 @@ async function loadMeshFromURL(url: string) {
 You can also use the lower-level functions to extract and decode the mesh data:
 
 ```typescript
-import { extractMeshFromZip, convertToBufferGeometry } from 'meshly';
+import { loadMeshFromZip, convertToBufferGeometry } from 'meshly';
 
 async function loadMeshManually(zipData: ArrayBuffer) {
   // Extract the mesh data from the zip file
-  const decodedMesh = await extractMeshFromZip(zipData);
+  const decodedMesh = await loadMeshFromZip(zipData);
   
   // Convert the decoded mesh to a THREE.js geometry
   const geometry = convertToBufferGeometry(decodedMesh, {
@@ -78,7 +78,7 @@ Loads a mesh from a zip file and converts it to a THREE.js BufferGeometry.
 
 A Promise that resolves to a THREE.js BufferGeometry.
 
-### `extractMeshFromZip(zipData: ArrayBuffer): Promise<DecodedMesh>`
+### `loadMeshFromZip(zipData: ArrayBuffer): Promise<DecodedMesh>`
 
 Extracts and decodes a mesh from a zip file.
 

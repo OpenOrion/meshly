@@ -1,12 +1,12 @@
 """
-Tests for the arrayutils module.
+Tests for the array utility functions.
 """
 import unittest
 import numpy as np
-from meshly.arrayutils import encode_array, decode_array
+from meshly import ArrayUtils
 
 class TestArrayUtils(unittest.TestCase):
-    """Test cases for the arrayutils module."""
+    """Test cases for the array utility functions."""
     
     def setUp(self):
         """Set up test data."""
@@ -18,8 +18,8 @@ class TestArrayUtils(unittest.TestCase):
     
     def test_encode_decode_array_1d(self):
         """Test encoding and decoding a 1D array."""
-        encoded = encode_array(self.array_1d)
-        decoded = decode_array(encoded)
+        encoded = ArrayUtils.encode_array(self.array_1d)
+        decoded = ArrayUtils.decode_array(encoded)
         
         # Check that the decoded array matches the original
         np.testing.assert_allclose(decoded, self.array_1d, rtol=1e-5)
@@ -32,8 +32,8 @@ class TestArrayUtils(unittest.TestCase):
     
     def test_encode_decode_array_2d(self):
         """Test encoding and decoding a 2D array."""
-        encoded = encode_array(self.array_2d)
-        decoded = decode_array(encoded)
+        encoded = ArrayUtils.encode_array(self.array_2d)
+        decoded = ArrayUtils.decode_array(encoded)
         
         # Check that the decoded array matches the original
         np.testing.assert_allclose(decoded, self.array_2d, rtol=1e-5)
@@ -41,13 +41,11 @@ class TestArrayUtils(unittest.TestCase):
         # Check that the encoded data is smaller than the original
         self.assertLess(len(encoded.data), self.array_2d.nbytes)
         
-        # Print compression ratio
-        print(f"2D array compression ratio: {len(encoded.data) / self.array_2d.nbytes:.2f}")
     
     def test_encode_decode_array_3d(self):
         """Test encoding and decoding a 3D array."""
-        encoded = encode_array(self.array_3d)
-        decoded = decode_array(encoded)
+        encoded = ArrayUtils.encode_array(self.array_3d)
+        decoded = ArrayUtils.decode_array(encoded)
         
         # Check that the decoded array matches the original
         np.testing.assert_allclose(decoded, self.array_3d, rtol=1e-5)
@@ -60,8 +58,8 @@ class TestArrayUtils(unittest.TestCase):
     
     def test_encode_decode_array_int(self):
         """Test encoding and decoding an integer array."""
-        encoded = encode_array(self.array_int)
-        decoded = decode_array(encoded)
+        encoded = ArrayUtils.encode_array(self.array_int)
+        decoded = ArrayUtils.decode_array(encoded)
         
         # Check that the decoded array matches the original
         np.testing.assert_allclose(decoded, self.array_int, rtol=1e-5)

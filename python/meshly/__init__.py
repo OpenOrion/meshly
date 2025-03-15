@@ -4,27 +4,27 @@ High-level export functionality for meshoptimizer.
 This package provides high-level abstractions and utilities for working with
 meshoptimizer, including:
 
-1. Mesh class as a Pydantic base class for representing and optimizing 3D meshes
-2. EncodedMesh class for storing encoded mesh data
-3. I/O utilities for storing and loading meshes and arrays
-4. Support for custom Mesh subclasses with automatic encoding/decoding of numpy arrays
+1. Mesh class as a Pydantic base class for representing 3D meshes
+2. MeshUtils class for mesh optimization and encoding/decoding operations
+3. ArrayUtils class for array encoding/decoding operations
+4. EncodedMesh class for storing encoded mesh data
+5. I/O utilities for storing and loading meshes and arrays
+6. Support for custom Mesh subclasses with automatic encoding/decoding of numpy arrays
 """
 
 from .mesh import (
     Mesh,
-    EncodedMesh,
+    MeshUtils,
 )
 
-from .arrayutils import (
+from .array import (
     EncodedArray,
-    encode_array,
-    decode_array,
+    ArrayUtils,
 )
 
 from .models import (
-    EncodedMeshModel,
+    EncodedMesh,
     EncodedArrayModel,
-    EncodedMeshData,
     ArrayMetadata,
     MeshMetadata,
     ModelData,
@@ -34,20 +34,17 @@ from .models import (
 
 __all__ = [
     # Mesh classes
-    'Mesh',
-    'EncodedMesh',
-
+    "Mesh",
+    "MeshUtils",
+    "EncodedMesh",
     # Array utilities
-    'EncodedArray',
-    'encode_array',
-    'decode_array',
-    
+    "EncodedArray",
+    "ArrayUtils",
     # Pydantic models
-    'EncodedMeshModel',
-    'EncodedArrayModel',
-    'EncodedMeshData',
-    'ArrayMetadata',
-    'MeshMetadata',
-    'ModelData',
-    'MeshFileMetadata',
+    "EncodedMesh",
+    "EncodedArrayModel",
+    "ArrayMetadata",
+    "MeshMetadata",
+    "ModelData",
+    "MeshFileMetadata",
 ]

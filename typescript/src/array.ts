@@ -49,6 +49,10 @@ export class ArrayUtils {
   static encodeArray(data: Float32Array): EncodedArray {
     const sourceUint8Array = new Uint8Array(data.buffer)
 
+    if (!(data instanceof Float32Array)) {
+      throw new Error('Array must be a Float32Array');
+    }
+
     const metadata = {
       shape: [data.length],
       dtype: 'float32',

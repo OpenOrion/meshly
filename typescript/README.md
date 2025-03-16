@@ -59,6 +59,40 @@ async function loadMeshManually(zipData: ArrayBuffer) {
 }
 ```
 
+### Encoding and Decoding Meshes
+
+You can use the `encode` and `decode` functions to encode and decode meshes directly:
+
+```typescript
+import { MeshUtils, Mesh, EncodedMesh } from 'meshly';
+
+// Create a mesh with vertices, indices, and additional arrays
+const mesh: Mesh = {
+  vertices: new Float32Array([
+    -0.5, -0.5, -0.5,
+    0.5, -0.5, -0.5,
+    0.5, 0.5, -0.5,
+    -0.5, 0.5, -0.5
+  ]),
+  indices: new Uint32Array([0, 1, 2, 2, 3, 0]),
+  normals: new Float32Array([
+    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1
+  ])
+};
+
+// Encode the mesh
+const encodedMesh: EncodedMesh = MeshUtils.encode(mesh);
+console.log(`Encoded vertices size: ${encodedMesh.vertices.byteLength} bytes`);
+console.log(`Encoded indices size: ${encodedMesh.indices?.byteLength} bytes`);
+console.log(`Additional arrays: ${Object.keys(encodedMesh.arrays || {})}`);
+
+// Decode the mesh
+const decodedMesh = MeshUtils.decode(null, encodedMesh);
+console.log(`Decoded vertices: ${decodedMesh.vertices.length} elements`);
+console.log(`Decoded indices: ${decodedMesh.indices?.length} elements`);
+console.log(`Decoded normals: ${decodedMesh.normals?.length} elements`);
+```
+
 ### Array Utilities
 
 The library also provides utilities for working with arrays:
@@ -141,19 +175,31 @@ Decodes a vertex buffer using the meshoptimizer algorithm.
 
 Decoded vertex buffer as a Float32Array.
 
-#### `MeshUtils.decodeIndexBuffer(indexCount: number, indexSize: number, data: Uint8Array): Uint32Array`
+#### `MeshUtils.encode(mesh: Mesh): EncodedMesh`
 
-Decodes an index buffer using the meshoptimizer algorithm.
+Encodes a mesh for efficient transmission. This function encodes the mesh's vertices, indices, and any additional arrays.
 
 ##### Parameters
 
-- `indexCount`: Number of indices
-- `indexSize`: Size of each index in bytes
-- `data`: Encoded index buffer
+- `mesh`: The mesh to encode
 
 ##### Returns
 
-Decoded index buffer as a Uint32Array.
+An EncodedMesh object containing the encoded vertices, indices, and arrays.
+
+#### `MeshUtils.decode(MeshClass: any, encodedMesh: EncodedMesh): Mesh`
+
+Decodes an encoded mesh. This function decodes the mesh's vertices, indices, and any additional arrays.
+
+##### Parameters
+
+- `MeshClass`: The mesh class constructor (not used in TypeScript version, included for API compatibility with Python)
+- `encodedMesh`: The EncodedMesh object to decode
+
+##### Returns
+
+A decoded Mesh object.
+
 
 ### ArrayUtils
 

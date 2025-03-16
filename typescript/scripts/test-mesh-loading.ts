@@ -47,13 +47,16 @@ async function testMeshLoading() {
       const zipData = fs.readFileSync(file)
 
       // Load the mesh
-      const geometry = await MeshUtils.loadZipAsBufferGeometry(zipData.buffer, options)
       const mesh = await MeshUtils.loadMeshFromZip<Mesh>(zipData.buffer)
+      const geometry = await MeshUtils.loadZipAsBufferGeometry(zipData.buffer)
 
       // Check if the geometry is valid
       if (!geometry.getAttribute('position')) {
         throw new Error('Geometry does not have position attribute')
       }
+      
+      // Debug geometry attributes
+      console.log(`Geometry attributes: ${Object.keys(geometry.attributes).join(', ')}`)
       // Log success
       process.stdout.write('✓\n')
       results.success++

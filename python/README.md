@@ -113,15 +113,19 @@ mesh.optimize_vertex_fetch()
 mesh.simplify(target_ratio=0.8)  # Keep 80% of triangles
 
 # Encode the mesh (includes all numpy array attributes automatically)
-encoded_data = mesh.encode()
-print(f"Encoded mesh: {len(encoded_data['mesh'].vertices)} bytes for vertices")
-print(f"Encoded arrays: {list(encoded_data['arrays'].keys())}")
+encoded_mesh = mesh.encode()
+print(f"Encoded mesh: {len(encoded_mesh.vertices)} bytes for vertices")
+print(f"Encoded arrays: {list(encoded_mesh.arrays.keys())}")
 
-# Save the mesh to a zip file
+# You can also decode the mesh directly
+decoded_mesh = MeshUtils.decode(TexturedMesh, encoded_mesh)
+print(f"Decoded mesh has {decoded_mesh.vertex_count} vertices")
+
+# Save the mesh to a zip file (uses encode internally)
 zip_path = "textured_cube.zip"
 mesh.save_to_zip(zip_path)
 
-# Load the mesh from the zip file
+# Load the mesh from the zip file (uses decode internally)
 loaded_mesh = TexturedMesh.load_from_zip(zip_path)
 
 # Use the loaded mesh
@@ -183,6 +187,39 @@ Benefits of custom mesh subclasses:
 - Type checking and conversion (e.g., arrays are automatically converted to the correct dtype)
 - Automatic encoding/decoding of all numpy array attributes
 - Preservation of non-array attributes during serialization/deserialization
+
+## Encoding and Decoding
+
+The package provides a clean separation between encoding/decoding and file I/O operations:
+
+### Direct Encoding and Decoding
+
+```python
+from meshly import Mesh, MeshUtils
+
+# Create a mesh
+mesh = Mesh(vertices=vertices, indices=indices)
+
+# Encode the mesh
+encoded_mesh = MeshUtils.encode(mesh)
+
+# Decode the mesh
+decoded_mesh = MeshUtils.decode(Mesh, encoded_mesh)
+```
+
+### File I/O Using Encode and Decode
+
+The `save_to_zip` and `load_from_zip` methods use the `encode` and `decode` functions internally:
+
+```python
+# Save to zip (uses encode internally)
+mesh.save_to_zip("mesh.zip")
+
+# Load from zip (uses decode internally)
+loaded_mesh = Mesh.load_from_zip("mesh.zip")
+```
+
+This separation of concerns makes the code more maintainable and allows for more flexibility in how you work with encoded mesh data.
 
 ## Integration with Other Tools
 

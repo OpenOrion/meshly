@@ -1,3 +1,3 @@
 numpy>=1.19.0
-meshoptimizer==0.2.20a4
+meshoptimizer==0.2.20a5
 pydantic>=2.0.0

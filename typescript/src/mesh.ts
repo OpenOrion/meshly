@@ -1,7 +1,7 @@
 import JSZip from 'jszip'
-import { MeshoptDecoder } from "meshoptimizer"
+import { MeshoptDecoder, MeshoptEncoder } from "meshoptimizer"
 import * as THREE from 'three'
-import { ArrayMetadata, ArrayUtils } from './array'
+import { ArrayMetadata, ArrayUtils, EncodedArray } from './array'
 
 
 /**
@@ -98,54 +98,136 @@ export interface EncodedMesh {
    * Size of each index in bytes
    */
   index_size: number
+
+  /**
+   * Dictionary of additional encoded arrays
+   */
+  arrays?: Record<string, EncodedArray>
 }
 
 /**
  * Utility class for mesh operations
  */
 export class MeshUtils {
-  /**
-   * Decodes a vertex buffer using the meshoptimizer algorithm
-   * 
-   * @param vertexCount Number of vertices
-   * @param vertexSize Size of each vertex in bytes
-   * @param data Encoded vertex buffer
-   * @returns Decoded vertex buffer as a Float32Array
-   */
-  static decodeVertexBuffer(vertexCount: number, vertexSize: number, data: Uint8Array): Float32Array {
-    // Create the output buffer
-    const destUint8Array = new Uint8Array(vertexCount * vertexSize)
 
-    MeshoptDecoder.decodeVertexBuffer(
-      destUint8Array,
+  /**
+   * Encode a mesh for efficient transmission
+   *
+   * @param mesh The mesh to encode
+   * @returns EncodedMesh object with encoded vertices, indices, and arrays
+   */
+  static encode(mesh: Mesh): EncodedMesh {
+
+    if (!(mesh.vertices instanceof Float32Array)) {
+      throw new Error('Array must be a Float32Array')
+    }
+    const vertexCount = mesh.vertices.length / 3
+    const vertexSize = 4 * 3 // 4 bytes per float, 3 floats per vertex
+    const encodedVertices = MeshoptEncoder.encodeVertexBuffer(
+      new Uint8Array(mesh.vertices.buffer),
       vertexCount,
-      vertexSize,
-      data
+      vertexSize
     )
 
-    return new Float32Array(destUint8Array.buffer)
+    if ((!mesh.indices || mesh.indices instanceof Int32Array)) {
+      throw new Error('Array must be a Float32Array')
+    }
+
+    // Encode index buffer if present
+    let encodedIndices: Uint8Array | undefined
+    let indexCount: number | null = null
+    const indexSize = 4 // 4 bytes per index (Uint32Array)
+    if (mesh.indices) {
+      indexCount = mesh.indices.length
+      encodedIndices = MeshoptEncoder.encodeIndexSequence(
+        new Uint8Array(mesh.indices.buffer),
+        indexCount,
+        indexSize
+      )
+
+    }
+
+    // Encode additional arrays
+    const encodedArrays: Record<string, EncodedArray> = {}
+
+    // Encode all additional Float32Array properties
+    for (const key in mesh) {
+      if (key !== 'vertices' && key !== 'indices' && mesh[key] instanceof Float32Array) {
+        encodedArrays[key] = ArrayUtils.encodeArray(mesh[key])
+      }
+    }
+
+    // Create and return the encoded mesh
+    return {
+      vertices: encodedVertices,
+      indices: encodedIndices,
+      vertex_count: vertexCount,
+      vertex_size: vertexSize,
+      index_count: indexCount,
+      index_size: indexSize,
+      arrays: encodedArrays
+    }
   }
 
   /**
-   * Decodes an index buffer using the meshoptimizer algorithm
-   * 
-   * @param indexCount Number of indices
-   * @param indexSize Size of each index in bytes
-   * @param data Encoded index buffer
-   * @returns Decoded index buffer as a Uint32Array
+   * Decode an encoded mesh
+   *
+   * @param MeshClass The mesh class constructor (not used in TypeScript version, included for API compatibility)
+   * @param encodedMesh EncodedMesh object to decode
+   * @returns Decoded Mesh object
    */
-  static decodeIndexBuffer(indexCount: number, indexSize: number, data: Uint8Array): Uint32Array {
+  static decode<MeshType extends Mesh>(encodedMesh: EncodedMesh): MeshType {
+
     // Create the output buffer
-    const destUint8Array = new Uint8Array(indexCount * indexSize)
-
-    MeshoptDecoder.decodeIndexBuffer(
-      destUint8Array,
-      indexCount,
-      indexSize,
-      data
+    const verticesUint8 = new Uint8Array(encodedMesh.vertex_count * encodedMesh.vertex_size)
+    MeshoptDecoder.decodeVertexBuffer(
+      verticesUint8,
+      encodedMesh.vertex_count,
+      encodedMesh.vertex_size,
+      encodedMesh.vertices
     )
+    const vertices = new Float32Array(verticesUint8.buffer)
 
-    return new Uint32Array(destUint8Array.buffer)
+
+
+    // Decode index buffer if present
+    let indices: Uint32Array | undefined
+    if (encodedMesh.indices && encodedMesh.index_count) {
+      const indicesUint8 = new Uint8Array(encodedMesh.index_count * encodedMesh.index_size)
+      MeshoptDecoder.decodeIndexSequence(
+        indicesUint8,
+        encodedMesh.index_count,
+        encodedMesh.index_size,
+        encodedMesh.indices
+      )
+      indices = new Uint32Array(indicesUint8.buffer)
+    }
+
+
+    // Create the result object
+    const result = {
+      vertices,
+      indices
+    } as MeshType
+
+    // Decode additional arrays if present
+    if (encodedMesh.arrays) {
+      for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
+        const decodedArray = ArrayUtils.decodeArray(
+          encodedArray.data,
+          {
+            shape: encodedArray.shape,
+            dtype: encodedArray.dtype,
+            itemsize: encodedArray.itemsize
+          }
+        )
+
+        // Add the decoded array to the result
+        Object.assign(result, { [name]: decodedArray })
+      }
+    }
+
+    return result
   }
 
   /**
@@ -168,41 +250,21 @@ export class MeshUtils {
     // Get mesh size metadata
     const meshSize: MeshSize = metadata.mesh_size
 
-
     // Extract the vertex data
     const vertexData = await zip.file('mesh/vertices.bin')?.async('uint8array')
     if (!vertexData) {
       throw new Error('Vertex data not found in zip file')
     }
 
-    // Decode the vertex data
-    const vertices = MeshUtils.decodeVertexBuffer(
-      meshSize.vertex_count,
-      meshSize.vertex_size,
-      vertexData
-    )
-
-    // Extract and decode the index data if it exists
-    let indices: Uint32Array | undefined
+    // Extract the index data if present
+    let indexData: Uint8Array | undefined
     if (meshSize.index_count !== null) {
-      const indexData = await zip.file('mesh/indices.bin')?.async('uint8array')
-      if (indexData) {
-        indices = MeshUtils.decodeIndexBuffer(
-          meshSize.index_count,
-          meshSize.index_size,
-          indexData
-        )
-      }
+      indexData = await zip.file('mesh/indices.bin')?.async('uint8array') || undefined
     }
 
-    // Create the result object
-    const result: MeshType = {
-      vertices,
-      indices,
-      ...(metadata.field_data || {})
-    }
 
-    // Extract and decode additional arrays
+    // Extract additional arrays
+    const arrays: Record<string, EncodedArray> = {}
     const arrayFiles = zip.files ? Object.keys(zip.files)
       .filter(name => name.startsWith('arrays/') && name.endsWith('.bin'))
       .map(name => name.split('/')[1].split('.')[0]) : []
@@ -222,14 +284,32 @@ export class MeshUtils {
         continue
       }
 
-      // Decode the array
-      const decodedArray = ArrayUtils.decodeArray(arrayData, arrayMetadata)
+      // Add the encoded array
+      arrays[arrayName] = {
+        data: arrayData,
+        shape: arrayMetadata.shape,
+        dtype: arrayMetadata.dtype,
+        itemsize: arrayMetadata.itemsize
+      }
+    }
 
-      // Create a temporary object with the new property
-      const tempObj = { [arrayName]: decodedArray }
-      
-      // Merge the temporary object with the result using Object.assign
-      Object.assign(result, tempObj)
+    // Create the EncodedMesh object with all collected data
+    const encodedMesh: EncodedMesh = {
+      vertices: vertexData,
+      vertex_count: meshSize.vertex_count,
+      vertex_size: meshSize.vertex_size,
+      index_count: meshSize.index_count,
+      index_size: meshSize.index_size,
+      indices: indexData,
+      arrays: Object.keys(arrays).length > 0 ? arrays : undefined
+    }
+
+    // Decode the mesh using our decode function
+    const result = MeshUtils.decode<MeshType>(encodedMesh)
+
+    // Add any additional field data from the metadata
+    if (metadata.field_data) {
+      Object.assign(result, metadata.field_data)
     }
 
     return result
@@ -251,7 +331,7 @@ export class MeshUtils {
     // Set default options
     const opts = {
       normalize: false,
-      computeNormals: true,
+      computeNormals: false,
       ...options
     }
 

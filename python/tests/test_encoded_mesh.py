@@ -62,15 +62,9 @@ class TestEncodedMesh(unittest.TestCase):
     def test_mesh_encode_decode(self):
         """Test that the MeshUtils.encode and MeshUtils.decode methods work."""
         # Encode the mesh using the MeshUtils.encode method
-        encoded_data = MeshUtils.encode(self.mesh)
-        
-        # Check that the encoded_data is a dictionary with 'mesh' and 'arrays' keys
-        self.assertIsInstance(encoded_data, dict)
-        self.assertIn('mesh', encoded_data)
-        self.assertIn('arrays', encoded_data)
+        encoded_mesh = MeshUtils.encode(self.mesh)
         
         # Check that the encoded_mesh is an instance of EncodedMesh
-        encoded_mesh = encoded_data['mesh']
         self.assertIsInstance(encoded_mesh, EncodedMesh)
         
         # Decode the mesh using the MeshUtils.decode method

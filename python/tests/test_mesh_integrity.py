@@ -61,10 +61,10 @@ class TestMeshIntegrity(unittest.TestCase):
         original_triangles = self.get_triangles_set(self.mesh.vertices, self.mesh.indices)
         
         # Encode the mesh
-        encoded_data = MeshUtils.encode(self.mesh)
+        encoded_mesh = MeshUtils.encode(self.mesh)
         
         # Decode the mesh
-        decoded_mesh = MeshUtils.decode(Mesh, encoded_data['mesh'])
+        decoded_mesh = MeshUtils.decode(Mesh, encoded_mesh)
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
@@ -86,10 +86,10 @@ class TestMeshIntegrity(unittest.TestCase):
         optimized_triangles = self.get_triangles_set(optimized_mesh.vertices, optimized_mesh.indices)
         
         # Encode the optimized mesh
-        encoded_data = MeshUtils.encode(optimized_mesh)
+        encoded_mesh = MeshUtils.encode(optimized_mesh)
         
         # Decode the mesh
-        decoded_mesh = MeshUtils.decode(Mesh, encoded_data['mesh'])
+        decoded_mesh = MeshUtils.decode(Mesh, encoded_mesh)
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
@@ -145,10 +145,10 @@ class TestMeshIntegrity(unittest.TestCase):
         simplified_triangles = self.get_triangles_set(simplified_mesh.vertices, simplified_mesh.indices)
         
         # Encode the simplified mesh
-        encoded_data = MeshUtils.encode(simplified_mesh)
+        encoded_mesh = MeshUtils.encode(simplified_mesh)
         
         # Decode the mesh
-        decoded_mesh = MeshUtils.decode(Mesh, encoded_data['mesh'])
+        decoded_mesh = MeshUtils.decode(Mesh, encoded_mesh)
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
@@ -162,10 +162,10 @@ class TestMeshIntegrity(unittest.TestCase):
         original_triangles = self.get_triangles_set(self.mesh.vertices, self.mesh.indices)
         
         # Encode the mesh
-        encoded_data = MeshUtils.encode(self.mesh)
+        encoded_mesh = MeshUtils.encode(self.mesh)
         
         # Decode the mesh
-        decoded_mesh = MeshUtils.decode(Mesh, encoded_data['mesh'])
+        decoded_mesh = MeshUtils.decode(Mesh, encoded_mesh)
         
         # Get the decoded triangles
         decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)

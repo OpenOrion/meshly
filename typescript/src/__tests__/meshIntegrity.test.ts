@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { Mesh, EncodedMesh } from '../mesh';
 import { MeshUtils } from '../mesh';
 import * as THREE from 'three';
-import { MeshoptEncoder, MeshoptDecoder } from 'meshoptimizer';
+import { MeshoptEncoder } from 'meshoptimizer';
 
 describe('MeshIntegrity', () => {
   let vertices: Float32Array;
@@ -86,52 +86,9 @@ describe('MeshIntegrity', () => {
     // Get the original triangles
     const originalTriangles = getTrianglesSet(mesh.vertices, mesh.indices!);
     
-    // Create an encoded mesh
-    const vertexCount = mesh.vertices.length / 3;
-    const vertexSize = 3 * 4; // 3 floats * 4 bytes per float
-    
-    // Encode the vertex buffer
-    const encodedVertices = MeshoptEncoder.encodeVertexBuffer(
-      new Uint8Array(mesh.vertices.buffer),
-      vertexCount,
-      vertexSize
-    );
-    
-    // Encode the index buffer
-    const encodedIndices = MeshoptEncoder.encodeIndexBuffer(
-      new Uint8Array(mesh.indices!.buffer),
-      mesh.indices!.length,
-      4 // 4 bytes per index (Uint32Array)
-    );
-    
-    // Create the encoded mesh
-    const encodedMesh: EncodedMesh = {
-      vertices: encodedVertices,
-      indices: encodedIndices,
-      vertex_count: vertexCount,
-      vertex_size: vertexSize,
-      index_count: mesh.indices!.length,
-      index_size: 4
-    };
-    
+    const encodedMesh = MeshUtils.encode(mesh);
     // Decode the mesh
-    const decodedVertices = MeshUtils.decodeVertexBuffer(
-      encodedMesh.vertex_count,
-      encodedMesh.vertex_size,
-      encodedMesh.vertices
-    );
-    
-    const decodedIndices = MeshUtils.decodeIndexBuffer(
-      encodedMesh.index_count!,
-      encodedMesh.index_size,
-      encodedMesh.indices!
-    );
-    
-    const decodedMesh: Mesh = {
-      vertices: decodedVertices,
-      indices: decodedIndices
-    };
-    
+    const decodedMesh = MeshUtils.decode(encodedMesh);
     // Get the decoded triangles
     const decodedTriangles = getTrianglesSet(decodedMesh.vertices, decodedMesh.indices!);
     

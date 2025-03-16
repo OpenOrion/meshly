@@ -28,9 +28,9 @@ from pydantic import BaseModel, Field, model_validator
 from meshoptimizer import (
     # Encoder functions
     encode_vertex_buffer,
-    encode_index_buffer,
+    encode_index_sequence,
     decode_vertex_buffer,
-    decode_index_buffer,
+    decode_index_sequence,
     optimize_vertex_cache,
     optimize_overdraw,
     optimize_vertex_fetch,
@@ -61,6 +61,9 @@ class EncodedMesh(BaseModel):
     vertex_size: int = Field(..., description="Size of each vertex in bytes")
     index_count: Optional[int] = Field(None, description="Number of indices (optional)")
     index_size: int = Field(..., description="Size of each index in bytes")
+    arrays: Dict[str, EncodedArray] = Field(
+        default_factory=dict, description="Dictionary of additional encoded arrays"
+    )
 
     class Config:
         """Pydantic configuration."""
@@ -111,6 +114,27 @@ class Mesh(BaseModel):
     indices: Optional[np.ndarray] = Field(
         None, description="Index data as a numpy array"
     )
+    
+    def copy(self: T) -> T:
+        """
+        Create a deep copy of the mesh.
+        
+        Returns:
+            A new mesh instance with copied data
+        """
+        # Create a dictionary to hold the copied fields
+        copied_fields = {}
+        
+        # Copy all fields, with special handling for numpy arrays
+        for field_name in self.model_fields_set:
+            value = getattr(self, field_name)
+            if isinstance(value, np.ndarray):
+                copied_fields[field_name] = value.copy()
+            else:
+                copied_fields[field_name] = value
+                
+        # Create a new instance of the same class
+        return self.__class__(**copied_fields)
 
     @property
     def vertex_count(self) -> int:
@@ -127,7 +151,7 @@ class Mesh(BaseModel):
         """Identify all numpy array fields in this class."""
         result = set()
         type_hints = get_type_hints(self.__class__)
-        
+
         # Find all fields that are numpy arrays
         for field_name, field_type in type_hints.items():
             if field_name in self.__private_attributes__:
@@ -139,10 +163,14 @@ class Mesh(BaseModel):
             except AttributeError:
                 # Skip attributes that don't exist
                 pass
-        
+
         return result
+
     class Config:
         arbitrary_types_allowed = True
+
+
+
     @model_validator(mode="after")
     def validate_arrays(self) -> "Mesh":
         """Validate and convert arrays to the correct types."""
@@ -171,18 +199,21 @@ class MeshUtils:
             mesh: The mesh to optimize
 
         Returns:
-            The optimized mesh
+            A new optimized mesh, original mesh is unchanged
         """
         if mesh.indices is None:
             raise ValueError("Mesh has no indices to optimize")
 
-        optimized_indices = np.zeros_like(mesh.indices)
+        # Create a copy of the mesh
+        result_mesh = mesh.copy()
+        
+        optimized_indices = np.zeros_like(result_mesh.indices)
         optimize_vertex_cache(
-            optimized_indices, mesh.indices, mesh.index_count, mesh.vertex_count
+            optimized_indices, result_mesh.indices, result_mesh.index_count, result_mesh.vertex_count
         )
 
-        mesh.indices = optimized_indices
-        return mesh
+        result_mesh.indices = optimized_indices
+        return result_mesh
 
     @staticmethod
     def optimize_overdraw(mesh: Mesh, threshold: float = 1.05) -> Mesh:
@@ -194,24 +225,27 @@ class MeshUtils:
             threshold: threshold for optimization (default: 1.05)
 
         Returns:
-            The optimized mesh
+            A new optimized mesh, original mesh is unchanged
         """
         if mesh.indices is None:
             raise ValueError("Mesh has no indices to optimize")
 
-        optimized_indices = np.zeros_like(mesh.indices)
+        # Create a copy of the mesh
+        result_mesh = mesh.copy()
+        
+        optimized_indices = np.zeros_like(result_mesh.indices)
         optimize_overdraw(
             optimized_indices,
-            mesh.indices,
-            mesh.vertices,
-            mesh.index_count,
-            mesh.vertex_count,
-            mesh.vertices.itemsize * mesh.vertices.shape[1],
+            result_mesh.indices,
+            result_mesh.vertices,
+            result_mesh.index_count,
+            result_mesh.vertex_count,
+            result_mesh.vertices.itemsize * result_mesh.vertices.shape[1],
             threshold,
         )
 
-        mesh.indices = optimized_indices
-        return mesh
+        result_mesh.indices = optimized_indices
+        return result_mesh
 
     @staticmethod
     def optimize_vertex_fetch(mesh: Mesh) -> Mesh:
@@ -222,24 +256,27 @@ class MeshUtils:
             mesh: The mesh to optimize
 
         Returns:
-            The optimized mesh
+            A new optimized mesh, original mesh is unchanged
         """
         if mesh.indices is None:
             raise ValueError("Mesh has no indices to optimize")
 
-        optimized_vertices = np.zeros_like(mesh.vertices)
+        # Create a copy of the mesh
+        result_mesh = mesh.copy()
+        
+        optimized_vertices = np.zeros_like(result_mesh.vertices)
         unique_vertex_count = optimize_vertex_fetch(
             optimized_vertices,
-            mesh.indices,
-            mesh.vertices,
-            mesh.index_count,
-            mesh.vertex_count,
-            mesh.vertices.itemsize * mesh.vertices.shape[1],
+            result_mesh.indices,
+            result_mesh.vertices,
+            result_mesh.index_count,
+            result_mesh.vertex_count,
+            result_mesh.vertices.itemsize * result_mesh.vertices.shape[1],
         )
 
-        mesh.vertices = optimized_vertices[:unique_vertex_count]
+        result_mesh.vertices = optimized_vertices[:unique_vertex_count]
         # No need to update vertex_count as it's calculated on-the-fly
-        return mesh
+        return result_mesh
 
     @staticmethod
     def simplify(
@@ -258,34 +295,37 @@ class MeshUtils:
             options: simplification options (default: 0)
 
         Returns:
-            The simplified mesh
+            A new simplified mesh, original mesh is unchanged
         """
         if mesh.indices is None:
             raise ValueError("Mesh has no indices to simplify")
 
-        target_index_count = int(mesh.index_count * target_ratio)
-        simplified_indices = np.zeros(mesh.index_count, dtype=np.uint32)
+        # Create a copy of the mesh
+        result_mesh = mesh.copy()
+        
+        target_index_count = int(result_mesh.index_count * target_ratio)
+        simplified_indices = np.zeros(result_mesh.index_count, dtype=np.uint32)
 
         result_error = np.array([0.0], dtype=np.float32)
         new_index_count = simplify(
             simplified_indices,
-            mesh.indices,
-            mesh.vertices,
-            mesh.index_count,
-            mesh.vertex_count,
-            mesh.vertices.itemsize * mesh.vertices.shape[1],
+            result_mesh.indices,
+            result_mesh.vertices,
+            result_mesh.index_count,
+            result_mesh.vertex_count,
+            result_mesh.vertices.itemsize * result_mesh.vertices.shape[1],
             target_index_count,
             target_error,
             options,
             result_error,
         )
 
-        mesh.indices = simplified_indices[:new_index_count]
+        result_mesh.indices = simplified_indices[:new_index_count]
         # No need to update index_count as it's calculated on-the-fly
-        return mesh
+        return result_mesh
 
     @staticmethod
-    def encode(mesh: Mesh) -> Dict[str, Union[EncodedMesh, Dict[str, EncodedArray]]]:
+    def encode(mesh: Mesh):
         """
         Encode the mesh and all numpy array fields for efficient transmission.
 
@@ -307,19 +347,9 @@ class MeshUtils:
         # Encode index buffer if present
         encoded_indices = None
         if mesh.indices is not None:
-            encoded_indices = encode_index_buffer(
-                mesh.indices, mesh.index_count, mesh.indices.itemsize
+            encoded_indices = encode_index_sequence(
+                mesh.indices, mesh.index_count, mesh.vertex_count
             )
-
-        # Create encoded mesh
-        encoded_mesh = EncodedMesh(
-            vertices=encoded_vertices,
-            indices=encoded_indices,
-            vertex_count=mesh.vertex_count,
-            vertex_size=mesh.vertices.itemsize * mesh.vertices.shape[1],
-            index_count=mesh.index_count if mesh.indices is not None else None,
-            index_size=mesh.indices.itemsize if mesh.indices is not None else 4,
-        )
 
         # Encode additional array fields
         encoded_arrays = {}
@@ -335,7 +365,16 @@ class MeshUtils:
                 # Skip attributes that don't exist
                 pass
 
-        return {"mesh": encoded_mesh, "arrays": encoded_arrays}
+        # Create encoded mesh
+        return EncodedMesh(
+            vertices=encoded_vertices,
+            indices=encoded_indices,
+            vertex_count=mesh.vertex_count,
+            vertex_size=mesh.vertices.itemsize * mesh.vertices.shape[1],
+            index_count=mesh.index_count if mesh.indices is not None else None,
+            index_size=mesh.indices.itemsize if mesh.indices is not None else 4,
+            arrays=encoded_arrays,
+        )
 
     @staticmethod
     def save_to_zip(mesh: Mesh, source: Union[PathLike, BytesIO]) -> None:
@@ -346,9 +385,7 @@ class MeshUtils:
             mesh: The mesh to save
             source: Path to the output zip file
         """
-        encoded_data = MeshUtils.encode(mesh)
-        encoded_mesh = encoded_data["mesh"]
-        encoded_arrays = encoded_data["arrays"]
+        encoded_mesh = MeshUtils.encode(mesh)
 
         # Add model fields that aren't numpy arrays
         model_data = {}
@@ -356,8 +393,7 @@ class MeshUtils:
             if field_name not in mesh.array_fields:
                 model_data[field_name] = field_value
 
-
-        with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as zipf:
+        with zipfile.ZipFile(source, "w") as zipf:
             # Save mesh data
             zipf.writestr("mesh/vertices.bin", encoded_mesh.vertices)
             if encoded_mesh.indices is not None:
@@ -376,11 +412,11 @@ class MeshUtils:
                 class_name=mesh.__class__.__name__,
                 module_name=mesh.__class__.__module__,
                 mesh_size=mesh_size,
-                field_data=model_data
+                field_data=model_data,
             )
 
             # Save array data
-            for name, encoded_array in encoded_arrays.items():
+            for name, encoded_array in encoded_mesh.arrays.items():
                 zipf.writestr(f"arrays/{name}.bin", encoded_array.data)
 
                 # Save array metadata
@@ -447,28 +483,10 @@ class MeshUtils:
                 vertex_size=mesh_size.vertex_size,
                 index_count=mesh_size.index_count,
                 index_size=mesh_size.index_size,
+                arrays={},  # Will be populated below
             )
-
-            # Decode mesh data
-            vertices = decode_vertex_buffer(
-                encoded_mesh.vertex_count,
-                encoded_mesh.vertex_size,
-                encoded_mesh.vertices,
-            )
-
-            indices = None
-            if (
-                encoded_mesh.indices is not None
-                and encoded_mesh.index_count is not None
-            ):
-                indices = decode_index_buffer(
-                    encoded_mesh.index_count,
-                    encoded_mesh.index_size,
-                    encoded_mesh.indices,
-                )
 
             # Load additional array data
-            arrays = {}
             for array_file_name in [
                 file_name
                 for file_name in zipf.namelist()
@@ -493,16 +511,18 @@ class MeshUtils:
                     itemsize=array_metadata.itemsize,
                 )
 
-                # Decode array
-                arrays[array_name] = ArrayUtils.decode_array(encoded_array)
+                # Add to encoded mesh arrays
+                encoded_mesh.arrays[array_name] = encoded_array
 
-            # Create mesh object with all data
-            return target_cls(
-                vertices=vertices,
-                indices=indices,
-                **arrays,
-                **(metadata.field_data or {}),
-            )
+            # Decode the mesh using MeshUtils.decode
+            decoded_mesh = MeshUtils.decode(target_cls, encoded_mesh)
+
+            # Add any additional field data from the metadata
+            if metadata.field_data:
+                for field_name, field_value in metadata.field_data.items():
+                    setattr(decoded_mesh, field_name, field_value)
+
+            return decoded_mesh
 
     @staticmethod
     def decode(cls: Type[T], encoded_mesh: EncodedMesh) -> T:
@@ -524,8 +544,23 @@ class MeshUtils:
         # Decode index buffer if present
         indices = None
         if encoded_mesh.indices is not None and encoded_mesh.index_count is not None:
-            indices = decode_index_buffer(
+            indices = decode_index_sequence(
                 encoded_mesh.index_count, encoded_mesh.index_size, encoded_mesh.indices
             )
 
-        return cls(vertices=vertices, indices=indices)
+        # Create the base mesh object
+        mesh_args = {
+            "vertices": vertices,
+            "indices": indices,
+        }
+
+        # Decode additional arrays if present
+        if encoded_mesh.arrays:
+            for name, encoded_array in encoded_mesh.arrays.items():
+                # Decode the array
+                decoded_array = ArrayUtils.decode_array(encoded_array)
+                # Add to mesh arguments
+                mesh_args[name] = decoded_array
+
+        # Create and return the mesh object
+        return cls(**mesh_args)

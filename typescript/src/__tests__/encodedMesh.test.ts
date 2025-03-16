@@ -84,50 +84,11 @@ describe('EncodedMesh', () => {
 
   it('should encode and decode a mesh correctly', async () => {
     // Create an encoded mesh
-    const vertexCount = mesh.vertices.length / 3
-    const vertexSize = 3 * 4 // 3 floats * 4 bytes per float
-
-    // Encode the vertex buffer
-    const encodedVertices = MeshoptEncoder.encodeVertexBuffer(
-      new Uint8Array(mesh.vertices.buffer),
-      vertexCount,
-      vertexSize
-    )
-
-    // Encode the index buffer
-    const encodedIndices = MeshoptEncoder.encodeIndexBuffer(
-      new Uint8Array(mesh.indices!.buffer),
-      mesh.indices!.length,
-      4 // 4 bytes per index (Uint32Array)
-    )
 
     // Create the encoded mesh
-    const encodedMesh: EncodedMesh = {
-      vertices: encodedVertices,
-      indices: encodedIndices,
-      vertex_count: vertexCount,
-      vertex_size: vertexSize,
-      index_count: mesh.indices!.length,
-      index_size: 4
-    }
-
+    const encodedMesh = MeshUtils.encode(mesh)
     // Decode the mesh
-    const decodedVertices = MeshUtils.decodeVertexBuffer(
-      encodedMesh.vertex_count,
-      encodedMesh.vertex_size,
-      encodedMesh.vertices
-    )
-
-    const decodedIndices = MeshUtils.decodeIndexBuffer(
-      encodedMesh.index_count!,
-      encodedMesh.index_size,
-      encodedMesh.indices!
-    )
-
-    const decodedMesh: Mesh = {
-      vertices: decodedVertices,
-      indices: decodedIndices
-    }
+    const decodedMesh = MeshUtils.decode(encodedMesh)
 
     // Check that the vertices match
     expect(decodedMesh.vertices.length).toBe(mesh.vertices.length)
@@ -146,6 +107,62 @@ describe('EncodedMesh', () => {
 
     for (const triangle of originalTriangles) {
       expect(decodedTriangles.has(triangle)).toBe(true)
+    }
+  })
+
+  it('should use the new encode and decode functions correctly', () => {
+    // Add normals to the mesh
+    const normals = new Float32Array([
+      0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
+      1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0
+    ])
+    const meshWithNormals: Mesh = {
+      ...mesh,
+      normals
+    }
+
+    // Encode the mesh using the new encode function
+    const encodedMesh = MeshUtils.encode(meshWithNormals)
+
+    // Check that the encoded mesh has the expected properties
+    expect(encodedMesh.vertex_count).toBe(meshWithNormals.vertices.length / 3)
+    expect(encodedMesh.vertex_size).toBe(12) // 3 floats * 4 bytes
+    expect(encodedMesh.index_count).toBe(meshWithNormals.indices!.length)
+    expect(encodedMesh.index_size).toBe(4)
+    expect(encodedMesh.vertices).toBeDefined()
+    expect(encodedMesh.indices).toBeDefined()
+    expect(encodedMesh.arrays).toBeDefined()
+    expect(encodedMesh.arrays!.normals).toBeDefined()
+
+    // Decode the mesh using the new decode function
+    // In TypeScript, we can't use the Mesh type as a value, so we pass null
+    const decodedMesh = MeshUtils.decode(encodedMesh)
+
+    // Check that the decoded mesh has the expected properties
+    expect(decodedMesh.vertices.length).toBe(meshWithNormals.vertices.length)
+    expect(decodedMesh.indices!.length).toBe(meshWithNormals.indices!.length)
+    expect(decodedMesh.normals).toBeDefined()
+    expect(decodedMesh.normals!.length).toBe(normals.length)
+
+    // Check that the vertices match
+    for (let i = 0; i < meshWithNormals.vertices.length; i++) {
+      expect(decodedMesh.vertices[i]).toBeCloseTo(meshWithNormals.vertices[i], 4)
+    }
+
+    // Instead of checking each index individually, check that the triangles match
+    // This is more reliable than comparing indices directly
+    const originalTriangles = getTrianglesSet(meshWithNormals.vertices, meshWithNormals.indices!)
+    const decodedTriangles = getTrianglesSet(decodedMesh.vertices, decodedMesh.indices!)
+    
+    expect(decodedTriangles.size).toBe(originalTriangles.size)
+    
+    for (const triangle of originalTriangles) {
+      expect(decodedTriangles.has(triangle)).toBe(true)
+    }
+
+    // Check that the normals match
+    for (let i = 0; i < normals.length; i++) {
+      expect(decodedMesh.normals![i]).toBeCloseTo(normals[i], 4)
     }
   })
 
@@ -194,23 +211,12 @@ describe('EncodedMesh', () => {
 
     zip.file('metadata.json', JSON.stringify(fileMetadata))
 
-    // Encode and add vertex data
-    const encodedVertices = MeshoptEncoder.encodeVertexBuffer(
-      new Uint8Array(mesh.vertices.buffer),
-      MeshSize.vertex_count,
-      MeshSize.vertex_size
-    )
+    const encondedMesh = MeshUtils.encode(mesh)
 
-    zip.file('mesh/vertices.bin', encodedVertices)
-
-    // Encode and add index data
-    const encodedIndices = MeshoptEncoder.encodeIndexBuffer(
-      new Uint8Array(mesh.indices!.buffer),
-      MeshSize.index_count,
-      MeshSize.index_size
-    )
-
-    zip.file('mesh/indices.bin', encodedIndices)
+    zip.file('mesh/vertices.bin', encondedMesh.vertices)
+    if (encondedMesh.indices){
+      zip.file('mesh/indices.bin', encondedMesh.indices)
+    }
 
     // Generate the zip file
     const zipData = await zip.generateAsync({ type: 'arraybuffer' })

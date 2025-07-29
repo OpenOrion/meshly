@@ -1,8 +1,7 @@
 import JSZip from 'jszip'
 import { MeshoptDecoder, MeshoptEncoder } from "meshoptimizer"
-import * as THREE from 'three'
 import { ArrayMetadata, ArrayUtils, EncodedArray } from './array'
-
+import { BufferAttribute, BufferGeometry } from 'three'
 
 /**
  * Types for the mesh decoder library
@@ -325,8 +324,8 @@ export class MeshUtils {
   static convertToBufferGeometry(
     mesh: Mesh,
     options: DecodeMeshOptions = {}
-  ): THREE.BufferGeometry {
-    const geometry = new THREE.BufferGeometry()
+  ): BufferGeometry {
+    const geometry = new BufferGeometry()
 
     // Set default options
     const opts = {
@@ -345,16 +344,16 @@ export class MeshUtils {
     }
 
     // Add the vertices to the geometry
-    geometry.setAttribute('position', new THREE.BufferAttribute(normalizedVertices, 3))
+    geometry.setAttribute('position', new BufferAttribute(normalizedVertices, 3))
 
     // Add indices if they exist
     if (mesh.indices) {
-      geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1))
+      geometry.setIndex(new BufferAttribute(mesh.indices, 1))
     }
 
     // Add normals if they exist, otherwise compute them if requested
     if (mesh.normals) {
-      geometry.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3))
+      geometry.setAttribute('normal', new BufferAttribute(mesh.normals, 3))
     } else if (opts.computeNormals) {
       geometry.computeVertexNormals()
     }
@@ -363,14 +362,14 @@ export class MeshUtils {
     if (mesh.colors) {
       // Check if colors have 3 or 4 components (RGB or RGBA)
       const itemSize = mesh.colors.length / (vertices.length / 3)
-      geometry.setAttribute('color', new THREE.BufferAttribute(mesh.colors, itemSize))
+      geometry.setAttribute('color', new BufferAttribute(mesh.colors, itemSize))
     }
 
     // Add UVs if they exist
     if (mesh.uvs) {
       // Check if UVs have 2 or 3 components
       const itemSize = mesh.uvs.length / (vertices.length / 3)
-      geometry.setAttribute('uv', new THREE.BufferAttribute(mesh.uvs, itemSize))
+      geometry.setAttribute('uv', new BufferAttribute(mesh.uvs, itemSize))
     }
 
     return geometry
@@ -437,7 +436,7 @@ export class MeshUtils {
   static async loadZipAsBufferGeometry(
     zipData: ArrayBuffer,
     options?: DecodeMeshOptions
-  ): Promise<THREE.BufferGeometry> {
+  ): Promise<BufferGeometry> {
     const mesh = await MeshUtils.loadMeshFromZip(zipData)
     return MeshUtils.convertToBufferGeometry(mesh, options)
   }

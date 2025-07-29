@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Mesh, EncodedMesh } from '../mesh';
+import { Mesh } from '../mesh';
 import { MeshUtils } from '../mesh';
-import * as THREE from 'three';
-import { MeshoptEncoder } from 'meshoptimizer';
+import { BufferGeometry } from 'three';
 
 describe('MeshIntegrity', () => {
   let vertices: Float32Array;
@@ -105,7 +104,7 @@ describe('MeshIntegrity', () => {
     const geometry = MeshUtils.convertToBufferGeometry(mesh);
     
     // Check that the geometry has the correct attributes
-    expect(geometry).toBeInstanceOf(THREE.BufferGeometry);
+    expect(geometry).toBeInstanceOf(BufferGeometry);
     expect(geometry.attributes.position).toBeDefined();
     expect(geometry.attributes.position.count).toBe(vertices.length / 3);
     expect(geometry.index).toBeDefined();

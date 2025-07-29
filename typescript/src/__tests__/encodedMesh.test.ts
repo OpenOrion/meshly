@@ -1,8 +1,7 @@
 import JSZip from 'jszip'
-import { MeshoptEncoder } from 'meshoptimizer'
-import * as THREE from 'three'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { EncodedMesh, Mesh, MeshUtils } from '../mesh'
+import { Mesh, MeshUtils } from '../mesh'
+import { BufferGeometry } from 'three'
 
 describe('EncodedMesh', () => {
   let vertices: Float32Array
@@ -171,7 +170,7 @@ describe('EncodedMesh', () => {
     const geometry = MeshUtils.convertToBufferGeometry(mesh)
 
     // Check that the geometry has the correct attributes
-    expect(geometry).toBeInstanceOf(THREE.BufferGeometry)
+    expect(geometry).toBeInstanceOf(BufferGeometry)
     expect(geometry.attributes.position).toBeDefined()
     expect(geometry.attributes.position.count).toBe(vertices.length / 3)
     expect(geometry.index).toBeDefined()

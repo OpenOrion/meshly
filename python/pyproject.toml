@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshly"
+version = "1.0.0-alpha"
+description = "High-level abstractions and utilities for working with meshoptimizer"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Open Orion"}
+]
+maintainers = [
+    {name = "Open Orion"}
+]
+keywords = ["mesh", "3d", "graphics", "meshoptimizer", "optimization"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Development Status :: 4 - Beta",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.19.0",
+    "meshoptimizer==0.2.20a5",
+    "pydantic>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/OpenOrion/meshly"
+Repository = "https://github.com/OpenOrion/meshly"
+"Bug Tracker" = "https://github.com/OpenOrion/meshly/issues"
+Documentation = "https://github.com/OpenOrion/meshly#readme"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["meshly*"]
+

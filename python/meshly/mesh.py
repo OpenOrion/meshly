@@ -12,7 +12,6 @@ from pathlib import Path
 import zipfile
 from io import BytesIO
 from typing import (
-    Dict,
     Optional,
     Set,
     Type,
@@ -61,7 +60,10 @@ class EncodedMesh(BaseModel):
     vertex_size: int = Field(..., description="Size of each vertex in bytes")
     index_count: Optional[int] = Field(None, description="Number of indices (optional)")
     index_size: int = Field(..., description="Size of each index in bytes")
-    arrays: Dict[str, EncodedArray] = Field(
+    index_sizes: Optional[bytes] = Field(
+        None, description="Encoded polygon sizes (optional)"
+    )
+    arrays: dict[str, EncodedArray] = Field(
         default_factory=dict, description="Dictionary of additional encoded arrays"
     )
 
@@ -95,13 +97,10 @@ class MeshMetadata(BaseModel):
     module_name: str = Field(
         ..., description="Name of the module containing the mesh class"
     )
-    field_data: Optional[Dict[str, Any]] = Field(
+    field_data: Optional[dict[str, Any]] = Field(
         None, description="Dictionary of model fields that aren't numpy arrays"
     )
     mesh_size: MeshSize = Field(description="Size metadata for the encoded mesh")
-    dict_structure: Optional[Dict[str, Dict[str, Any]]] = Field(
-        None, description="Structure information for dictionary fields containing arrays"
-    )
 
 
 class Mesh(BaseModel):
@@ -114,8 +113,11 @@ class Mesh(BaseModel):
 
     # Required fields
     vertices: np.ndarray = Field(..., description="Vertex data as a numpy array")
-    indices: Optional[np.ndarray] = Field(
-        None, description="Index data as a numpy array"
+    indices: Optional[Union[np.ndarray, list[Any]]] = Field(
+        None, description="Index data as a flattened 1D numpy array or list of polygons"
+    )
+    index_sizes: Optional[Union[np.ndarray, list[int]]] = Field(
+        None, description="Size of each polygon (number of vertices per polygon)"
     )
     
     def copy(self: T) -> T:
@@ -149,7 +151,50 @@ class Mesh(BaseModel):
         """Get the number of indices."""
         return len(self.indices) if self.indices is not None else 0
 
-    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, np.ndarray]:
+    @property
+    def polygon_count(self) -> int:
+        """Get the number of polygons."""
+        return len(self.index_sizes) if self.index_sizes is not None else 0
+
+    @property
+    def is_uniform_polygons(self) -> bool:
+        """Check if all polygons have the same number of vertices."""
+        if self.index_sizes is None:
+            return True  # No polygon info means uniform (legacy)
+        return len(np.unique(self.index_sizes)) == 1
+
+    def get_polygon_indices(self) -> Union[np.ndarray, list]:
+        """
+        Get indices in their original polygon structure.
+        
+        Returns:
+            For uniform polygons: 2D numpy array where each row is a polygon
+            For mixed polygons: List of lists where each sublist is a polygon
+        """
+        if self.indices is None:
+            return None
+            
+        if self.index_sizes is None:
+            # Legacy format - assume triangles
+            if len(self.indices) % 3 == 0:
+                return self.indices.reshape(-1, 3)
+            else:
+                raise ValueError("Cannot determine polygon structure without index_sizes")
+        
+        if self.is_uniform_polygons:
+            # Uniform case: return as 2D numpy array
+            polygon_size = self.index_sizes[0]
+            return self.indices.reshape(-1, polygon_size)
+        else:
+            # Mixed case: return as list of lists
+            result = []
+            offset = 0
+            for size in self.index_sizes:
+                result.append(self.indices[offset:offset+size].tolist())
+                offset += size
+            return result
+
+    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> dict[str, np.ndarray]:
         """
         Recursively extract numpy arrays from nested structures.
         
@@ -174,28 +219,6 @@ class Mesh(BaseModel):
             
         return arrays
 
-    def _get_dict_structure(self, obj: Any, prefix: str = "") -> Dict[str, Any]:
-        """
-        Get the structure of dictionary fields that contain arrays.
-        
-        Args:
-            obj: The object to analyze
-            prefix: The current path prefix
-            
-        Returns:
-            Dictionary representing the structure
-        """
-        if isinstance(obj, dict):
-            structure = {}
-            for key, value in obj.items():
-                if isinstance(value, np.ndarray):
-                    structure[key] = {"type": "array"}
-                elif isinstance(value, dict):
-                    nested_structure = self._get_dict_structure(value)
-                    if nested_structure:  # Only include if it contains arrays
-                        structure[key] = {"type": "dict", "structure": nested_structure}
-            return structure if structure else None
-        return None
 
     @property
     def array_fields(self) -> Set[str]:
@@ -221,25 +244,6 @@ class Mesh(BaseModel):
 
         return result
 
-    @property
-    def dict_structure_metadata(self) -> Dict[str, Dict[str, Any]]:
-        """Get structure metadata for dictionary fields containing arrays."""
-        metadata = {}
-        type_hints = get_type_hints(self.__class__)
-
-        for field_name, field_type in type_hints.items():
-            if field_name in self.__private_attributes__:
-                continue
-            try:
-                value = getattr(self, field_name, None)
-                if isinstance(value, dict):
-                    structure = self._get_dict_structure(value)
-                    if structure:
-                        metadata[field_name] = structure
-            except AttributeError:
-                pass
-
-        return metadata
 
     class Config:
         arbitrary_types_allowed = True
@@ -253,9 +257,38 @@ class Mesh(BaseModel):
         if self.vertices is not None:
             self.vertices = np.asarray(self.vertices, dtype=np.float32)
 
-        # Ensure indices is a uint32 array if present
+        # Handle indices - convert to flattened 1D array and extract size info
         if self.indices is not None:
-            self.indices = np.asarray(self.indices, dtype=np.uint32)
+            # Convert various input formats to flattened indices
+            if isinstance(self.indices, (list, tuple)):
+                # Handle list of lists (mixed polygons) or flat list
+                if len(self.indices) > 0 and isinstance(self.indices[0], (list, tuple, np.ndarray)):
+                    # List of lists - mixed polygon format
+                    flat_indices = []
+                    sizes = []
+                    for polygon in self.indices:
+                        polygon_array = np.asarray(polygon, dtype=np.uint32)
+                        flat_indices.extend(polygon_array.flatten())
+                        sizes.append(len(polygon_array.flatten()))
+                    self.indices = np.array(flat_indices, dtype=np.uint32)
+                    if self.index_sizes is None:
+                        self.index_sizes = np.array(sizes, dtype=np.uint32)
+                else:
+                    # Flat list
+                    self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
+            else:
+                # Numpy array input
+                original_shape = self.indices.shape
+                self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
+                
+                # If it was a 2D array, extract size information
+                if len(original_shape) > 1 and self.index_sizes is None:
+                    # Assume uniform polygons from 2D array
+                    self.index_sizes = np.full(original_shape[0], original_shape[1], dtype=np.uint32)
+
+        # Ensure index_sizes is uint32 array if present
+        if self.index_sizes is not None:
+            self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
 
         return self
 
@@ -408,9 +441,7 @@ class MeshUtils:
             mesh: The mesh to encode
 
         Returns:
-            Dictionary containing:
-            - 'mesh': EncodedMesh object with encoded vertices and indices
-            - 'arrays': Dictionary mapping field names to EncodedArray objects
+            EncodedMesh object with encoded vertices, indices, and arrays
         """
         # Encode vertex buffer
         encoded_vertices = encode_vertex_buffer(
@@ -425,6 +456,9 @@ class MeshUtils:
             encoded_indices = encode_index_sequence(
                 mesh.indices, mesh.index_count, mesh.vertex_count
             )
+
+        # Note: index_sizes will be encoded as a regular array in the arrays dict
+        encoded_index_sizes = None
 
         # Encode additional array fields, including nested arrays from dictionaries
         encoded_arrays = {}
@@ -461,6 +495,10 @@ class MeshUtils:
                     # Skip attributes that don't exist
                     pass
 
+        # Handle index_sizes as a special case - store in arrays if present
+        if mesh.index_sizes is not None:
+            encoded_arrays["index_sizes"] = ArrayUtils.encode_array(mesh.index_sizes)
+
         # Create encoded mesh
         return EncodedMesh(
             vertices=encoded_vertices,
@@ -469,6 +507,7 @@ class MeshUtils:
             vertex_size=mesh.vertices.itemsize * mesh.vertices.shape[1],
             index_count=mesh.index_count if mesh.indices is not None else None,
             index_size=mesh.indices.itemsize if mesh.indices is not None else 4,
+            index_sizes=encoded_index_sizes,
             arrays=encoded_arrays,
         )
 
@@ -483,19 +522,47 @@ class MeshUtils:
         """
         encoded_mesh = MeshUtils.encode(mesh)
 
-        # Add model fields that aren't numpy arrays or dictionary fields containing arrays
+        # Add model fields that aren't numpy arrays, preserving non-array values in dicts
         model_data = {}
-        dict_fields_with_arrays = set(mesh.dict_structure_metadata.keys())
+        
+        def extract_non_arrays(obj: Any, prefix: str = "") -> Any:
+            """Recursively extract non-array values from nested structures."""
+            if isinstance(obj, dict):
+                result = {}
+                for key, value in obj.items():
+                    nested_key = f"{prefix}.{key}" if prefix else key
+                    if isinstance(value, np.ndarray):
+                        # Skip arrays - they're stored separately
+                        continue
+                    elif isinstance(value, dict):
+                        # Recursively process nested dicts
+                        nested_result = extract_non_arrays(value, nested_key)
+                        if nested_result:  # Only include non-empty dicts
+                            result[key] = nested_result
+                    else:
+                        # Include non-array values
+                        result[key] = value
+                return result if result else None
+            elif isinstance(obj, np.ndarray):
+                # Skip arrays
+                return None
+            else:
+                # Include non-array values
+                return obj
         
         for field_name, field_value in mesh.model_dump().items():
-            # Skip direct array fields
+            # Skip direct array fields (they're stored separately)
             if field_name in mesh.array_fields:
                 continue
-            # Skip dictionary fields that contain arrays (they'll be reconstructed from structure)
-            if field_name in dict_fields_with_arrays:
-                continue
-            # Include all other fields
-            model_data[field_name] = field_value
+            
+            if isinstance(field_value, dict):
+                # Extract non-array values from dictionaries
+                non_array_content = extract_non_arrays(field_value, field_name)
+                if non_array_content:
+                    model_data[field_name] = non_array_content
+            else:
+                # Include scalar fields directly
+                model_data[field_name] = field_value
 
         with zipfile.ZipFile(source, "w") as zipf:
             # Save mesh data
@@ -511,15 +578,11 @@ class MeshUtils:
                 index_size=encoded_mesh.index_size,
             )
 
-            # Create metadata with dictionary structure information
-            dict_structure = mesh.dict_structure_metadata if mesh.dict_structure_metadata else None
-            
             metadata = MeshMetadata(
                 class_name=mesh.__class__.__name__,
                 module_name=mesh.__class__.__module__,
                 mesh_size=mesh_size,
                 field_data=model_data,
-                dict_structure=dict_structure,
             )
 
             # Save array data with name mapping
@@ -598,6 +661,7 @@ class MeshUtils:
                 vertex_size=mesh_size.vertex_size,
                 index_count=mesh_size.index_count,
                 index_size=mesh_size.index_size,
+                index_sizes=None,  # Not used anymore
                 arrays={},  # Will be populated below
             )
 
@@ -638,25 +702,38 @@ class MeshUtils:
                 # Add to encoded mesh arrays with original name
                 encoded_mesh.arrays[original_name] = encoded_array
 
-            # Decode the mesh using MeshUtils.decode with dictionary structure metadata
-            decoded_mesh = MeshUtils.decode(target_cls, encoded_mesh, metadata.dict_structure)
+            # Decode the mesh using MeshUtils.decode
+            decoded_mesh = MeshUtils.decode(target_cls, encoded_mesh)
 
-            # Add any additional field data from the metadata
+            # Add any additional field data from the metadata, merging with existing dict fields
             if metadata.field_data:
                 for field_name, field_value in metadata.field_data.items():
-                    setattr(decoded_mesh, field_name, field_value)
+                    existing_value = getattr(decoded_mesh, field_name, None)
+                    if existing_value is not None and isinstance(existing_value, dict) and isinstance(field_value, dict):
+                        # Merge non-array values into existing dictionary structure
+                        def merge_dicts(target: dict, source: dict) -> None:
+                            """Recursively merge source dict into target dict."""
+                            for key, value in source.items():
+                                if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+                                    merge_dicts(target[key], value)
+                                else:
+                                    target[key] = value
+                        
+                        merge_dicts(existing_value, field_value)
+                    else:
+                        # Set scalar fields directly
+                        setattr(decoded_mesh, field_name, field_value)
 
             return decoded_mesh
 
     @staticmethod
-    def decode(cls: Type[T], encoded_mesh: EncodedMesh, dict_structure: Optional[Dict[str, Dict[str, Any]]] = None) -> T:
+    def decode(cls: Type[T], encoded_mesh: EncodedMesh) -> T:
         """
         Decode an encoded mesh.
 
         Args:
             cls: The mesh class to instantiate
             encoded_mesh: EncodedMesh object to decode
-            dict_structure: Optional dictionary structure metadata for reconstructing dict fields
 
         Returns:
             Decoded Mesh object
@@ -679,6 +756,9 @@ class MeshUtils:
             "indices": indices,
         }
 
+        # Decode index_sizes if present (stored in arrays dict)
+        index_sizes = None
+
         # Decode additional arrays if present
         dict_fields = {}  # Will store reconstructed dictionary fields
         
@@ -688,7 +768,10 @@ class MeshUtils:
                 decoded_array = ArrayUtils.decode_array(encoded_array)
                 
                 # Check if this is a nested array (contains dots)
-                if "." in name:
+                if name == "index_sizes":
+                    # Special handling for index_sizes
+                    index_sizes = decoded_array
+                elif "." in name:
                     # This is a nested array from a dictionary field
                     parts = name.split(".")
                     field_name = parts[0]
@@ -709,6 +792,9 @@ class MeshUtils:
                 else:
                     # This is a direct array field
                     mesh_args[name] = decoded_array
+
+        # Add index_sizes to mesh args
+        mesh_args["index_sizes"] = index_sizes
 
         # Add reconstructed dictionary fields to mesh arguments
         mesh_args.update(dict_fields)

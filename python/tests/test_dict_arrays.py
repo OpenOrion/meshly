@@ -9,7 +9,7 @@ import os
 import tempfile
 import numpy as np
 import unittest
-from typing import Dict
+from typing import Dict, Any
 from pydantic import Field
 
 from meshly import Mesh, MeshUtils
@@ -24,10 +24,10 @@ class TexturedMesh(Mesh):
         description="Dictionary of texture arrays"
     )
     
-    # Dictionary containing nested dictionaries with arrays
-    material_data: Dict[str, Dict[str, np.ndarray]] = Field(
+    # Dictionary containing nested dictionaries with mixed content (arrays and other types)
+    material_data: Dict[str, Dict[str, Any]] = Field(
         default_factory=dict,
-        description="Nested dictionary structure with arrays"
+        description="Nested dictionary structure with arrays and other values"
     )
     
     # Regular non-array field
@@ -91,21 +91,6 @@ class TestDictArrays(unittest.TestCase):
         
         self.assertEqual(array_fields, expected_fields)
         
-        # Check dictionary structure metadata
-        dict_structure = mesh.dict_structure_metadata
-        self.assertIn("textures", dict_structure)
-        self.assertIn("material_data", dict_structure)
-        
-        # Verify textures structure
-        textures_structure = dict_structure["textures"]
-        self.assertEqual(textures_structure["diffuse"]["type"], "array")
-        self.assertEqual(textures_structure["normal"]["type"], "array")
-        self.assertEqual(textures_structure["specular"]["type"], "array")
-        
-        # Verify nested material_data structure
-        material_structure = dict_structure["material_data"]
-        self.assertEqual(material_structure["surface"]["type"], "dict")
-        self.assertEqual(material_structure["lighting"]["type"], "dict")
         
     def test_dict_array_encoding_decoding(self):
         """Test that dictionary arrays can be encoded and decoded."""
@@ -142,7 +127,7 @@ class TestDictArrays(unittest.TestCase):
         self.assertEqual(set(encoded_mesh.arrays.keys()), expected_array_names)
         
         # Decode the mesh
-        decoded_mesh = MeshUtils.decode(TexturedMesh, encoded_mesh, mesh.dict_structure_metadata)
+        decoded_mesh = MeshUtils.decode(TexturedMesh, encoded_mesh)
         
         # Manually set non-array fields since direct decode doesn't handle them
         # (This is normally done by load_from_zip via metadata.field_data)
@@ -257,7 +242,6 @@ class TestDictArrays(unittest.TestCase):
         
         # Verify empty dictionaries don't cause issues
         self.assertEqual(len(mesh.array_fields), 2)  # Only vertices and indices
-        self.assertEqual(len(mesh.dict_structure_metadata), 0)
         
         # Test encoding/decoding works with empty dictionaries
         encoded_mesh = MeshUtils.encode(mesh)
@@ -267,6 +251,121 @@ class TestDictArrays(unittest.TestCase):
         self.assertIsInstance(decoded_mesh.material_data, dict)
         self.assertEqual(len(decoded_mesh.textures), 0)
         self.assertEqual(len(decoded_mesh.material_data), 0)
+
+
+    def test_dict_with_non_array_values(self):
+        """Test that dictionaries containing non-array values are preserved."""
+        mesh = TexturedMesh(
+            vertices=self.vertices,
+            indices=self.indices,
+            textures={
+                "diffuse": self.diffuse_texture,
+                "normal": self.normal_texture
+            },
+            material_data={
+                "surface": {
+                    "roughness": self.roughness_map,  # array
+                    "metallic": self.metallic_map,    # array
+                    "name": "metal_surface",          # non-array string
+                    "shininess": 0.8,                # non-array float
+                    "enabled": True                   # non-array bool
+                },
+                "lighting": {
+                    "emission": self.emission_map,    # array
+                    "intensity": 1.5,                # non-array float
+                    "color": [1.0, 0.8, 0.6]         # non-array list
+                },
+                "metadata": {                         # dict with no arrays
+                    "author": "test_user",
+                    "version": 2,
+                    "tags": ["metal", "shiny"]
+                }
+            },
+            material_name="test_non_array_material"
+        )
+        
+        # Test zip save/load preserves both arrays and non-array values
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        try:
+            # Save and load via zip (this preserves non-array values)
+            MeshUtils.save_to_zip(mesh, temp_path)
+            loaded_mesh = MeshUtils.load_from_zip(TexturedMesh, temp_path)
+            
+            # Check that arrays are preserved
+            np.testing.assert_array_almost_equal(
+                loaded_mesh.material_data["surface"]["roughness"],
+                self.roughness_map, decimal=5
+            )
+            np.testing.assert_array_almost_equal(
+                loaded_mesh.material_data["lighting"]["emission"],
+                self.emission_map, decimal=5
+            )
+            
+            # Check that non-array values are preserved in the nested structure
+            self.assertEqual(loaded_mesh.material_data["surface"]["name"], "metal_surface")
+            self.assertEqual(loaded_mesh.material_data["surface"]["shininess"], 0.8)
+            self.assertEqual(loaded_mesh.material_data["surface"]["enabled"], True)
+            self.assertEqual(loaded_mesh.material_data["lighting"]["intensity"], 1.5)
+            self.assertEqual(loaded_mesh.material_data["lighting"]["color"], [1.0, 0.8, 0.6])
+            
+            # Check that dict with no arrays is preserved
+            self.assertIn("metadata", loaded_mesh.material_data)
+            self.assertEqual(loaded_mesh.material_data["metadata"]["author"], "test_user")
+            self.assertEqual(loaded_mesh.material_data["metadata"]["version"], 2)
+            self.assertEqual(loaded_mesh.material_data["metadata"]["tags"], ["metal", "shiny"])
+            
+            # Check scalar field
+            self.assertEqual(loaded_mesh.material_name, "test_non_array_material")
+            
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        
+    def test_dict_with_non_array_values_zip_round_trip(self):
+        """Test that non-array dict values survive zip save/load."""
+        mesh = TexturedMesh(
+            vertices=self.vertices,
+            indices=self.indices,
+            material_data={
+                "config": {
+                    "name": "test_config",
+                    "version": 3.14,
+                    "settings": {
+                        "quality": "high",
+                        "enabled": True,
+                        "options": [1, 2, 3]
+                    }
+                }
+            },
+            material_name="zip_non_array_test"
+        )
+        
+        # Create temporary file for testing
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        try:
+            # Save and load via zip
+            MeshUtils.save_to_zip(mesh, temp_path)
+            loaded_mesh = MeshUtils.load_from_zip(TexturedMesh, temp_path)
+            
+            # Verify non-array nested values are preserved
+            self.assertEqual(loaded_mesh.material_data["config"]["name"], "test_config")
+            self.assertEqual(loaded_mesh.material_data["config"]["version"], 3.14)
+            self.assertEqual(loaded_mesh.material_data["config"]["settings"]["quality"], "high")
+            self.assertEqual(loaded_mesh.material_data["config"]["settings"]["enabled"], True)
+            self.assertEqual(loaded_mesh.material_data["config"]["settings"]["options"], [1, 2, 3])
+            self.assertEqual(loaded_mesh.material_name, "zip_non_array_test")
+            
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
 
 if __name__ == '__main__':

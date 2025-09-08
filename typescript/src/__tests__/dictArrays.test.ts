@@ -276,4 +276,199 @@ describe('Dictionary Arrays', () => {
       expect(decoded.physics.collision.shapes.sphere[i]).toBeCloseTo(complexMesh.physics.collision.shapes.sphere[i], 4)
     }
   })
+
+  it('should support mixed polygon types', () => {
+    // Create a mesh with mixed polygons (triangles and quads)
+    const vertices = new Float32Array([
+      0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0,  2, 0, 0,  2, 1, 0
+    ])
+    
+    // Mixed polygons: two triangles and one quad
+    const indices = new Uint32Array([0, 1, 2, 0, 2, 3, 1, 4, 5, 2])
+    const indexSizes = new Uint32Array([3, 3, 4])
+    
+    const mixedMesh: Mesh = {
+      vertices,
+      indices,
+      indexSizes
+    }
+
+    // Test utility functions
+    expect(MeshUtils.getPolygonCount(mixedMesh)).toBe(3)
+    expect(MeshUtils.isUniformPolygons(mixedMesh)).toBe(false)
+    
+    // Test polygon reconstruction
+    const polygonIndices = MeshUtils.getPolygonIndices(mixedMesh)
+    expect(Array.isArray(polygonIndices)).toBe(true)
+    const polygons = polygonIndices as Uint32Array[]
+    expect(polygons.length).toBe(3)
+    expect(polygons[0].length).toBe(3) // triangle
+    expect(polygons[1].length).toBe(3) // triangle
+    expect(polygons[2].length).toBe(4) // quad
+
+    // Test encoding/decoding
+    const encoded = MeshUtils.encode(mixedMesh)
+    expect(encoded.arrays).toHaveProperty('indexSizes')
+    
+    const decoded = MeshUtils.decode(encoded)
+    expect(MeshUtils.getPolygonCount(decoded)).toBe(3)
+    expect(MeshUtils.isUniformPolygons(decoded)).toBe(false)
+    expect(decoded.indexSizes).toEqual(indexSizes)
+  })
+
+  it('should support uniform polygon types', () => {
+    // Create a mesh with uniform quads
+    const vertices = new Float32Array([
+      0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0,  2, 0, 0,  2, 1, 0
+    ])
+    
+    const indices = new Uint32Array([0, 1, 2, 3, 1, 4, 5, 2])
+    const indexSizes = new Uint32Array([4, 4])
+    
+    const uniformMesh: Mesh = {
+      vertices,
+      indices,
+      indexSizes
+    }
+
+    // Test utility functions
+    expect(MeshUtils.getPolygonCount(uniformMesh)).toBe(2)
+    expect(MeshUtils.isUniformPolygons(uniformMesh)).toBe(true)
+    
+    // Test encoding/decoding preserves uniformity
+    const encoded = MeshUtils.encode(uniformMesh)
+    const decoded = MeshUtils.decode(encoded)
+    expect(MeshUtils.isUniformPolygons(decoded)).toBe(true)
+    expect(decoded.indexSizes).toEqual(indexSizes)
+  })
+
+  it('should preserve non-array values in nested dictionaries', () => {
+    // Create a mesh with mixed content in dictionaries
+    interface MixedContentMesh extends Mesh {
+      material_data: {
+        surface: {
+          roughness: Float32Array
+          name: string
+          shininess: number
+          enabled: boolean
+        }
+        lighting: {
+          emission: Float32Array
+          intensity: number
+          color: number[]
+        }
+        metadata: {
+          author: string
+          version: number
+          tags: string[]
+        }
+      }
+      material_name: string
+    }
+
+    const mixedMesh: MixedContentMesh = {
+      vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 1, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+      material_data: {
+        surface: {
+          roughness: new Float32Array([0.1, 0.2, 0.3]),
+          name: "metal_surface",
+          shininess: 0.8,
+          enabled: true
+        },
+        lighting: {
+          emission: new Float32Array([1.0, 0.8, 0.6]),
+          intensity: 1.5,
+          color: [1.0, 0.8, 0.6]
+        },
+        metadata: {
+          author: "test_user",
+          version: 2,
+          tags: ["metal", "shiny"]
+        }
+      },
+      material_name: "test_mixed_material"
+    }
+
+    // Test encoding detects arrays correctly
+    const encoded = MeshUtils.encode(mixedMesh)
+    expect(encoded.arrays).toHaveProperty('material_data.surface.roughness')
+    expect(encoded.arrays).toHaveProperty('material_data.lighting.emission')
+    expect(encoded.arrays).not.toHaveProperty('material_data.surface.name') // non-array values not encoded as arrays
+
+    // Test decoding reconstructs dictionary structure for arrays
+    const decoded = MeshUtils.decode<MixedContentMesh>(encoded)
+    expect(decoded.material_data.surface.roughness).toBeInstanceOf(Float32Array)
+    expect(decoded.material_data.lighting.emission).toBeInstanceOf(Float32Array)
+    
+    // Arrays should be preserved with correct data
+    expect(decoded.material_data.surface.roughness.length).toBe(3)
+    expect(decoded.material_data.lighting.emission.length).toBe(3)
+    
+    for (let i = 0; i < 3; i++) {
+      expect(decoded.material_data.surface.roughness[i]).toBeCloseTo(mixedMesh.material_data.surface.roughness[i], 4)
+      expect(decoded.material_data.lighting.emission[i]).toBeCloseTo(mixedMesh.material_data.lighting.emission[i], 4)
+    }
+  })
+
+  it('should handle zip save/load with mixed content (async)', async () => {
+    // Create mesh with both arrays and non-array values
+    interface TestMesh extends Mesh {
+      textures: {
+        diffuse: Float32Array
+      }
+      config: {
+        name: string
+        version: number
+        settings: {
+          quality: string
+          enabled: boolean
+        }
+      }
+      material_name: string
+    }
+
+    const testMesh: TestMesh = {
+      vertices: new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 1, 0]),
+      indices: new Uint32Array([0, 1, 2]),
+      indexSizes: new Uint32Array([3]),
+      textures: {
+        diffuse: new Float32Array([0.5, 0.6, 0.7, 0.8])
+      },
+      config: {
+        name: "test_config",
+        version: 3.14,
+        settings: {
+          quality: "high",
+          enabled: true
+        }
+      },
+      material_name: "zip_test_material"
+    }
+
+    // Save to zip
+    const zipBytes = await MeshUtils.saveMeshToZip(testMesh)
+    expect(zipBytes).toBeInstanceOf(Uint8Array)
+    expect(zipBytes.length).toBeGreaterThan(0)
+
+    // Load from zip
+    const loadedMesh = await MeshUtils.loadMeshFromZip<TestMesh>(zipBytes.buffer as ArrayBuffer)
+    
+    // Verify basic mesh data
+    expect(loadedMesh.vertices).toBeInstanceOf(Float32Array)
+    expect(loadedMesh.indices).toBeInstanceOf(Uint32Array)
+    expect(MeshUtils.getPolygonCount(loadedMesh)).toBe(1)
+    expect(MeshUtils.isUniformPolygons(loadedMesh)).toBe(true)
+    
+    // Verify arrays are preserved
+    expect(loadedMesh.textures.diffuse).toBeInstanceOf(Float32Array)
+    expect(loadedMesh.textures.diffuse.length).toBe(4)
+    
+    // Verify non-array values are preserved
+    expect(loadedMesh.material_name).toBe("zip_test_material")
+    expect(loadedMesh.config.name).toBe("test_config")
+    expect(loadedMesh.config.version).toBe(3.14)
+    expect(loadedMesh.config.settings.quality).toBe("high")
+    expect(loadedMesh.config.settings.enabled).toBe(true)
+  })
 })

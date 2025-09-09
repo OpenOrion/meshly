@@ -121,7 +121,11 @@ class Mesh(BaseModel):
         None, description="Index data as a flattened 1D numpy array or list of polygons"
     )
     index_sizes: Optional[Union[np.ndarray, List[int]]] = Field(
-        None, description="Size of each polygon (number of vertices per polygon)"
+        None, description="Size of each polygon (number of vertices per polygon). "
+        "If not provided, will be automatically inferred from indices structure: "
+        "- For 2D numpy arrays: uniform polygon size from array shape "
+        "- For list of lists: individual polygon sizes "
+        "If explicitly provided, will be validated against inferred structure."
     )
     
     def copy(self: T) -> T:
@@ -256,13 +260,33 @@ class Mesh(BaseModel):
 
     @model_validator(mode="after")
     def validate_arrays(self) -> "Mesh":
-        """Validate and convert arrays to the correct types."""
+        """
+        Validate and convert arrays to the correct types.
+        
+        This method handles various input formats for indices and automatically infers
+        index_sizes when not explicitly provided:
+        
+        - 2D numpy arrays: Assumes uniform polygons, infers size from array shape
+        - List of lists: Supports mixed polygon sizes, infers from individual polygon lengths
+        - Flat arrays: Requires explicit index_sizes for polygon structure
+        
+        When index_sizes is explicitly provided, it validates that the structure matches
+        the inferred polygon sizes and that the sum equals the total number of indices.
+        
+        Raises:
+            ValueError: If explicit index_sizes doesn't match inferred structure or
+                       if sum of index_sizes doesn't match total indices count.
+        """
         # Ensure vertices is a float32 array
         if self.vertices is not None:
             self.vertices = np.asarray(self.vertices, dtype=np.float32)
 
         # Handle indices - convert to flattened 1D array and extract size info
         if self.indices is not None:
+            # Store original index_sizes if explicitly provided for validation
+            explicit_index_sizes = self.index_sizes
+            inferred_index_sizes = None
+            
             # Convert various input formats to flattened indices
             if isinstance(self.indices, (list, tuple)):
                 # Handle list of lists (mixed polygons) or flat list
@@ -275,8 +299,11 @@ class Mesh(BaseModel):
                         flat_indices.extend(polygon_array.flatten())
                         sizes.append(len(polygon_array.flatten()))
                     self.indices = np.array(flat_indices, dtype=np.uint32)
+                    inferred_index_sizes = np.array(sizes, dtype=np.uint32)
+                    
+                    # Set index_sizes only if not explicitly provided
                     if self.index_sizes is None:
-                        self.index_sizes = np.array(sizes, dtype=np.uint32)
+                        self.index_sizes = inferred_index_sizes
                 else:
                     # Flat list
                     self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
@@ -286,13 +313,33 @@ class Mesh(BaseModel):
                 self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
                 
                 # If it was a 2D array, extract size information
-                if len(original_shape) > 1 and self.index_sizes is None:
-                    # Assume uniform polygons from 2D array
-                    self.index_sizes = np.full(original_shape[0], original_shape[1], dtype=np.uint32)
+                if len(original_shape) > 1:
+                    # Infer uniform polygons from 2D array shape
+                    inferred_index_sizes = np.full(original_shape[0], original_shape[1], dtype=np.uint32)
+                    
+                    # Set index_sizes only if not explicitly provided
+                    if self.index_sizes is None:
+                        self.index_sizes = inferred_index_sizes
 
-        # Ensure index_sizes is uint32 array if present
-        if self.index_sizes is not None:
-            self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
+            # Ensure index_sizes is uint32 array if present
+            if self.index_sizes is not None:
+                self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
+                
+                # Validate that explicit index_sizes matches inferred structure if both exist
+                if explicit_index_sizes is not None and inferred_index_sizes is not None:
+                    explicit_array = np.asarray(explicit_index_sizes, dtype=np.uint32)
+                    if not np.array_equal(explicit_array, inferred_index_sizes):
+                        raise ValueError(
+                            f"Explicit index_sizes {explicit_array.tolist()} does not match "
+                            f"inferred structure {inferred_index_sizes.tolist()}"
+                        )
+                
+                # Validate that index_sizes sum matches total indices
+                if len(self.indices) != np.sum(self.index_sizes):
+                    raise ValueError(
+                        f"Sum of index_sizes ({np.sum(self.index_sizes)}) does not match "
+                        f"total number of indices ({len(self.indices)})"
+                    )
 
         return self
 

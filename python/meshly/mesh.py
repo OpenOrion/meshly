@@ -12,12 +12,14 @@ from pathlib import Path
 import zipfile
 from io import BytesIO
 from typing import (
+    Dict,
     Optional,
     Set,
     Type,
     Any,
     TypeVar,
     Union,
+    List,
     get_type_hints,
 )
 import numpy as np
@@ -44,6 +46,8 @@ PathLike = Union[str, Path]
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
 
+# Removed ARRAY_NAME_SEPERATOR - now using nested directories
+
 
 class EncodedMesh(BaseModel):
     """
@@ -63,7 +67,7 @@ class EncodedMesh(BaseModel):
     index_sizes: Optional[bytes] = Field(
         None, description="Encoded polygon sizes (optional)"
     )
-    arrays: dict[str, EncodedArray] = Field(
+    arrays: Dict[str, EncodedArray] = Field(
         default_factory=dict, description="Dictionary of additional encoded arrays"
     )
 
@@ -97,7 +101,7 @@ class MeshMetadata(BaseModel):
     module_name: str = Field(
         ..., description="Name of the module containing the mesh class"
     )
-    field_data: Optional[dict[str, Any]] = Field(
+    field_data: Optional[Dict[str, Any]] = Field(
         None, description="Dictionary of model fields that aren't numpy arrays"
     )
     mesh_size: MeshSize = Field(description="Size metadata for the encoded mesh")
@@ -113,10 +117,10 @@ class Mesh(BaseModel):
 
     # Required fields
     vertices: np.ndarray = Field(..., description="Vertex data as a numpy array")
-    indices: Optional[Union[np.ndarray, list[Any]]] = Field(
+    indices: Optional[Union[np.ndarray, List[Any]]] = Field(
         None, description="Index data as a flattened 1D numpy array or list of polygons"
     )
-    index_sizes: Optional[Union[np.ndarray, list[int]]] = Field(
+    index_sizes: Optional[Union[np.ndarray, List[int]]] = Field(
         None, description="Size of each polygon (number of vertices per polygon)"
     )
     
@@ -194,7 +198,7 @@ class Mesh(BaseModel):
                 offset += size
             return result
 
-    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> dict[str, np.ndarray]:
+    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, np.ndarray]:
         """
         Recursively extract numpy arrays from nested structures.
         
@@ -585,13 +589,11 @@ class MeshUtils:
                 field_data=model_data,
             )
 
-            # Save array data with name mapping
-            array_name_mapping = {}
+            # Save array data
             for name, encoded_array in encoded_mesh.arrays.items():
-                # Replace dots with underscores for file paths
-                safe_name = name.replace(".", "__DOT__")
-                array_name_mapping[safe_name] = name
-                zipf.writestr(f"arrays/{safe_name}.bin", encoded_array.data)
+                # Convert dots to nested directory structure, each array gets its own directory
+                array_path = name.replace(".", "/")
+                zipf.writestr(f"arrays/{array_path}/array.bin", encoded_array.data)
 
                 # Save array metadata
                 array_metadata = ArrayMetadata(
@@ -600,13 +602,9 @@ class MeshUtils:
                     itemsize=encoded_array.itemsize,
                 )
                 zipf.writestr(
-                    f"arrays/{safe_name}_metadata.json",
+                    f"arrays/{array_path}/metadata.json",
                     json.dumps(array_metadata.model_dump(), indent=2),
                 )
-            
-            # Save array name mapping
-            if array_name_mapping:
-                zipf.writestr("arrays/_name_mapping.json", json.dumps(array_name_mapping, indent=2))
 
             # Save general metadata
             zipf.writestr("metadata.json", json.dumps(metadata.model_dump(), indent=2))
@@ -665,22 +663,17 @@ class MeshUtils:
                 arrays={},  # Will be populated below
             )
 
-            # Load array name mapping
-            array_name_mapping = {}
-            if "arrays/_name_mapping.json" in zipf.namelist():
-                with zipf.open("arrays/_name_mapping.json") as f:
-                    array_name_mapping = json.loads(f.read().decode("utf-8"))
-            
             # Load additional array data
             for array_file_name in [
                 file_name
                 for file_name in zipf.namelist()
-                if file_name.startswith("arrays/") and file_name.endswith(".bin") and not file_name.endswith("_name_mapping.json")
+                if file_name.startswith("arrays/") and file_name.endswith("/array.bin")
             ]:
-                safe_array_name = array_file_name.split("/")[1].split(".")[0]
+                # Extract the array path by removing "arrays/" prefix and "/array.bin" suffix
+                array_path = array_file_name[7:-10]  # Remove "arrays/" and "/array.bin"
 
                 # Load array metadata
-                with zipf.open(f"arrays/{safe_array_name}_metadata.json") as f:
+                with zipf.open(f"arrays/{array_path}/metadata.json") as f:
                     array_metadata_dict = json.loads(f.read().decode("utf-8"))
                     array_metadata = ArrayMetadata(**array_metadata_dict)
 
@@ -696,8 +689,8 @@ class MeshUtils:
                     itemsize=array_metadata.itemsize,
                 )
 
-                # Get original name from mapping, fallback to converting back
-                original_name = array_name_mapping.get(safe_array_name, safe_array_name.replace("__DOT__", "."))
+                # Convert directory path back to dotted name
+                original_name = array_path.replace("/", ".")
 
                 # Add to encoded mesh arrays with original name
                 encoded_mesh.arrays[original_name] = encoded_array

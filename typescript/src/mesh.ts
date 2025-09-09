@@ -477,15 +477,13 @@ export class MeshUtils {
       mesh_size: meshSize
     }
     
-    // Save array data with name mapping
-    const arrayNameMapping: Record<string, string> = {}
+    // Save array data
     if (encodedMesh.arrays) {
       for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
-        // Replace dots with __DOT__ for file paths
-        const safeName = name.replace(/\./g, '__DOT__')
-        arrayNameMapping[safeName] = name
+        // Convert dots to nested directory structure, each array gets its own directory
+        const arrayPath = name.replace(/\./g, '/')
         
-        zip.file(`arrays/${safeName}.bin`, encodedArray.data)
+        zip.file(`arrays/${arrayPath}/array.bin`, encodedArray.data)
         
         // Save array metadata
         const arrayMetadata: ArrayMetadata = {
@@ -493,12 +491,7 @@ export class MeshUtils {
           dtype: encodedArray.dtype,
           itemsize: encodedArray.itemsize
         }
-        zip.file(`arrays/${safeName}_metadata.json`, JSON.stringify(arrayMetadata, null, 2))
-      }
-      
-      // Save array name mapping
-      if (Object.keys(arrayNameMapping).length > 0) {
-        zip.file('arrays/_name_mapping.json', JSON.stringify(arrayNameMapping, null, 2))
+        zip.file(`arrays/${arrayPath}/metadata.json`, JSON.stringify(arrayMetadata, null, 2))
       }
     }
     
@@ -543,23 +536,17 @@ export class MeshUtils {
     }
 
 
-    // Load array name mapping if it exists
-    let arrayNameMapping: Record<string, string> = {}
-    const nameMappingFile = zip.file('arrays/_name_mapping.json')
-    if (nameMappingFile) {
-      const nameMappingJson = await nameMappingFile.async('string')
-      arrayNameMapping = JSON.parse(nameMappingJson)
-    }
-
     // Extract additional arrays
     const arrays: Record<string, EncodedArray> = {}
     const arrayFiles = zip.files ? Object.keys(zip.files)
-      .filter(name => name.startsWith('arrays/') && name.endsWith('.bin') && !name.includes('_name_mapping.json'))
-      .map(name => name.split('/')[1].split('.')[0]) : []
+      .filter(name => name.startsWith('arrays/') && name.endsWith('/array.bin')) : []
 
-    for (const safeArrayName of arrayFiles) {
+    for (const arrayFileName of arrayFiles) {
+      // Extract the array path by removing "arrays/" prefix and "/array.bin" suffix
+      const arrayPath = arrayFileName.slice(7, -10) // Remove "arrays/" and "/array.bin"
+
       // Extract the array metadata
-      const arrayMetadataJson = await zip.file(`arrays/${safeArrayName}_metadata.json`)?.async('string')
+      const arrayMetadataJson = await zip.file(`arrays/${arrayPath}/metadata.json`)?.async('string')
       if (!arrayMetadataJson) {
         continue
       }
@@ -567,13 +554,13 @@ export class MeshUtils {
       const arrayMetadata: ArrayMetadata = JSON.parse(arrayMetadataJson)
 
       // Extract the array data
-      const arrayData = await zip.file(`arrays/${safeArrayName}.bin`)?.async('uint8array')
+      const arrayData = await zip.file(arrayFileName)?.async('uint8array')
       if (!arrayData) {
         continue
       }
 
-      // Get original name from mapping, fallback to converting back
-      const originalName = arrayNameMapping[safeArrayName] || safeArrayName.replace(/__DOT__/g, '.')
+      // Convert directory path back to dotted name
+      const originalName = arrayPath.replace(/\//g, '.')
 
       // Add the encoded array with original name
       arrays[originalName] = {

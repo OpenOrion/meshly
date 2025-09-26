@@ -563,7 +563,7 @@ class MeshUtils:
         )
 
     @staticmethod
-    def save_to_zip(mesh: Mesh, source: Union[PathLike, BytesIO]) -> None:
+    def save_to_zip(mesh: Mesh, source: Union[PathLike, BytesIO], date_time: Optional[tuple] = None) -> None:
         """
         Save the mesh to a zip file.
 
@@ -615,12 +615,8 @@ class MeshUtils:
                 # Include scalar fields directly
                 model_data[field_name] = field_value
 
-        with zipfile.ZipFile(source, "w") as zipf:
-            # Save mesh data
-            zipf.writestr("mesh/vertices.bin", encoded_mesh.vertices)
-            if encoded_mesh.indices is not None:
-                zipf.writestr("mesh/indices.bin", encoded_mesh.indices)
 
+        with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
             # Create mesh size metadata
             mesh_size = MeshSize(
                 vertex_count=encoded_mesh.vertex_count,
@@ -636,11 +632,20 @@ class MeshUtils:
                 field_data=model_data,
             )
 
-            # Save array data
-            for name, encoded_array in encoded_mesh.arrays.items():
+            # Collect all files to write in sorted order for deterministic output
+            files_to_write = []
+            
+            # Add mesh data
+            files_to_write.append(("mesh/vertices.bin", encoded_mesh.vertices))
+            if encoded_mesh.indices is not None:
+                files_to_write.append(("mesh/indices.bin", encoded_mesh.indices))
+
+            # Add array data (sorted by name for deterministic order)
+            for name in sorted(encoded_mesh.arrays.keys()):
+                encoded_array = encoded_mesh.arrays[name]
                 # Convert dots to nested directory structure, each array gets its own directory
                 array_path = name.replace(".", "/")
-                zipf.writestr(f"arrays/{array_path}/array.bin", encoded_array.data)
+                files_to_write.append((f"arrays/{array_path}/array.bin", encoded_array.data))
 
                 # Save array metadata
                 array_metadata = ArrayMetadata(
@@ -648,13 +653,24 @@ class MeshUtils:
                     dtype=str(encoded_array.dtype),
                     itemsize=encoded_array.itemsize,
                 )
-                zipf.writestr(
+                files_to_write.append((
                     f"arrays/{array_path}/metadata.json",
-                    json.dumps(array_metadata.model_dump(), indent=2),
-                )
+                    json.dumps(array_metadata.model_dump(), indent=2, sort_keys=True)
+                ))
 
-            # Save general metadata
-            zipf.writestr("metadata.json", json.dumps(metadata.model_dump(), indent=2))
+            # Add general metadata
+            files_to_write.append(("metadata.json", json.dumps(metadata.model_dump(), indent=2, sort_keys=True)))
+
+            # Sort files by path for deterministic order and write them
+            for filename, data in sorted(files_to_write):
+                info = zipfile.ZipInfo(filename=filename, date_time=date_time)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o644 << 16  # Fixed file permissions
+                if isinstance(data, str):
+                    data = data.encode('utf-8')
+                zipf.writestr(info, data)
+
+
 
     @staticmethod
     def load_from_zip(cls: Type[T], destination: Union[PathLike, BytesIO]) -> T:

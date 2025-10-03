@@ -18,6 +18,7 @@ export interface MeshSize {
   index_size: number
 }
 
+
 /**
  * File metadata for a mesh
  */
@@ -55,9 +56,14 @@ export interface Mesh {
   vertices: Float32Array
 
   /**
-   * Index data as a Uint32Array (optional)
+   * Index data as a Uint32Array (flattened 1D array)
    */
   indices?: Uint32Array
+
+  /**
+   * Size of each polygon (number of vertices per polygon)
+   */
+  indexSizes?: Uint32Array
 
   /**
    * Additional properties that can be any type of array
@@ -100,6 +106,11 @@ export interface EncodedMesh {
   index_size: number
 
   /**
+   * Encoded polygon sizes (optional, for backwards compatibility)
+   */
+  indexSizes?: Uint8Array
+
+  /**
    * Dictionary of additional encoded arrays
    */
   arrays?: Record<string, EncodedArray>
@@ -109,6 +120,121 @@ export interface EncodedMesh {
  * Utility class for mesh operations
  */
 export class MeshUtils {
+
+  /**
+   * Get polygon count from a mesh
+   */
+  static getPolygonCount(mesh: Mesh): number {
+    return mesh.indexSizes ? mesh.indexSizes.length : 0
+  }
+
+  /**
+   * Check if all polygons have the same number of vertices
+   */
+  static isUniformPolygons(mesh: Mesh): boolean {
+    if (!mesh.indexSizes) {
+      return true // No polygon info means uniform (legacy)
+    }
+    const firstSize = mesh.indexSizes[0]
+    return mesh.indexSizes.every(size => size === firstSize)
+  }
+
+  /**
+   * Get indices in their original polygon structure
+   */
+  static getPolygonIndices(mesh: Mesh): Uint32Array[] | Uint32Array {
+    if (!mesh.indices) {
+      return []
+    }
+
+    if (!mesh.indexSizes) {
+      // Legacy format - assume triangles
+      if (mesh.indices.length % 3 === 0) {
+        const result = new Uint32Array(mesh.indices.length)
+        result.set(mesh.indices)
+        return result
+      } else {
+        throw new Error('Cannot determine polygon structure without indexSizes')
+      }
+    }
+
+    if (MeshUtils.isUniformPolygons(mesh)) {
+      // Uniform case: return as 2D-like structure (but we'll return the flat array for now)
+      return mesh.indices
+    } else {
+      // Mixed case: return as array of arrays
+      const result: Uint32Array[] = []
+      let offset = 0
+      for (const size of mesh.indexSizes) {
+        const polygon = new Uint32Array(size)
+        polygon.set(mesh.indices.subarray(offset, offset + size))
+        result.push(polygon)
+        offset += size
+      }
+      return result
+    }
+  }
+
+  /**
+   * Recursively extract arrays from nested dictionary structures
+   *
+   * @param obj The object to extract arrays from
+   * @param prefix The current path prefix for nested keys
+   * @returns Record mapping dotted paths to typed arrays
+   */
+  private static extractNestedArrays(obj: any, prefix: string = ''): Record<string, Float32Array | Uint32Array> {
+    const arrays: Record<string, Float32Array | Uint32Array> = {}
+    
+    if (typeof obj === 'object' && obj !== null && !ArrayBuffer.isView(obj)) {
+      for (const [key, value] of Object.entries(obj)) {
+        const nestedKey = prefix ? `${prefix}.${key}` : key
+        
+        if (value instanceof Float32Array || value instanceof Uint32Array) {
+          arrays[nestedKey] = value
+        } else if (typeof value === 'object' && value !== null && !ArrayBuffer.isView(value)) {
+          Object.assign(arrays, MeshUtils.extractNestedArrays(value, nestedKey))
+        }
+      }
+    }
+    
+    return arrays
+  }
+
+  /**
+   * Reconstruct nested dictionary structure from dotted keys
+   *
+   * @param arrays Record of arrays with dotted keys
+   * @returns Reconstructed nested object structure
+   */
+  private static reconstructDictionaries(arrays: Record<string, Float32Array | Uint32Array>): Record<string, any> {
+    const result: Record<string, any> = {}
+    const directArrays: Record<string, Float32Array | Uint32Array> = {}
+    
+    for (const [key, array] of Object.entries(arrays)) {
+      if (key.includes('.')) {
+        // This is a nested array
+        const parts = key.split('.')
+        let current = result
+        
+        // Navigate/create the nested structure
+        for (let i = 0; i < parts.length - 1; i++) {
+          const part = parts[i]
+          if (!(part in current)) {
+            current[part] = {}
+          }
+          current = current[part]
+        }
+        
+        // Set the final array
+        current[parts[parts.length - 1]] = array
+      } else {
+        // This is a direct array field
+        directArrays[key] = array
+      }
+    }
+    
+    return { ...result, ...directArrays }
+  }
 
   /**
    * Encode a mesh for efficient transmission
@@ -147,14 +273,25 @@ export class MeshUtils {
 
     }
 
-    // Encode additional arrays
+    // Encode additional arrays, including nested arrays from dictionaries
     const encodedArrays: Record<string, EncodedArray> = {}
 
-    // Encode all additional Float32Array properties
-    for (const key in mesh) {
-      if (key !== 'vertices' && key !== 'indices' && mesh[key] instanceof Float32Array) {
-        encodedArrays[key] = ArrayUtils.encodeArray(mesh[key])
+    // Extract all arrays (including nested ones)
+    const allArrays = MeshUtils.extractNestedArrays(mesh)
+    
+    for (const [key, array] of Object.entries(allArrays)) {
+      if (key !== 'vertices' && key !== 'indices') {
+        if (array instanceof Float32Array) {
+          encodedArrays[key] = ArrayUtils.encodeArray(array)
+        } else if (array instanceof Uint32Array) {
+          encodedArrays[key] = ArrayUtils.encodeArray(array)
+        }
       }
+    }
+
+    // Handle indexSizes as a special case - store in arrays if present
+    if (mesh.indexSizes) {
+      encodedArrays['indexSizes'] = ArrayUtils.encodeArray(mesh.indexSizes)
     }
 
     // Create and return the encoded mesh
@@ -165,6 +302,7 @@ export class MeshUtils {
       vertex_size: vertexSize,
       index_count: indexCount,
       index_size: indexSize,
+      indexSizes: undefined, // Not used anymore - stored in arrays
       arrays: encodedArrays
     }
   }
@@ -172,11 +310,12 @@ export class MeshUtils {
   /**
    * Decode an encoded mesh
    *
-   * @param MeshClass The mesh class constructor (not used in TypeScript version, included for API compatibility)
    * @param encodedMesh EncodedMesh object to decode
    * @returns Decoded Mesh object
    */
-  static decode<MeshType extends Mesh>(encodedMesh: EncodedMesh): MeshType {
+  static decode<MeshType extends Mesh>(
+    encodedMesh: EncodedMesh
+  ): MeshType {
 
     // Create the output buffer
     const verticesUint8 = new Uint8Array(encodedMesh.vertex_count * encodedMesh.vertex_size)
@@ -211,6 +350,9 @@ export class MeshUtils {
     } as MeshType
 
     // Decode additional arrays if present
+    const decodedArrays: Record<string, Float32Array | Uint32Array> = {}
+    let indexSizes: Uint32Array | undefined
+    
     if (encodedMesh.arrays) {
       for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
         const decodedArray = ArrayUtils.decodeArray(
@@ -221,18 +363,149 @@ export class MeshUtils {
             itemsize: encodedArray.itemsize
           }
         )
-
-        // Add the decoded array to the result
-        Object.assign(result, { [name]: decodedArray })
+        
+        if (name === 'indexSizes') {
+          // Special handling for indexSizes
+          indexSizes = decodedArray as Uint32Array
+        } else {
+          decodedArrays[name] = decodedArray
+        }
       }
     }
+
+    // Add indexSizes to result if present
+    if (indexSizes) {
+      result.indexSizes = indexSizes
+    }
+
+    // Reconstruct dictionary structure from decoded arrays
+    const reconstructedStructure = MeshUtils.reconstructDictionaries(decodedArrays)
+    
+    // Merge reconstructed structure into result
+    Object.assign(result, reconstructedStructure)
 
     return result
   }
 
   /**
+   * Extract non-array values from nested structures for metadata storage
+   * @param obj Object to extract from
+   * @param prefix Current path prefix
+   * @returns Object with non-array values only
+   */
+  private static extractNonArrays(obj: any, prefix: string = ''): any {
+    if (typeof obj === 'object' && obj !== null && !ArrayBuffer.isView(obj)) {
+      const result: any = {}
+      for (const [key, value] of Object.entries(obj)) {
+        const nestedKey = prefix ? `${prefix}.${key}` : key
+        if (ArrayBuffer.isView(value)) {
+          // Skip arrays - they're stored separately
+          continue
+        } else if (typeof value === 'object' && value !== null && !ArrayBuffer.isView(value)) {
+          // Recursively process nested objects
+          const nestedResult = MeshUtils.extractNonArrays(value, nestedKey)
+          if (nestedResult && Object.keys(nestedResult).length > 0) {
+            result[key] = nestedResult
+          }
+        } else {
+          // Include non-array values
+          result[key] = value
+        }
+      }
+      return Object.keys(result).length > 0 ? result : null
+    } else if (ArrayBuffer.isView(obj)) {
+      // Skip arrays
+      return null
+    } else {
+      // Include non-array values
+      return obj
+    }
+  }
+
+  /**
+   * Save a mesh to a zip file (returns zip data as Uint8Array)
+   *
+   * @param mesh The mesh to save
+   * @returns Promise that resolves to zip file data as Uint8Array
+   */
+  static async saveMeshToZip<MeshType extends Mesh>(mesh: MeshType): Promise<Uint8Array> {
+    const zip = new JSZip()
+    
+    // Encode the mesh
+    const encodedMesh = MeshUtils.encode(mesh)
+    
+    // Save mesh data
+    zip.file('mesh/vertices.bin', encodedMesh.vertices)
+    if (encodedMesh.indices) {
+      zip.file('mesh/indices.bin', encodedMesh.indices)
+    }
+    
+    // Extract non-array field data for metadata
+    const fieldData: any = {}
+    const allArrays = MeshUtils.extractNestedArrays(mesh)
+    const arrayFieldNames = new Set([...Object.keys(allArrays), 'vertices', 'indices', 'indexSizes'])
+    
+    for (const [fieldName, fieldValue] of Object.entries(mesh)) {
+      if (arrayFieldNames.has(fieldName)) {
+        continue // Skip array fields
+      }
+      
+      if (typeof fieldValue === 'object' && fieldValue !== null && !ArrayBuffer.isView(fieldValue)) {
+        // Extract non-array values from dictionaries
+        const nonArrayContent = MeshUtils.extractNonArrays(fieldValue, fieldName)
+        if (nonArrayContent) {
+          fieldData[fieldName] = nonArrayContent
+        }
+      } else {
+        // Include scalar fields directly
+        fieldData[fieldName] = fieldValue
+      }
+    }
+    
+    // Create metadata
+    const meshSize: MeshSize = {
+      vertex_count: encodedMesh.vertex_count,
+      vertex_size: encodedMesh.vertex_size,
+      index_count: encodedMesh.index_count ?? null,
+      index_size: encodedMesh.index_size
+    }
+    
+    const metadata: MeshMetadata = {
+      class_name: 'FlexibleMesh',  // Use FlexibleMesh class name for Python compatibility
+      module_name: '__main__',
+      field_data: Object.keys(fieldData).length > 0 ? fieldData : undefined,
+      mesh_size: meshSize
+    }
+    
+    // Save array data
+    if (encodedMesh.arrays) {
+      for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
+        // Convert dots to nested directory structure, each array gets its own directory
+        const arrayPath = name.replace(/\./g, '/')
+        
+        zip.file(`arrays/${arrayPath}/array.bin`, encodedArray.data)
+        
+        // Save array metadata
+        const arrayMetadata: ArrayMetadata = {
+          shape: encodedArray.shape,
+          dtype: encodedArray.dtype,
+          itemsize: encodedArray.itemsize
+        }
+        zip.file(`arrays/${arrayPath}/metadata.json`, JSON.stringify(arrayMetadata, null, 2))
+      }
+    }
+    
+    // Save general metadata
+    zip.file('metadata.json', JSON.stringify(metadata, null, 2))
+    
+    // Generate and return zip data
+    const zipData = await zip.generateAsync({ type: 'uint8array' })
+    return zipData
+  }
+
+  /**
    * Extracts and decodes a mesh from a zip file
-   * 
+   *
    * @param zipData Zip file data as an ArrayBuffer
    * @returns Promise that resolves to the decoded mesh
    */
@@ -266,12 +539,14 @@ export class MeshUtils {
     // Extract additional arrays
     const arrays: Record<string, EncodedArray> = {}
     const arrayFiles = zip.files ? Object.keys(zip.files)
-      .filter(name => name.startsWith('arrays/') && name.endsWith('.bin'))
-      .map(name => name.split('/')[1].split('.')[0]) : []
+      .filter(name => name.startsWith('arrays/') && name.endsWith('/array.bin')) : []
 
-    for (const arrayName of arrayFiles) {
+    for (const arrayFileName of arrayFiles) {
+      // Extract the array path by removing "arrays/" prefix and "/array.bin" suffix
+      const arrayPath = arrayFileName.slice(7, -10) // Remove "arrays/" and "/array.bin"
+
       // Extract the array metadata
-      const arrayMetadataJson = await zip.file(`arrays/${arrayName}_metadata.json`)?.async('string')
+      const arrayMetadataJson = await zip.file(`arrays/${arrayPath}/metadata.json`)?.async('string')
       if (!arrayMetadataJson) {
         continue
       }
@@ -279,13 +554,16 @@ export class MeshUtils {
       const arrayMetadata: ArrayMetadata = JSON.parse(arrayMetadataJson)
 
       // Extract the array data
-      const arrayData = await zip.file(`arrays/${arrayName}.bin`)?.async('uint8array')
+      const arrayData = await zip.file(arrayFileName)?.async('uint8array')
       if (!arrayData) {
         continue
       }
 
-      // Add the encoded array
-      arrays[arrayName] = {
+      // Convert directory path back to dotted name
+      const originalName = arrayPath.replace(/\//g, '.')
+
+      // Add the encoded array with original name
+      arrays[originalName] = {
         data: arrayData,
         shape: arrayMetadata.shape,
         dtype: arrayMetadata.dtype,
@@ -307,9 +585,30 @@ export class MeshUtils {
     // Decode the mesh using our decode function
     const result = MeshUtils.decode<MeshType>(encodedMesh)
 
-    // Add any additional field data from the metadata
+    // Add any additional field data from the metadata, merging with existing dict fields
     if (metadata.field_data) {
-      Object.assign(result, metadata.field_data)
+      for (const [fieldName, fieldValue] of Object.entries(metadata.field_data)) {
+        const existingValue = (result as any)[fieldName]
+        if (existingValue && typeof existingValue === 'object' && typeof fieldValue === 'object' &&
+            !ArrayBuffer.isView(existingValue) && !ArrayBuffer.isView(fieldValue)) {
+          // Merge non-array values into existing dictionary structure
+          function mergeDicts(target: any, source: any): void {
+            for (const [key, value] of Object.entries(source)) {
+              if (key in target && typeof target[key] === 'object' && typeof value === 'object' &&
+                  !ArrayBuffer.isView(target[key]) && !ArrayBuffer.isView(value)) {
+                mergeDicts(target[key], value)
+              } else {
+                target[key] = value
+              }
+            }
+          }
+          
+          mergeDicts(existingValue, fieldValue)
+        } else {
+          // Set scalar fields directly
+          (result as any)[fieldName] = fieldValue
+        }
+      }
     }
 
     return result

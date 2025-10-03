@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meshly"
-version = "1.0.2-alpha"
+version = "1.0.3-alpha"
 description = "High-level abstractions and utilities for working with meshoptimizer"
 readme = "README.md"
 license = {text = "MIT"}

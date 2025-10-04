@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meshly"
-version = "1.0.5"
+version = "1.0.6"
 description = "High-level abstractions and utilities for working with meshoptimizer"
 readme = "README.md"
 license = {text = "MIT"}
@@ -43,7 +43,6 @@ Repository = "https://github.com/OpenOrion/meshly"
 "Bug Tracker" = "https://github.com/OpenOrion/meshly/issues"
 Documentation = "https://github.com/OpenOrion/meshly#readme"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["meshly*"]
+[tool.setuptools]
+packages = ["meshly"]
 

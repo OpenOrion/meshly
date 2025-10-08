@@ -18,6 +18,8 @@ from .mesh import (
     MeshSize,
     MeshMetadata,
     MeshUtils,
+    Array,
+    HAS_JAX,
 )
 
 from .array import (
@@ -35,7 +37,9 @@ __all__ = [
     "MeshSize",
     "MeshMetadata",
     "MeshUtils",
-    # Array utilities
+    # Array types and utilities
+    "Array",
+    "HAS_JAX",
     "EncodedArray",
     "EncodedArrayModel",
     "ArrayMetadata",

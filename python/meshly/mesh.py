@@ -20,10 +20,25 @@ from typing import (
     TypeVar,
     Union,
     List,
+    Literal,
     get_type_hints,
 )
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
+
+# Optional JAX support
+try:
+    import jax.numpy as jnp
+    HAS_JAX = True
+except ImportError:
+    jnp = None
+    HAS_JAX = False
+
+# Array type union - supports both numpy and JAX arrays
+if HAS_JAX:
+    Array = Union[np.ndarray, jnp.ndarray]
+else:
+    Array = np.ndarray
 
 # Use meshoptimizer directly
 from meshoptimizer import (
@@ -116,14 +131,14 @@ class Mesh(BaseModel):
     """
 
     # Required fields
-    vertices: np.ndarray = Field(..., description="Vertex data as a numpy array")
-    indices: Optional[Union[np.ndarray, List[Any]]] = Field(
-        None, description="Index data as a flattened 1D numpy array or list of polygons"
+    vertices: Array = Field(..., description="Vertex data as a numpy or JAX array")
+    indices: Optional[Union[Array, List[Any]]] = Field(
+        None, description="Index data as a flattened 1D numpy/JAX array or list of polygons"
     )
-    index_sizes: Optional[Union[np.ndarray, List[int]]] = Field(
+    index_sizes: Optional[Union[Array, List[int]]] = Field(
         None, description="Size of each polygon (number of vertices per polygon). "
         "If not provided, will be automatically inferred from indices structure: "
-        "- For 2D numpy arrays: uniform polygon size from array shape "
+        "- For 2D numpy/JAX arrays: uniform polygon size from array shape "
         "- For list of lists: individual polygon sizes "
         "If explicitly provided, will be validated against inferred structure."
     )
@@ -138,11 +153,13 @@ class Mesh(BaseModel):
         # Create a dictionary to hold the copied fields
         copied_fields = {}
         
-        # Copy all fields, with special handling for numpy arrays
+        # Copy all fields, with special handling for numpy/JAX arrays
         for field_name in self.model_fields_set:
             value = getattr(self, field_name)
             if isinstance(value, np.ndarray):
                 copied_fields[field_name] = value.copy()
+            elif HAS_JAX and isinstance(value, jnp.ndarray):
+                copied_fields[field_name] = value
             else:
                 copied_fields[field_name] = value
                 
@@ -171,12 +188,12 @@ class Mesh(BaseModel):
             return True  # No polygon info means uniform (legacy)
         return len(np.unique(self.index_sizes)) == 1
 
-    def get_polygon_indices(self) -> Union[np.ndarray, list]:
+    def get_polygon_indices(self) -> Union[Array, list]:
         """
         Get indices in their original polygon structure.
         
         Returns:
-            For uniform polygons: 2D numpy array where each row is a polygon
+            For uniform polygons: 2D numpy/JAX array where each row is a polygon
             For mixed polygons: List of lists where each sublist is a polygon
         """
         if self.indices is None:
@@ -202,27 +219,27 @@ class Mesh(BaseModel):
                 offset += size
             return result
 
-    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, np.ndarray]:
+    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, Array]:
         """
-        Recursively extract numpy arrays from nested structures.
+        Recursively extract numpy/JAX arrays from nested structures.
         
         Args:
             obj: The object to extract arrays from
             prefix: The current path prefix for nested keys
             
         Returns:
-            Dictionary mapping dotted paths to numpy arrays
+            Dictionary mapping dotted paths to numpy/JAX arrays
         """
         arrays = {}
         
         if isinstance(obj, dict):
             for key, value in obj.items():
                 nested_key = f"{prefix}.{key}" if prefix else key
-                if isinstance(value, np.ndarray):
+                if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
                     arrays[nested_key] = value
                 elif isinstance(value, dict):
                     arrays.update(self._extract_nested_arrays(value, nested_key))
-        elif isinstance(obj, np.ndarray):
+        elif isinstance(obj, np.ndarray) or (HAS_JAX and isinstance(obj, jnp.ndarray)):
             arrays[prefix] = obj
             
         return arrays
@@ -230,7 +247,7 @@ class Mesh(BaseModel):
 
     @property
     def array_fields(self) -> Set[str]:
-        """Identify all numpy array fields in this class, including nested arrays in dictionaries."""
+        """Identify all numpy/JAX array fields in this class, including nested arrays in dictionaries."""
         result = set()
         type_hints = get_type_hints(self.__class__)
 
@@ -240,7 +257,7 @@ class Mesh(BaseModel):
                 continue
             try:
                 value = getattr(self, field_name, None)
-                if isinstance(value, np.ndarray):
+                if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
                     result.add(field_name)
                 elif isinstance(value, dict):
                     # Extract nested arrays and add them with dotted notation
@@ -277,9 +294,14 @@ class Mesh(BaseModel):
             ValueError: If explicit index_sizes doesn't match inferred structure or
                        if sum of index_sizes doesn't match total indices count.
         """
-        # Ensure vertices is a float32 array
+        # Ensure vertices is a float32 array, preserving array type (numpy/JAX)
         if self.vertices is not None:
-            self.vertices = np.asarray(self.vertices, dtype=np.float32)
+            if HAS_JAX and isinstance(self.vertices, jnp.ndarray):
+                # Keep as JAX array
+                self.vertices = self.vertices.astype(jnp.float32)
+            else:
+                # Convert to numpy array
+                self.vertices = np.asarray(self.vertices, dtype=np.float32)
 
         # Handle indices - convert to flattened 1D array and extract size info
         if self.indices is not None:
@@ -308,9 +330,14 @@ class Mesh(BaseModel):
                     # Flat list
                     self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
             else:
-                # Numpy array input
+                # Array input (numpy or JAX)
                 original_shape = self.indices.shape
-                self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
+                if HAS_JAX and isinstance(self.indices, jnp.ndarray):
+                    # Convert JAX array to numpy for indices (required for meshoptimizer)
+                    self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
+                else:
+                    # Numpy array input
+                    self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
                 
                 # If it was a 2D array, extract size information
                 if len(original_shape) > 1:
@@ -323,7 +350,11 @@ class Mesh(BaseModel):
 
             # Ensure index_sizes is uint32 array if present
             if self.index_sizes is not None:
-                self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
+                if HAS_JAX and isinstance(self.index_sizes, jnp.ndarray):
+                    # Convert JAX array to numpy for index_sizes (required for meshoptimizer)
+                    self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
+                else:
+                    self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
                 
                 # Validate that explicit index_sizes matches inferred structure if both exist
                 if explicit_index_sizes is not None and inferred_index_sizes is not None:
@@ -534,13 +565,13 @@ class MeshUtils:
                 else:
                     array = getattr(obj, parts[-1])
                     
-                if isinstance(array, np.ndarray):
+                if isinstance(array, np.ndarray) or (HAS_JAX and isinstance(array, jnp.ndarray)):
                     encoded_arrays[field_name] = ArrayUtils.encode_array(array)
             else:
                 # Handle direct array fields
                 try:
                     array = getattr(mesh, field_name)
-                    if isinstance(array, np.ndarray):
+                    if isinstance(array, np.ndarray) or (HAS_JAX and isinstance(array, jnp.ndarray)):
                         encoded_arrays[field_name] = ArrayUtils.encode_array(array)
                 except AttributeError:
                     # Skip attributes that don't exist
@@ -582,7 +613,7 @@ class MeshUtils:
                 result = {}
                 for key, value in obj.items():
                     nested_key = f"{prefix}.{key}" if prefix else key
-                    if isinstance(value, np.ndarray):
+                    if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
                         # Skip arrays - they're stored separately
                         continue
                     elif isinstance(value, dict):
@@ -594,7 +625,7 @@ class MeshUtils:
                         # Include non-array values
                         result[key] = value
                 return result if result else None
-            elif isinstance(obj, np.ndarray):
+            elif isinstance(obj, np.ndarray) or (HAS_JAX and isinstance(obj, jnp.ndarray)):
                 # Skip arrays
                 return None
             else:
@@ -663,7 +694,10 @@ class MeshUtils:
 
             # Sort files by path for deterministic order and write them
             for filename, data in sorted(files_to_write):
-                info = zipfile.ZipInfo(filename=filename, date_time=date_time)
+                if date_time is not None:
+                    info = zipfile.ZipInfo(filename=filename, date_time=date_time)
+                else:
+                    info = zipfile.ZipInfo(filename=filename)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o644 << 16  # Fixed file permissions
                 if isinstance(data, str):
@@ -673,13 +707,14 @@ class MeshUtils:
 
 
     @staticmethod
-    def load_from_zip(cls: Type[T], destination: Union[PathLike, BytesIO]) -> T:
+    def load_from_zip(cls: Type[T], destination: Union[PathLike, BytesIO], use_jax: bool = False) -> T:
         """
         Load a mesh from a zip file.
 
         Args:
             cls: The mesh class to instantiate
             destination: Path to the input zip file
+            use_jax: If True and JAX is available, decode arrays as JAX arrays instead of numpy arrays
 
         Returns:
             Mesh object loaded from the zip file
@@ -759,7 +794,7 @@ class MeshUtils:
                 encoded_mesh.arrays[original_name] = encoded_array
 
             # Decode the mesh using MeshUtils.decode
-            decoded_mesh = MeshUtils.decode(target_cls, encoded_mesh)
+            decoded_mesh = MeshUtils.decode(target_cls, encoded_mesh, use_jax=use_jax)
 
             # Add any additional field data from the metadata, merging with existing dict fields
             if metadata.field_data:
@@ -783,21 +818,26 @@ class MeshUtils:
             return decoded_mesh
 
     @staticmethod
-    def decode(cls: Type[T], encoded_mesh: EncodedMesh) -> T:
+    def decode(cls: Type[T], encoded_mesh: EncodedMesh, use_jax: bool = False) -> T:
         """
         Decode an encoded mesh.
 
         Args:
             cls: The mesh class to instantiate
             encoded_mesh: EncodedMesh object to decode
+            use_jax: If True and JAX is available, decode arrays as JAX arrays instead of numpy arrays
 
         Returns:
             Decoded Mesh object
         """
+        if use_jax and not HAS_JAX:
+            raise ValueError("JAX is not available. Install JAX to use JAX arrays.")
         # Decode vertex buffer
         vertices = decode_vertex_buffer(
             encoded_mesh.vertex_count, encoded_mesh.vertex_size, encoded_mesh.vertices
         )
+        if use_jax:
+            vertices = jnp.array(vertices)
 
         # Decode index buffer if present
         indices = None
@@ -805,6 +845,8 @@ class MeshUtils:
             indices = decode_index_sequence(
                 encoded_mesh.index_count, encoded_mesh.index_size, encoded_mesh.indices
             )
+            if use_jax:
+                indices = jnp.array(indices)
 
         # Create the base mesh object
         mesh_args = {
@@ -822,6 +864,10 @@ class MeshUtils:
             for name, encoded_array in encoded_mesh.arrays.items():
                 # Decode the array
                 decoded_array = ArrayUtils.decode_array(encoded_array)
+                
+                # Convert to JAX array if requested
+                if use_jax:
+                    decoded_array = jnp.array(decoded_array)
                 
                 # Check if this is a nested array (contains dots)
                 if name == "index_sizes":
@@ -857,3 +903,78 @@ class MeshUtils:
 
         # Create and return the mesh object
         return cls(**mesh_args)
+
+    @staticmethod
+    def convert_arrays(mesh: Mesh, target_type: Literal["numpy", "jax"]) -> Mesh:
+        """
+        Convert all arrays in a mesh to the specified array type.
+
+        Args:
+            mesh: The mesh to convert
+            target_type: Target array type - either "numpy" or "jax"
+
+        Returns:
+            A new mesh with all arrays converted to the target type
+
+        Raises:
+            ValueError: If JAX is requested but not available
+        """
+        if target_type == "jax" and not HAS_JAX:
+            raise ValueError("JAX is not available. Install JAX to convert to JAX arrays.")
+        
+        # Create a copy of the mesh to avoid modifying the original
+        mesh_copy = mesh.copy()
+        
+        def convert_array(array: Array) -> Array:
+            """Convert a single array to the target type."""
+            if target_type == "numpy":
+                if HAS_JAX and isinstance(array, jnp.ndarray):
+                    return np.array(array)
+                else:
+                    return array  # Already numpy or compatible
+            elif target_type == "jax":
+                if isinstance(array, np.ndarray):
+                    return jnp.array(array)
+                else:
+                    return array  # Already JAX
+            else:
+                raise ValueError(f"Invalid target_type: {target_type}. Must be 'numpy' or 'jax'.")
+        
+        def convert_nested_arrays(obj: Any) -> Any:
+            """Recursively convert arrays in nested structures."""
+            if isinstance(obj, np.ndarray) or (HAS_JAX and isinstance(obj, jnp.ndarray)):
+                return convert_array(obj)
+            elif isinstance(obj, dict):
+                return {key: convert_nested_arrays(value) for key, value in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return type(obj)(convert_nested_arrays(item) for item in obj)
+            else:
+                return obj
+        
+        # Convert main array fields
+        if mesh_copy.vertices is not None:
+            mesh_copy.vertices = convert_array(mesh_copy.vertices)
+        
+        if mesh_copy.indices is not None:
+            # Note: indices should generally stay as numpy for meshoptimizer compatibility
+            # but we'll convert them if explicitly requested
+            mesh_copy.indices = convert_array(mesh_copy.indices)
+        
+        if mesh_copy.index_sizes is not None:
+            mesh_copy.index_sizes = convert_array(mesh_copy.index_sizes)
+        
+        # Convert all other array fields, including nested ones
+        for field_name in mesh_copy.model_fields_set:
+            if field_name in ('vertices', 'indices', 'index_sizes'):
+                continue  # Already handled above
+            
+            try:
+                value = getattr(mesh_copy, field_name)
+                if value is not None:
+                    converted_value = convert_nested_arrays(value)
+                    setattr(mesh_copy, field_name, converted_value)
+            except AttributeError:
+                # Skip fields that don't exist
+                pass
+        
+        return mesh_copy

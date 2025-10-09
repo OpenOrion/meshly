@@ -37,6 +37,9 @@ dependencies = [
     "pydantic>=2.0.0",
 ]
 
+[project.optional-dependencies]
+jax = ["jax", "jaxlib"]
+
 [project.urls]
 Homepage = "https://github.com/OpenOrion/meshly"
 Repository = "https://github.com/OpenOrion/meshly"

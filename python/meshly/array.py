@@ -5,10 +5,15 @@ This module provides functions for compressing numpy arrays using meshoptimizer'
 encoding functions and storing/loading them as encoded data.
 """
 import ctypes
-from typing import List, Tuple
+import json
+import zipfile
+from typing import List, Tuple, Union, Optional
+from io import BytesIO
 import numpy as np
 from pydantic import BaseModel, Field
 from meshoptimizer._loader import lib
+from .common import PathLike
+
 
 
 class EncodedArrayModel(BaseModel):
@@ -162,4 +167,75 @@ class ArrayUtils:
             reshaped = reshaped.astype(encoded_array.dtype)
         
         return reshaped
+
+    @staticmethod
+    def save_to_zip(array: np.ndarray, destination: Union["PathLike", BytesIO], date_time: Optional[tuple] = None) -> None:
+        """
+        Save an array to a zip file.
+        
+        Args:
+            array: numpy array to save
+            destination: Path to the output zip file or BytesIO object
+            date_time: Optional date_time tuple for deterministic zip files
+        """
+        # Encode the array
+        encoded_array = ArrayUtils.encode_array(array)
+        
+        # Create array metadata
+        array_metadata = ArrayMetadata(
+            shape=list(encoded_array.shape),
+            dtype=str(encoded_array.dtype),
+            itemsize=encoded_array.itemsize,
+        )
+        
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
+            # Collect files to write
+            files_to_write = [
+                ("array.bin", encoded_array.data),
+                ("metadata.json", json.dumps(array_metadata.model_dump(), indent=2, sort_keys=True))
+            ]
+            
+            # Write files in sorted order for deterministic output
+            for filename, data in sorted(files_to_write):
+                if date_time is not None:
+                    info = zipfile.ZipInfo(filename=filename, date_time=date_time)
+                else:
+                    info = zipfile.ZipInfo(filename=filename)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o644 << 16  # Fixed file permissions
+                if isinstance(data, str):
+                    data = data.encode('utf-8')
+                zipf.writestr(info, data)
+
+    @staticmethod
+    def load_from_zip(source: Union["PathLike", BytesIO]) -> np.ndarray:
+        """
+        Load an array from a zip file.
+        
+        Args:
+            source: Path to the input zip file or BytesIO object
+            
+        Returns:
+            Decoded numpy array
+        """
+        with zipfile.ZipFile(source, "r") as zipf:
+            # Load metadata
+            with zipf.open("metadata.json") as f:
+                metadata_dict = json.loads(f.read().decode("utf-8"))
+                array_metadata = ArrayMetadata(**metadata_dict)
+            
+            # Load binary data
+            with zipf.open("array.bin") as f:
+                encoded_data = f.read()
+            
+            # Create EncodedArray object
+            encoded_array = EncodedArray(
+                data=encoded_data,
+                shape=tuple(array_metadata.shape),
+                dtype=np.dtype(array_metadata.dtype),
+                itemsize=array_metadata.itemsize
+            )
+            
+            # Decode and return the array
+            return ArrayUtils.decode_array(encoded_array)
 

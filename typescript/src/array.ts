@@ -1,4 +1,5 @@
 import { MeshoptEncoder, MeshoptDecoder } from "meshoptimizer"
+import JSZip from "jszip"
 
 
 /**
@@ -100,4 +101,35 @@ export class ArrayUtils {
       return new Float32Array(destUint8Array.buffer)
     }
   }
+
+  /**
+   * Loads an array from a zip buffer containing array.bin and metadata.json
+   *
+   * @param zipBuffer The zip buffer containing the encoded array and metadata
+   * @returns Promise resolving to the decoded typed array (Float32Array or Uint32Array)
+   */
+  static async loadFromZip(zipInput: JSZip | ArrayBuffer | Uint8Array): Promise<Float32Array | Uint32Array> {
+    const zip = zipInput instanceof JSZip ? zipInput : await JSZip.loadAsync(zipInput)
+    
+    // Load metadata.json
+    const metadataFile = zip.file("metadata.json")
+    if (!metadataFile) {
+      throw new Error("metadata.json not found in zip file")
+    }
+    
+    const metadataText = await metadataFile.async("text")
+    const metadata: ArrayMetadata = JSON.parse(metadataText)
+    
+    // Load array.bin
+    const arrayFile = zip.file("array.bin")
+    if (!arrayFile) {
+      throw new Error("array.bin not found in zip file")
+    }
+    
+    const arrayData = await arrayFile.async("uint8array")
+    
+    // Decode and return the array
+    return ArrayUtils.decodeArray(arrayData, metadata)
+  }
+
 }

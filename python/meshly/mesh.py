@@ -8,7 +8,6 @@ This module provides:
 """
 
 import json
-from pathlib import Path
 import zipfile
 from io import BytesIO
 from typing import (
@@ -39,9 +38,7 @@ from meshoptimizer import (
 )
 
 from .array import ArrayMetadata, EncodedArray, ArrayUtils
-
-PathLike = Union[str, Path]
-
+from .common import PathLike
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
@@ -663,7 +660,10 @@ class MeshUtils:
 
             # Sort files by path for deterministic order and write them
             for filename, data in sorted(files_to_write):
-                info = zipfile.ZipInfo(filename=filename, date_time=date_time)
+                if date_time is not None:
+                    info = zipfile.ZipInfo(filename=filename, date_time=date_time)
+                else:
+                    info = zipfile.ZipInfo(filename=filename)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = 0o644 << 16  # Fixed file permissions
                 if isinstance(data, str):

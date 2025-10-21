@@ -24,6 +24,7 @@ from .array import (
     EncodedArray,
     ArrayMetadata,
     EncodedArrayModel,
+    ArrayResult,
     ArrayUtils,
 )
 
@@ -39,5 +40,6 @@ __all__ = [
     "EncodedArray",
     "EncodedArrayModel",
     "ArrayMetadata",
+    "ArrayResult",
     "ArrayUtils",
 ]

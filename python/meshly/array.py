@@ -7,7 +7,7 @@ encoding functions and storing/loading them as encoded data.
 import ctypes
 import json
 import zipfile
-from typing import List, Tuple, Union, Optional
+from typing import List, Tuple, Union, Optional, Type, TypeVar, Any, Generic
 from io import BytesIO
 import numpy as np
 from pydantic import BaseModel, Field
@@ -43,6 +43,27 @@ class ArrayMetadata(BaseModel):
     shape: List[int] = Field(..., description="Shape of the array")
     dtype: str = Field(..., description="Data type of the array as string")
     itemsize: int = Field(..., description="Size of each item in bytes")
+
+
+
+
+
+# Type variable for custom metadata
+T = TypeVar("T", bound=BaseModel)
+
+
+class ArrayResult(BaseModel, Generic[T]):
+    """
+    Result class containing both the decoded array and optional custom metadata.
+    
+    Generic over the custom metadata type for better type safety.
+    """
+    array: np.ndarray = Field(..., description="The decoded numpy array")
+    custom_metadata: Optional[T] = Field(None, description="Custom metadata if present")
+    
+    class Config:
+        """Pydantic configuration."""
+        arbitrary_types_allowed = True
 
 
 class EncodedArray(BaseModel):
@@ -169,13 +190,19 @@ class ArrayUtils:
         return reshaped
 
     @staticmethod
-    def save_to_zip(array: np.ndarray, destination: Union["PathLike", BytesIO], date_time: Optional[tuple] = None) -> None:
+    def save_to_zip(
+        array: np.ndarray,
+        destination: Union["PathLike", BytesIO],
+        custom_metadata: Optional[BaseModel] = None,
+        date_time: Optional[tuple] = None
+    ) -> None:
         """
-        Save an array to a zip file.
+        Save an array to a zip file with optional custom metadata.
         
         Args:
             array: numpy array to save
             destination: Path to the output zip file or BytesIO object
+            custom_metadata: Optional custom metadata (Pydantic model subclassing BaseModel)
             date_time: Optional date_time tuple for deterministic zip files
         """
         # Encode the array
@@ -195,6 +222,18 @@ class ArrayUtils:
                 ("metadata.json", json.dumps(array_metadata.model_dump(), indent=2, sort_keys=True))
             ]
             
+            # Add custom metadata if provided
+            if custom_metadata is not None:
+                custom_metadata_dict = {
+                    "class_name": custom_metadata.__class__.__name__,
+                    "module_name": custom_metadata.__class__.__module__,
+                    "data": custom_metadata.model_dump()
+                }
+                files_to_write.append((
+                    "custom_metadata.json",
+                    json.dumps(custom_metadata_dict, indent=2, sort_keys=True)
+                ))
+            
             # Write files in sorted order for deterministic output
             for filename, data in sorted(files_to_write):
                 if date_time is not None:
@@ -208,18 +247,22 @@ class ArrayUtils:
                 zipf.writestr(info, data)
 
     @staticmethod
-    def load_from_zip(source: Union["PathLike", BytesIO]) -> np.ndarray:
+    def load_from_zip(
+        source: Union["PathLike", BytesIO],
+        custom_metadata_class: Optional[Type[T]] = None
+    ) -> ArrayResult[T]:
         """
-        Load an array from a zip file.
+        Load an array from a zip file, optionally with custom metadata.
         
         Args:
             source: Path to the input zip file or BytesIO object
+            custom_metadata_class: Optional custom metadata class to load
             
         Returns:
-            Decoded numpy array
+            ArrayResult containing the decoded array and custom metadata (None if no metadata class provided)
         """
         with zipfile.ZipFile(source, "r") as zipf:
-            # Load metadata
+            # Load basic metadata
             with zipf.open("metadata.json") as f:
                 metadata_dict = json.loads(f.read().decode("utf-8"))
                 array_metadata = ArrayMetadata(**metadata_dict)
@@ -236,6 +279,17 @@ class ArrayUtils:
                 itemsize=array_metadata.itemsize
             )
             
-            # Decode and return the array
-            return ArrayUtils.decode_array(encoded_array)
+            # Decode the array
+            decoded_array = ArrayUtils.decode_array(encoded_array)
+            
+            # Load custom metadata if present and class is provided
+            custom_metadata = None
+            if custom_metadata_class is not None and "custom_metadata.json" in zipf.namelist():
+                with zipf.open("custom_metadata.json") as f:
+                    custom_metadata_dict = json.loads(f.read().decode("utf-8"))
+                
+                # Use the provided class
+                custom_metadata = custom_metadata_class(**custom_metadata_dict["data"])
+            
+            return ArrayResult(array=decoded_array, custom_metadata=custom_metadata)
 

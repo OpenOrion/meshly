@@ -109,16 +109,72 @@ describe('ArrayUtils', () => {
         // Generate the zip buffer
         const zipBuffer = await zip.generateAsync({ type: 'arraybuffer' })
         
-        // Test loadArrayFromZip
-        const loadedArray = await ArrayUtils.loadFromZip(zipBuffer)
+        // Test loadFromZip
+        const result = await ArrayUtils.loadFromZip(zipBuffer)
         
         // Verify the loaded array matches the original
-        expect(loadedArray.length).toBe(testArray.length)
-        expect(loadedArray).toBeInstanceOf(Float32Array)
+        expect(result.array.length).toBe(testArray.length)
+        expect(result.array).toBeInstanceOf(Float32Array)
+        expect(result.customMetadata).toBeUndefined()
         
         // Check values with small epsilon for floating point comparison
         for (let i = 0; i < testArray.length; i++) {
-            expect(loadedArray[i]).toBeCloseTo(testArray[i], 4)
+            expect(result.array[i]).toBeCloseTo(testArray[i], 4)
+        }
+    })
+
+    it('should load array with custom metadata from zip buffer', async () => {
+        // Create a test array
+        const testArray = new Float32Array([1.0, 2.5, 3.7])
+        
+        // Encode the array using ArrayUtils
+        const encoded = ArrayUtils.encodeArray(testArray)
+        
+        // Create a zip buffer with custom metadata (simulating what Python creates)
+        const zip = new JSZip()
+        
+        // Add the encoded array data as array.bin
+        zip.file('array.bin', encoded.data)
+        
+        // Add metadata.json
+        const metadata = {
+            shape: encoded.shape,
+            dtype: encoded.dtype,
+            itemsize: encoded.itemsize
+        }
+        zip.file('metadata.json', JSON.stringify(metadata, null, 2))
+        
+        // Add custom metadata
+        const customMetadata = {
+            class_name: 'SensorMetadata',
+            module_name: '__main__',
+            data: {
+                sensor_id: 'sensor_001',
+                timestamp: 1234567890.123,
+                location: [37.7749, -122.4194, 100.0]
+            }
+        }
+        zip.file('custom_metadata.json', JSON.stringify(customMetadata, null, 2))
+        
+        // Generate the zip buffer
+        const zipBuffer = await zip.generateAsync({ type: 'arraybuffer' })
+        
+        // Test loadFromZip with custom metadata loading enabled
+        const result = await ArrayUtils.loadFromZip(zipBuffer, true)
+        
+        // Verify the loaded array matches the original
+        expect(result.array.length).toBe(testArray.length)
+        expect(result.array).toBeInstanceOf(Float32Array)
+        
+        // Verify custom metadata was loaded
+        expect(result.customMetadata).toBeDefined()
+        expect(result.customMetadata?.sensor_id).toBe('sensor_001')
+        expect(result.customMetadata?.timestamp).toBe(1234567890.123)
+        expect(result.customMetadata?.location).toEqual([37.7749, -122.4194, 100.0])
+        
+        // Check array values
+        for (let i = 0; i < testArray.length; i++) {
+            expect(result.array[i]).toBeCloseTo(testArray[i], 4)
         }
     })
 

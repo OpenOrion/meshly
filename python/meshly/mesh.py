@@ -117,14 +117,15 @@ class Mesh(BaseModel):
     indices: Optional[Union[np.ndarray, List[Any]]] = Field(
         None, description="Index data as a flattened 1D numpy array or list of polygons"
     )
-    index_sizes: Optional[Union[np.ndarray, List[int]]] = Field(
-        None, description="Size of each polygon (number of vertices per polygon). "
-        "If not provided, will be automatically inferred from indices structure: "
-        "- For 2D numpy arrays: uniform polygon size from array shape "
-        "- For list of lists: individual polygon sizes "
-        "If explicitly provided, will be validated against inferred structure."
-    )
-    
+    index_sizes: Optional[Union[np.ndarray, List[int]]] = None
+    """
+    Size of each polygon (number of vertices per polygon). "
+    "If not provided, will be automatically inferred from indices structure: "
+    "- For 2D numpy arrays: uniform polygon size from array shape "
+    "- For list of lists: individual polygon sizes "
+    "If explicitly provided, will be validated against inferred structure.
+    """
+
     def copy(self: T) -> T:
         """
         Create a deep copy of the mesh.

@@ -125,6 +125,16 @@ class Mesh(BaseModel):
     "- For list of lists: individual polygon sizes "
     "If explicitly provided, will be validated against inferred structure.
     """
+    
+    cell_types: Optional[Union[np.ndarray, List[int]]] = None
+    """
+    Cell type identifier for each polygon, corresponding to index_sizes.
+    Common VTK cell types include:
+    - 1: Vertex, 3: Line, 5: Triangle, 9: Quad, 10: Tetra, 12: Hexahedron, 13: Wedge, 14: Pyramid
+    If not provided, will be automatically inferred from polygon sizes:
+    - Size 1: Vertex (1), Size 2: Line (3), Size 3: Triangle (5), Size 4: Quad (9)
+    If explicitly provided, must have same length as index_sizes.
+    """
 
     def copy(self: T) -> T:
         """
@@ -271,9 +281,13 @@ class Mesh(BaseModel):
         When index_sizes is explicitly provided, it validates that the structure matches
         the inferred polygon sizes and that the sum equals the total number of indices.
         
+        Cell types are automatically inferred from polygon sizes if not provided:
+        - Size 1: Vertex (1), Size 2: Line (3), Size 3: Triangle (5), Size 4: Quad (9)
+        
         Raises:
             ValueError: If explicit index_sizes doesn't match inferred structure or
-                       if sum of index_sizes doesn't match total indices count.
+                       if sum of index_sizes doesn't match total indices count, or
+                       if cell_types length doesn't match index_sizes length.
         """
         # Ensure vertices is a float32 array
         if self.vertices is not None:
@@ -338,6 +352,57 @@ class Mesh(BaseModel):
                         f"Sum of index_sizes ({np.sum(self.index_sizes)}) does not match "
                         f"total number of indices ({len(self.indices)})"
                     )
+        
+        # Handle cell_types - validate and auto-infer if needed
+        if self.index_sizes is not None:
+            if self.cell_types is not None:
+                # Ensure cell_types is uint32 array
+                self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
+                
+                # Validate that cell_types length matches index_sizes length
+                if len(self.cell_types) != len(self.index_sizes):
+                    raise ValueError(
+                        f"Length of cell_types ({len(self.cell_types)}) does not match "
+                        f"length of index_sizes ({len(self.index_sizes)})"
+                    )
+            else:
+                # Auto-infer cell_types from index_sizes
+                # Common VTK cell type mappings
+                size_to_cell_type = {
+                    1: 1,   # VTK_VERTEX
+                    2: 3,   # VTK_LINE
+                    3: 5,   # VTK_TRIANGLE
+                    4: 9,   # VTK_QUAD
+                    8: 12,  # VTK_HEXAHEDRON (cube)
+                    4: 10,  # VTK_TETRA (tetrahedral, but conflicts with quad)
+                    6: 13,  # VTK_WEDGE (prism)
+                    5: 14   # VTK_PYRAMID
+                }
+                
+                # For ambiguous cases, prefer common types
+                def infer_cell_type(size):
+                    if size == 1:
+                        return 1    # VTK_VERTEX
+                    elif size == 2:
+                        return 3    # VTK_LINE
+                    elif size == 3:
+                        return 5    # VTK_TRIANGLE
+                    elif size == 4:
+                        return 9    # VTK_QUAD (prefer over tetrahedron)
+                    elif size == 5:
+                        return 14   # VTK_PYRAMID
+                    elif size == 6:
+                        return 13   # VTK_WEDGE
+                    elif size == 8:
+                        return 12   # VTK_HEXAHEDRON
+                    else:
+                        return 7    # VTK_POLYGON (generic polygon)
+                
+                inferred_cell_types = [infer_cell_type(size) for size in self.index_sizes]
+                self.cell_types = np.array(inferred_cell_types, dtype=np.uint32)
+        elif self.cell_types is not None:
+            # If cell_types provided but no index_sizes, convert to array but can't validate
+            self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
 
         return self
 
@@ -547,6 +612,10 @@ class MeshUtils:
         # Handle index_sizes as a special case - store in arrays if present
         if mesh.index_sizes is not None:
             encoded_arrays["index_sizes"] = ArrayUtils.encode_array(mesh.index_sizes)
+        
+        # Handle cell_types as a special case - store in arrays if present
+        if mesh.cell_types is not None:
+            encoded_arrays["cell_types"] = ArrayUtils.encode_array(mesh.cell_types)
 
         # Create encoded mesh
         return EncodedMesh(
@@ -813,8 +882,9 @@ class MeshUtils:
             "indices": indices,
         }
 
-        # Decode index_sizes if present (stored in arrays dict)
+        # Decode index_sizes and cell_types if present (stored in arrays dict)
         index_sizes = None
+        cell_types = None
 
         # Decode additional arrays if present
         dict_fields = {}  # Will store reconstructed dictionary fields
@@ -828,6 +898,9 @@ class MeshUtils:
                 if name == "index_sizes":
                     # Special handling for index_sizes
                     index_sizes = decoded_array
+                elif name == "cell_types":
+                    # Special handling for cell_types
+                    cell_types = decoded_array
                 elif "." in name:
                     # This is a nested array from a dictionary field
                     parts = name.split(".")
@@ -850,8 +923,9 @@ class MeshUtils:
                     # This is a direct array field
                     mesh_args[name] = decoded_array
 
-        # Add index_sizes to mesh args
+        # Add index_sizes and cell_types to mesh args
         mesh_args["index_sizes"] = index_sizes
+        mesh_args["cell_types"] = cell_types
 
         # Add reconstructed dictionary fields to mesh arguments
         mesh_args.update(dict_fields)

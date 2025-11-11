@@ -66,6 +66,13 @@ export interface Mesh {
   indexSizes?: Uint32Array
 
   /**
+   * Cell type identifier for each polygon, corresponding to indexSizes.
+   * Common VTK cell types include:
+   * - 1: Vertex, 3: Line, 5: Triangle, 9: Quad, 10: Tetra, 12: Hexahedron, 13: Wedge, 14: Pyramid
+   */
+  cellTypes?: Uint32Array
+
+  /**
    * Additional properties that can be any type of array
    */
   [key: string]: Float32Array | Uint32Array | undefined | any
@@ -137,6 +144,64 @@ export class MeshUtils {
     }
     const firstSize = mesh.indexSizes[0]
     return mesh.indexSizes.every(size => size === firstSize)
+  }
+
+  /**
+   * Infer VTK cell types from polygon sizes
+   * @param indexSizes Array of polygon sizes
+   * @returns Array of VTK cell type identifiers
+   */
+  static inferCellTypes(indexSizes: Uint32Array): Uint32Array {
+    const cellTypes = new Uint32Array(indexSizes.length)
+    
+    for (let i = 0; i < indexSizes.length; i++) {
+      const size = indexSizes[i]
+      switch (size) {
+        case 1:
+          cellTypes[i] = 1 // VTK_VERTEX
+          break
+        case 2:
+          cellTypes[i] = 3 // VTK_LINE
+          break
+        case 3:
+          cellTypes[i] = 5 // VTK_TRIANGLE
+          break
+        case 4:
+          cellTypes[i] = 9 // VTK_QUAD
+          break
+        case 5:
+          cellTypes[i] = 14 // VTK_PYRAMID
+          break
+        case 6:
+          cellTypes[i] = 13 // VTK_WEDGE
+          break
+        case 8:
+          cellTypes[i] = 12 // VTK_HEXAHEDRON
+          break
+        default:
+          cellTypes[i] = 7 // VTK_POLYGON (generic polygon)
+          break
+      }
+    }
+    
+    return cellTypes
+  }
+
+  /**
+   * Get or infer cell types for a mesh
+   * @param mesh The mesh to get cell types for
+   * @returns Array of VTK cell type identifiers
+   */
+  static getCellTypes(mesh: Mesh): Uint32Array | undefined {
+    if (mesh.cellTypes) {
+      return mesh.cellTypes
+    }
+    
+    if (mesh.indexSizes) {
+      return MeshUtils.inferCellTypes(mesh.indexSizes)
+    }
+    
+    return undefined
   }
 
   /**
@@ -352,6 +417,7 @@ export class MeshUtils {
     // Decode additional arrays if present
     const decodedArrays: Record<string, Float32Array | Uint32Array> = {}
     let indexSizes: Uint32Array | undefined
+    let cellTypes: Uint32Array | undefined
     
     if (encodedMesh.arrays) {
       for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
@@ -367,15 +433,21 @@ export class MeshUtils {
         if (name === 'indexSizes') {
           // Special handling for indexSizes
           indexSizes = decodedArray as Uint32Array
+        } else if (name === 'cellTypes') {
+          // Special handling for cellTypes
+          cellTypes = decodedArray as Uint32Array
         } else {
           decodedArrays[name] = decodedArray
         }
       }
     }
 
-    // Add indexSizes to result if present
+    // Add indexSizes and cellTypes to result if present
     if (indexSizes) {
       result.indexSizes = indexSizes
+    }
+    if (cellTypes) {
+      result.cellTypes = cellTypes
     }
 
     // Reconstruct dictionary structure from decoded arrays
@@ -615,8 +687,92 @@ export class MeshUtils {
   }
 
   /**
+   * Triangulates a polygon using fan triangulation
+   * @param indices The polygon indices
+   * @returns Array of triangulated indices
+   */
+  private static triangulatePoly(indices: Uint32Array): Uint32Array {
+    if (indices.length < 3) {
+      throw new Error('Polygon must have at least 3 vertices')
+    }
+    
+    if (indices.length === 3) {
+      // Already a triangle
+      return indices
+    }
+    
+    if (indices.length === 4) {
+      // Quad: split into 2 triangles
+      return new Uint32Array([
+        indices[0], indices[1], indices[2],
+        indices[0], indices[2], indices[3]
+      ])
+    }
+    
+    // General polygon: fan triangulation from first vertex
+    const triangulated: number[] = []
+    for (let i = 1; i < indices.length - 1; i++) {
+      triangulated.push(indices[0], indices[i], indices[i + 1])
+    }
+    
+    return new Uint32Array(triangulated)
+  }
+
+  /**
+   * Converts mesh indices to triangulated indices for THREE.js compatibility
+   * @param mesh The mesh to triangulate
+   * @returns Triangulated indices
+   */
+  private static triangulateIndices(mesh: Mesh): Uint32Array {
+    if (!mesh.indices) {
+      return new Uint32Array()
+    }
+
+    // If no indexSizes, assume triangles (legacy format)
+    if (!mesh.indexSizes) {
+      return mesh.indices
+    }
+
+    const triangulatedIndices: number[] = []
+    let offset = 0
+
+    for (let i = 0; i < mesh.indexSizes.length; i++) {
+      const polygonSize = mesh.indexSizes[i]
+      const cellType = mesh.cellTypes ? mesh.cellTypes[i] : undefined
+      
+      // Extract polygon indices
+      const polygonIndices = mesh.indices.slice(offset, offset + polygonSize)
+      
+      // Skip degenerate polygons
+      if (polygonSize < 3) {
+        offset += polygonSize
+        continue
+      }
+
+      // Triangulate based on polygon size and cell type
+      let triangulated: Uint32Array
+      
+      if (polygonSize === 3) {
+        // Triangle - no triangulation needed
+        triangulated = polygonIndices
+      } else if (polygonSize === 4 && (!cellType || cellType === 9)) {
+        // Quad (VTK_QUAD = 9) - split into 2 triangles
+        triangulated = MeshUtils.triangulatePoly(polygonIndices)
+      } else {
+        // General polygon - fan triangulation
+        triangulated = MeshUtils.triangulatePoly(polygonIndices)
+      }
+      
+      triangulatedIndices.push(...Array.from(triangulated))
+      offset += polygonSize
+    }
+
+    return new Uint32Array(triangulatedIndices)
+  }
+
+  /**
    * Converts a mesh to a THREE.js BufferGeometry
-   * 
+   *
    * @param mesh The mesh to convert
    * @param options Options for the conversion
    * @returns THREE.js BufferGeometry
@@ -646,9 +802,12 @@ export class MeshUtils {
     // Add the vertices to the geometry
     geometry.setAttribute('position', new THREE.BufferAttribute(normalizedVertices, 3))
 
-    // Add indices if they exist
+    // Add indices if they exist, triangulating non-triangular polygons
     if (mesh.indices) {
-      geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1))
+      const triangulatedIndices = MeshUtils.triangulateIndices(mesh)
+      if (triangulatedIndices.length > 0) {
+        geometry.setIndex(new THREE.BufferAttribute(triangulatedIndices, 1))
+      }
     }
 
     // Add normals if they exist, otherwise compute them if requested

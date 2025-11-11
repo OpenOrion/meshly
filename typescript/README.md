@@ -59,6 +59,48 @@ async function loadMeshManually(zipData: ArrayBuffer) {
 }
 ```
 
+### Enhanced Polygon Support
+
+Meshly provides enhanced support for different polygon types through `indexSizes` and `cellTypes`, with automatic triangulation for THREE.js compatibility:
+
+```typescript
+import { MeshUtils, Mesh } from 'meshly';
+
+// Create a mesh with mixed polygons
+const mesh: Mesh = {
+  vertices: new Float32Array([
+    0, 0, 0,    // 0
+    1, 0, 0,    // 1
+    1, 1, 0,    // 2
+    0, 1, 0,    // 3
+    0.5, 0.5, 1 // 4
+  ]),
+  indices: new Uint32Array([
+    0, 1, 2,        // Triangle
+    1, 2, 3, 0,     // Quad
+    0, 1, 4, 3, 2   // Pentagon
+  ]),
+  indexSizes: new Uint32Array([3, 4, 5]),
+  cellTypes: new Uint32Array([5, 9, 7]), // VTK_TRIANGLE, VTK_QUAD, VTK_POLYGON
+  normals: new Float32Array([
+    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1
+  ])
+};
+
+// Convert to THREE.js BufferGeometry (automatically triangulates non-triangular polygons)
+const geometry = MeshUtils.convertToBufferGeometry(mesh);
+
+// Check polygon information
+console.log(`Polygon count: ${MeshUtils.getPolygonCount(mesh)}`); // 3
+console.log(`Is uniform: ${MeshUtils.isUniformPolygons(mesh)}`);   // false
+console.log(`Cell types: ${MeshUtils.getCellTypes(mesh)}`);       // [5, 9, 7]
+
+// The geometry indices will be triangulated:
+// Triangle: unchanged [0, 1, 2]
+// Quad: becomes [1, 2, 3, 1, 3, 0]
+// Pentagon: becomes [0, 1, 4, 0, 4, 3, 0, 3, 2]
+```
+
 ### Encoding and Decoding Meshes
 
 You can use the `encode` and `decode` functions to encode and decode meshes directly:
@@ -87,10 +129,28 @@ console.log(`Encoded indices size: ${encodedMesh.indices?.byteLength} bytes`);
 console.log(`Additional arrays: ${Object.keys(encodedMesh.arrays || {})}`);
 
 // Decode the mesh
-const decodedMesh = MeshUtils.decode(null, encodedMesh);
+const decodedMesh = MeshUtils.decode(encodedMesh);
 console.log(`Decoded vertices: ${decodedMesh.vertices.length} elements`);
 console.log(`Decoded indices: ${decodedMesh.indices?.length} elements`);
 console.log(`Decoded normals: ${decodedMesh.normals?.length} elements`);
+```
+
+### VTK Cell Types Support
+
+The library supports VTK-compatible cell type identifiers with automatic inference:
+
+```typescript
+import { MeshUtils } from 'meshly';
+
+// Automatic cell type inference from polygon sizes
+const indexSizes = new Uint32Array([2, 3, 4, 5, 6, 8]);
+const cellTypes = MeshUtils.inferCellTypes(indexSizes);
+console.log(cellTypes); // [3, 5, 9, 14, 13, 12]
+
+// Common VTK cell types:
+// 1: VTK_VERTEX, 3: VTK_LINE, 5: VTK_TRIANGLE, 9: VTK_QUAD
+// 10: VTK_TETRA, 12: VTK_HEXAHEDRON, 13: VTK_WEDGE, 14: VTK_PYRAMID
+// 7: VTK_POLYGON (generic)
 ```
 
 ### Array Utilities
@@ -148,7 +208,7 @@ A Promise that resolves to a Mesh object.
 
 #### `MeshUtils.convertToBufferGeometry(mesh: Mesh, options?: DecodeMeshOptions): THREE.BufferGeometry`
 
-Converts a decoded mesh to a THREE.js BufferGeometry.
+Converts a decoded mesh to a THREE.js BufferGeometry. Automatically triangulates non-triangular polygons for THREE.js compatibility.
 
 ##### Parameters
 
@@ -159,7 +219,55 @@ Converts a decoded mesh to a THREE.js BufferGeometry.
 
 ##### Returns
 
-A THREE.js BufferGeometry.
+A THREE.js BufferGeometry with triangulated indices.
+
+#### `MeshUtils.getPolygonCount(mesh: Mesh): number`
+
+Gets the number of polygons in a mesh.
+
+##### Parameters
+
+- `mesh`: The mesh to analyze
+
+##### Returns
+
+Number of polygons, or 0 if no indexSizes information is available.
+
+#### `MeshUtils.isUniformPolygons(mesh: Mesh): boolean`
+
+Checks if all polygons in a mesh have the same number of vertices.
+
+##### Parameters
+
+- `mesh`: The mesh to analyze
+
+##### Returns
+
+True if all polygons are uniform, false otherwise.
+
+#### `MeshUtils.inferCellTypes(indexSizes: Uint32Array): Uint32Array`
+
+Infers VTK cell types from polygon sizes.
+
+##### Parameters
+
+- `indexSizes`: Array of polygon sizes
+
+##### Returns
+
+Array of VTK cell type identifiers.
+
+#### `MeshUtils.getCellTypes(mesh: Mesh): Uint32Array | undefined`
+
+Gets or infers cell types for a mesh.
+
+##### Parameters
+
+- `mesh`: The mesh to get cell types for
+
+##### Returns
+
+Array of VTK cell type identifiers, or undefined if no polygon information is available.
 
 #### `MeshUtils.decodeVertexBuffer(vertexCount: number, vertexSize: number, data: Uint8Array): Float32Array`
 

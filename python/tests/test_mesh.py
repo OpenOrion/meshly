@@ -81,25 +81,75 @@ class TestPydanticMesh(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
         
         # Test optimize_vertex_cache
-        MeshUtils.optimize_vertex_cache(mesh)
-        self.assertEqual(mesh.vertex_count, len(self.vertices))
-        self.assertEqual(mesh.index_count, len(self.indices))
+        optimized_mesh = MeshUtils.optimize_vertex_cache(mesh)
+        self.assertEqual(optimized_mesh.vertex_count, len(self.vertices))
+        self.assertEqual(optimized_mesh.index_count, len(self.indices))
         
         # Test optimize_overdraw
-        MeshUtils.optimize_overdraw(mesh)
-        self.assertEqual(mesh.vertex_count, len(self.vertices))
-        self.assertEqual(mesh.index_count, len(self.indices))
+        overdraw_mesh = MeshUtils.optimize_overdraw(mesh)
+        self.assertEqual(overdraw_mesh.vertex_count, len(self.vertices))
+        self.assertEqual(overdraw_mesh.index_count, len(self.indices))
         
         # Test optimize_vertex_fetch
         original_vertex_count = mesh.vertex_count
-        MeshUtils.optimize_vertex_fetch(mesh)
-        self.assertLessEqual(mesh.vertex_count, original_vertex_count)
-        self.assertEqual(mesh.index_count, len(self.indices))
+        fetch_mesh = MeshUtils.optimize_vertex_fetch(mesh)
+        self.assertLessEqual(fetch_mesh.vertex_count, original_vertex_count)
+        self.assertEqual(fetch_mesh.index_count, len(self.indices))
         
         # Test simplify
         original_index_count = mesh.index_count
-        MeshUtils.simplify(mesh, target_ratio=0.5)
-        self.assertLessEqual(mesh.index_count, original_index_count)
+        simplified_mesh = MeshUtils.simplify(mesh, target_ratio=0.5)
+        self.assertLessEqual(simplified_mesh.index_count, original_index_count)
+    
+    def test_mesh_polygon_support(self):
+        """Test mesh polygon support with index_sizes."""
+        # Test 2D array input (quad mesh)
+        quad_indices = np.array([
+            [0, 1, 2, 3],
+            [4, 5, 6, 7]
+        ], dtype=np.uint32)
+        
+        quad_mesh = Mesh(vertices=self.vertices, indices=quad_indices)
+        self.assertEqual(quad_mesh.polygon_count, 2)
+        self.assertTrue(quad_mesh.is_uniform_polygons)
+        np.testing.assert_array_equal(quad_mesh.index_sizes, [4, 4])
+        
+        # Test list of lists input (mixed polygons)
+        mixed_indices = [
+            [0, 1, 2],        # Triangle
+            [3, 4, 5, 6]      # Quad
+        ]
+        
+        mixed_mesh = Mesh(vertices=self.vertices, indices=mixed_indices)
+        self.assertEqual(mixed_mesh.polygon_count, 2)
+        self.assertFalse(mixed_mesh.is_uniform_polygons)
+        np.testing.assert_array_equal(mixed_mesh.index_sizes, [3, 4])
+        
+        # Test polygon reconstruction
+        reconstructed = mixed_mesh.get_polygon_indices()
+        self.assertIsInstance(reconstructed, list)
+        self.assertEqual(len(reconstructed), 2)
+        self.assertEqual(reconstructed[0], [0, 1, 2])
+        self.assertEqual(reconstructed[1], [3, 4, 5, 6])
+    
+    def test_mesh_copy(self):
+        """Test mesh copying functionality."""
+        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        copied_mesh = mesh.copy()
+        
+        # Verify the copy has the same data
+        self.assertEqual(copied_mesh.vertex_count, mesh.vertex_count)
+        self.assertEqual(copied_mesh.index_count, mesh.index_count)
+        np.testing.assert_array_equal(copied_mesh.vertices, mesh.vertices)
+        np.testing.assert_array_equal(copied_mesh.indices, mesh.indices)
+        
+        # Verify they are independent copies
+        self.assertIsNot(copied_mesh.vertices, mesh.vertices)
+        self.assertIsNot(copied_mesh.indices, mesh.indices)
+        
+        # Modify copy and ensure original is unchanged
+        copied_mesh.vertices[0, 0] = 999.0
+        self.assertNotEqual(copied_mesh.vertices[0, 0], mesh.vertices[0, 0])
 
 
 class CustomMesh(Mesh):
@@ -251,25 +301,94 @@ class TestCustomMesh(unittest.TestCase):
         )
         
         # Test optimize_vertex_cache
-        MeshUtils.optimize_vertex_cache(mesh)
-        self.assertEqual(mesh.vertex_count, len(self.vertices))
-        self.assertEqual(mesh.index_count, len(self.indices))
+        optimized_mesh = MeshUtils.optimize_vertex_cache(mesh)
+        self.assertEqual(optimized_mesh.vertex_count, len(self.vertices))
+        self.assertEqual(optimized_mesh.index_count, len(self.indices))
+        self.assertIsInstance(optimized_mesh, CustomMesh)
         
         # Test optimize_overdraw
-        MeshUtils.optimize_overdraw(mesh)
-        self.assertEqual(mesh.vertex_count, len(self.vertices))
-        self.assertEqual(mesh.index_count, len(self.indices))
+        overdraw_mesh = MeshUtils.optimize_overdraw(mesh)
+        self.assertEqual(overdraw_mesh.vertex_count, len(self.vertices))
+        self.assertEqual(overdraw_mesh.index_count, len(self.indices))
+        self.assertIsInstance(overdraw_mesh, CustomMesh)
         
         # Test optimize_vertex_fetch
         original_vertex_count = mesh.vertex_count
-        MeshUtils.optimize_vertex_fetch(mesh)
-        self.assertLessEqual(mesh.vertex_count, original_vertex_count)
-        self.assertEqual(mesh.index_count, len(self.indices))
+        fetch_mesh = MeshUtils.optimize_vertex_fetch(mesh)
+        self.assertLessEqual(fetch_mesh.vertex_count, original_vertex_count)
+        self.assertEqual(fetch_mesh.index_count, len(self.indices))
+        self.assertIsInstance(fetch_mesh, CustomMesh)
         
         # Test simplify
         original_index_count = mesh.index_count
-        MeshUtils.simplify(mesh, target_ratio=0.5)
-        self.assertLessEqual(mesh.index_count, original_index_count)
+        simplified_mesh = MeshUtils.simplify(mesh, target_ratio=0.5)
+        self.assertLessEqual(simplified_mesh.index_count, original_index_count)
+        self.assertIsInstance(simplified_mesh, CustomMesh)
+    
+    def test_custom_mesh_with_polygons(self):
+        """Test custom mesh with polygon support using index_sizes."""
+        # Create a custom mesh with mixed polygons
+        mixed_indices = [
+            [0, 1, 2],        # Triangle
+            [2, 3, 4, 5],     # Quad
+            [5, 6, 7, 0, 1]   # Pentagon
+        ]
+        
+        mesh = CustomMesh(
+            vertices=self.vertices,
+            indices=mixed_indices,
+            normals=self.normals,
+            colors=self.colors,
+            material_name="mixed_polygon_material",
+            tags=["mixed", "polygons"],
+            properties={"type": "mixed_mesh"}
+        )
+        
+        # Check polygon properties
+        self.assertEqual(mesh.polygon_count, 3)
+        self.assertFalse(mesh.is_uniform_polygons)
+        np.testing.assert_array_equal(mesh.index_sizes, [3, 4, 5])
+        
+        # Check that polygon structure is preserved
+        reconstructed = mesh.get_polygon_indices()
+        self.assertIsInstance(reconstructed, list)
+        self.assertEqual(len(reconstructed), 3)
+        self.assertEqual(reconstructed[0], [0, 1, 2])
+        self.assertEqual(reconstructed[1], [2, 3, 4, 5])
+        self.assertEqual(reconstructed[2], [5, 6, 7, 0, 1])
+    
+    def test_custom_mesh_copy_with_index_sizes(self):
+        """Test copying custom mesh with index_sizes."""
+        # Create a quad mesh
+        quad_indices = np.array([
+            [0, 1, 2, 3],
+            [4, 5, 6, 7]
+        ], dtype=np.uint32)
+        
+        mesh = CustomMesh(
+            vertices=self.vertices,
+            indices=quad_indices,
+            normals=self.normals,
+            colors=self.colors,
+            material_name="quad_material"
+        )
+        
+        # Copy the mesh
+        copied_mesh = mesh.copy()
+        
+        # Verify polygon data is preserved
+        self.assertEqual(copied_mesh.polygon_count, mesh.polygon_count)
+        self.assertEqual(copied_mesh.is_uniform_polygons, mesh.is_uniform_polygons)
+        np.testing.assert_array_equal(copied_mesh.index_sizes, mesh.index_sizes)
+        
+        # Verify custom attributes are preserved
+        self.assertEqual(copied_mesh.material_name, mesh.material_name)
+        np.testing.assert_array_equal(copied_mesh.normals, mesh.normals)
+        np.testing.assert_array_equal(copied_mesh.colors, mesh.colors)
+        
+        # Verify independence
+        self.assertIsNot(copied_mesh.index_sizes, mesh.index_sizes)
+        self.assertIsNot(copied_mesh.normals, mesh.normals)
 
 
 if __name__ == '__main__':

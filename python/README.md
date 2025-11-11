@@ -13,7 +13,9 @@ pip install meshly
 
 - `Mesh` class: A Pydantic-based representation of a 3D mesh with methods for optimization and simplification
 - Support for custom mesh subclasses with additional attributes
-- Automatic encoding/decoding of numpy array attributes
+- Automatic encoding/decoding of numpy array attributes, including nested arrays in dictionaries
+- Enhanced polygon support with automatic inference of polygon structure from input data
+- Mesh copying functionality for creating independent copies
 - `EncodedMesh` class: A container for encoded mesh data
 
 ### Utility Classes
@@ -30,10 +32,18 @@ pip install meshly
 
 ### File I/O
 
-- Save and load meshes to/from ZIP files with `save_to_zip` and `load_from_zip` methods
+- Save and load meshes to/from ZIP files with [`MeshUtils.save_to_zip()`](python/meshly/mesh.py:564) and [`MeshUtils.load_from_zip()`](python/meshly/mesh.py:677) methods
 - Automatic preservation of custom attributes during serialization/deserialization
 - Support for storing and loading custom mesh subclasses
+- Nested directory structure for organized array storage in ZIP files
 - In-memory operations with binary data
+
+### Advanced Features
+
+- **Nested Array Support**: Automatically encode/decode numpy arrays within nested dictionary structures
+- **Flexible Polygon Formats**: Support for triangles, quads, and mixed polygon meshes with automatic structure inference
+- **Deep Copying**: Create independent mesh copies with the [`copy()`](python/meshly/mesh.py:129) method
+- **Enhanced Validation**: Automatic validation and conversion of polygon structures and array data
 
 ## Usage Example
 
@@ -60,6 +70,17 @@ class TexturedMesh(Mesh):
     # Add non-array attributes
     material_name: str = Field("default", description="Material name")
     tags: List[str] = Field(default_factory=list, description="Tags for the mesh")
+    
+    # Dictionary containing nested dictionaries with arrays
+    material_data: dict[str, dict[str, np.ndarray]] = Field(
+        default_factory=dict,
+        description="Nested dictionary structure with arrays"
+    )
+    
+    material_colors: dict[str, str] = Field(
+        default_factory=dict,
+        description="Dictionary with non-array values"
+    )
 
 # Create a simple cube mesh
 vertices = np.array([
@@ -87,46 +108,50 @@ normals = np.array([
     [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]
 ], dtype=np.float32)
 
-# Create the textured mesh
+# Create the textured mesh with nested dictionary data
 mesh = TexturedMesh(
     vertices=vertices,
     indices=indices,
     texture_coords=texture_coords,
     normals=normals,
     material_name="cube_material",
-    tags=["cube", "example"]
+    tags=["cube", "example"],
+    material_data={
+        "cube_material": {
+            "diffuse": np.array([1.0, 0.5, 0.31], dtype=np.float32),
+            "specular": np.array([0.5, 0.5, 0.5], dtype=np.float32),
+            "shininess": np.array([32.0], dtype=np.float32)
+        }
+    },
+    material_colors={
+        "cube_material": "#FF7F50"
+    }
 )
 
-# Optimize the mesh using MeshUtils methods
+# Optimize the mesh using MeshUtils static methods
 from meshly import MeshUtils
 
-# Option 1: Use MeshUtils static methods
-MeshUtils.optimize_vertex_cache(mesh)
-MeshUtils.optimize_overdraw(mesh)
-MeshUtils.optimize_vertex_fetch(mesh)
-MeshUtils.simplify(mesh, target_ratio=0.8)  # Keep 80% of triangles
+# Create optimized copies of the mesh (original mesh is unchanged)
+vertex_cache_optimized_mesh = MeshUtils.optimize_vertex_cache(mesh)
+overdraw_optimized_mesh = MeshUtils.optimize_overdraw(mesh)
+vertex_fetch_optimized_mesh = MeshUtils.optimize_vertex_fetch(mesh)
+simplified_mesh = MeshUtils.simplify(mesh, target_ratio=0.8)  # Keep 80% of triangles
 
-# Option 2: Use convenience methods on the Mesh instance
-mesh.optimize_vertex_cache()
-mesh.optimize_overdraw()
-mesh.optimize_vertex_fetch()
-mesh.simplify(target_ratio=0.8)  # Keep 80% of triangles
-
-# Encode the mesh (includes all numpy array attributes automatically)
-encoded_mesh = mesh.encode()
+# Encode the mesh (includes all numpy array attributes automatically, including nested arrays)
+encoded_mesh = MeshUtils.encode(mesh)
 print(f"Encoded mesh: {len(encoded_mesh.vertices)} bytes for vertices")
 print(f"Encoded arrays: {list(encoded_mesh.arrays.keys())}")
 
-# You can also decode the mesh directly
+# Decode the mesh directly
 decoded_mesh = MeshUtils.decode(TexturedMesh, encoded_mesh)
 print(f"Decoded mesh has {decoded_mesh.vertex_count} vertices")
 
 # Save the mesh to a zip file (uses encode internally)
 zip_path = "textured_cube.zip"
-mesh.save_to_zip(zip_path)
+MeshUtils.save_to_zip(mesh, zip_path)
 
 # Load the mesh from the zip file (uses decode internally)
-loaded_mesh = TexturedMesh.load_from_zip(zip_path)
+loaded_mesh = MeshUtils.load_from_zip(TexturedMesh, zip_path)
 
 # Use the loaded mesh
 print(f"Loaded mesh with {loaded_mesh.vertex_count} vertices")
@@ -134,6 +159,12 @@ print(f"Material name: {loaded_mesh.material_name}")
 print(f"Tags: {loaded_mesh.tags}")
 print(f"Texture coordinates shape: {loaded_mesh.texture_coords.shape}")
 print(f"Normals shape: {loaded_mesh.normals.shape}")
+print(f"Material data: {loaded_mesh.material_data}")
+print(f"Material colors: {loaded_mesh.material_colors}")
+
+# Copy the mesh to create a new instance
+copied_mesh = mesh.copy()
+print(f"Copied mesh has {copied_mesh.vertex_count} vertices")
 ```
 
 ## Array Utilities
@@ -182,11 +213,91 @@ class SkinnedMesh(Mesh):
     animation_names: List[str] = Field(default_factory=list, description="Animation names")
 ```
 
+### Nested Dictionary Support
+
+Meshly now supports numpy arrays within nested dictionary structures. Arrays in nested dictionaries are automatically detected, encoded, and decoded:
+
+```python
+class MaterialMesh(Mesh):
+    """A mesh with complex material data stored in nested dictionaries."""
+    material_data: dict[str, dict[str, np.ndarray]] = Field(
+        default_factory=dict,
+        description="Nested material properties with array values"
+    )
+    
+    material_metadata: dict[str, str] = Field(
+        default_factory=dict,
+        description="Non-array material metadata"
+    )
+
+# Arrays in nested dictionaries are handled automatically
+mesh = MaterialMesh(
+    vertices=vertices,
+    indices=indices,
+    material_data={
+        "wood": {
+            "diffuse": np.array([0.8, 0.6, 0.4], dtype=np.float32),
+            "normal": np.array([0.5, 0.5, 1.0], dtype=np.float32)
+        },
+        "metal": {
+            "diffuse": np.array([0.7, 0.7, 0.7], dtype=np.float32),
+            "roughness": np.array([0.1], dtype=np.float32)
+        }
+    }
+)
+```
+
 Benefits of custom mesh subclasses:
 - Automatic validation of required fields
 - Type checking and conversion (e.g., arrays are automatically converted to the correct dtype)
-- Automatic encoding/decoding of all numpy array attributes
+- Automatic encoding/decoding of all numpy array attributes, including nested arrays in dictionaries
 - Preservation of non-array attributes during serialization/deserialization
+- Support for complex nested data structures with mixed array and non-array content
+
+## Enhanced Polygon Support
+
+Meshly provides enhanced support for different polygon types and automatically infers polygon structure:
+
+```python
+# Triangular mesh (traditional format)
+triangular_indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
+
+# Quad mesh using 2D numpy array (uniform polygons)
+quad_indices = np.array([
+    [0, 1, 2, 3],  # First quad
+    [4, 5, 6, 7]   # Second quad
+], dtype=np.uint32)
+
+# Mixed polygon mesh using list of lists
+mixed_indices = [
+    [0, 1, 2],        # Triangle
+    [3, 4, 5, 6],     # Quad
+    [7, 8, 9, 10, 11] # Pentagon
+]
+
+# All formats are automatically handled
+mesh1 = Mesh(vertices=vertices, indices=triangular_indices)
+mesh2 = Mesh(vertices=vertices, indices=quad_indices)
+mesh3 = Mesh(vertices=vertices, indices=mixed_indices)
+
+# Access polygon information
+print(f"Polygon count: {mesh2.polygon_count}")
+print(f"Is uniform: {mesh2.is_uniform_polygons}")
+print(f"Original structure: {mesh2.get_polygon_indices()}")
+```
+
+## Mesh Copying
+
+Create independent copies of meshes with the [`copy()`](python/meshly/mesh.py:129) method:
+
+```python
+# Create a copy of the mesh
+copied_mesh = mesh.copy()
+
+# Modifications to the copy don't affect the original
+copied_mesh.vertices[0] = [1.0, 1.0, 1.0]
+print(f"Original vertices unchanged: {mesh.vertices[0]}")
+```
 
 ## Encoding and Decoding
 
@@ -213,10 +324,10 @@ The `save_to_zip` and `load_from_zip` methods use the `encode` and `decode` func
 
 ```python
 # Save to zip (uses encode internally)
-mesh.save_to_zip("mesh.zip")
+MeshUtils.save_to_zip(mesh, "mesh.zip")
 
 # Load from zip (uses decode internally)
-loaded_mesh = Mesh.load_from_zip("mesh.zip")
+loaded_mesh = MeshUtils.load_from_zip(Mesh, "mesh.zip")
 ```
 
 This separation of concerns makes the code more maintainable and allows for more flexibility in how you work with encoded mesh data.
@@ -234,11 +345,14 @@ This package is designed to work well with other tools and libraries:
 ## Performance Considerations
 
 - Mesh encoding significantly reduces data size (typically 3-5x compression)
-- ZIP compression provides additional size reduction
-- Optimized meshes render faster on GPUs
+- ZIP compression provides additional size reduction for file storage
+- Optimized meshes render faster on GPUs through improved cache performance
 - Simplified meshes maintain visual quality with fewer triangles
 - Pydantic models provide efficient validation with minimal overhead
 - Automatic handling of array attributes reduces boilerplate code
+- Deep copying creates independent mesh instances without affecting originals
+- Nested array structures are efficiently encoded with dotted path notation
+- Polygon structure validation ensures data integrity across different input formats
 
 ## Development and Contributing
 

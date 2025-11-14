@@ -73,6 +73,31 @@ export interface Mesh {
   cellTypes?: Uint32Array
 
   /**
+   * Mesh dimension (2D or 3D)
+   */
+  dim?: number
+
+  /**
+   * Flattened marker node indices
+   */
+  markerIndices?: Record<string, Uint32Array>
+
+  /**
+   * Offset indices to reconstruct individual marker elements
+   */
+  markerOffsets?: Record<string, Uint32Array>
+
+  /**
+   * VTK cell types for each marker element
+   */
+  markerTypes?: Record<string, Uint8Array>
+
+  /**
+   * Optional markers as list of lists, auto-converted to flattened structure
+   */
+  markers?: Record<string, number[][]>
+
+  /**
    * Additional properties that can be any type of array
    */
   [key: string]: Float32Array | Uint32Array | undefined | any
@@ -359,6 +384,35 @@ export class MeshUtils {
       encodedArrays['indexSizes'] = ArrayUtils.encodeArray(mesh.indexSizes)
     }
 
+    // Handle cellTypes as a special case - store in arrays if present
+    if (mesh.cellTypes) {
+      encodedArrays['cellTypes'] = ArrayUtils.encodeArray(mesh.cellTypes)
+    }
+
+    // Handle marker arrays as special cases - store in arrays if present
+    if (mesh.markerIndices) {
+      for (const [name, array] of Object.entries(mesh.markerIndices)) {
+        encodedArrays[`markerIndices.${name}`] = ArrayUtils.encodeArray(array)
+      }
+    }
+
+    if (mesh.markerOffsets) {
+      for (const [name, array] of Object.entries(mesh.markerOffsets)) {
+        encodedArrays[`markerOffsets.${name}`] = ArrayUtils.encodeArray(array)
+      }
+    }
+
+    if (mesh.markerTypes) {
+      for (const [name, array] of Object.entries(mesh.markerTypes)) {
+        // Convert Uint8Array to Uint32Array for encoding
+        const uint32Array = new Uint32Array(array.length)
+        for (let i = 0; i < array.length; i++) {
+          uint32Array[i] = array[i]
+        }
+        encodedArrays[`markerTypes.${name}`] = ArrayUtils.encodeArray(uint32Array)
+      }
+    }
+
     // Create and return the encoded mesh
     return {
       vertices: encodedVertices,
@@ -418,6 +472,9 @@ export class MeshUtils {
     const decodedArrays: Record<string, Float32Array | Uint32Array> = {}
     let indexSizes: Uint32Array | undefined
     let cellTypes: Uint32Array | undefined
+    const markerIndices: Record<string, Uint32Array> = {}
+    const markerOffsets: Record<string, Uint32Array> = {}
+    const markerTypes: Record<string, Uint8Array> = {}
     
     if (encodedMesh.arrays) {
       for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
@@ -436,6 +493,23 @@ export class MeshUtils {
         } else if (name === 'cellTypes') {
           // Special handling for cellTypes
           cellTypes = decodedArray as Uint32Array
+        } else if (name.startsWith('markerIndices.')) {
+          // Special handling for marker indices
+          const markerName = name.substring('markerIndices.'.length)
+          markerIndices[markerName] = decodedArray as Uint32Array
+        } else if (name.startsWith('markerOffsets.')) {
+          // Special handling for marker offsets
+          const markerName = name.substring('markerOffsets.'.length)
+          markerOffsets[markerName] = decodedArray as Uint32Array
+        } else if (name.startsWith('markerTypes.')) {
+          // Special handling for marker types - convert back from Uint32Array to Uint8Array
+          const markerName = name.substring('markerTypes.'.length)
+          const uint32Array = decodedArray as Uint32Array
+          const uint8Array = new Uint8Array(uint32Array.length)
+          for (let i = 0; i < uint32Array.length; i++) {
+            uint8Array[i] = uint32Array[i]
+          }
+          markerTypes[markerName] = uint8Array
         } else {
           decodedArrays[name] = decodedArray
         }
@@ -448,6 +522,17 @@ export class MeshUtils {
     }
     if (cellTypes) {
       result.cellTypes = cellTypes
+    }
+
+    // Add marker arrays to result if present
+    if (Object.keys(markerIndices).length > 0) {
+      result.markerIndices = markerIndices
+    }
+    if (Object.keys(markerOffsets).length > 0) {
+      result.markerOffsets = markerOffsets
+    }
+    if (Object.keys(markerTypes).length > 0) {
+      result.markerTypes = markerTypes
     }
 
     // Reconstruct dictionary structure from decoded arrays

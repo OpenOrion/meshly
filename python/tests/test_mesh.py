@@ -391,5 +391,158 @@ class TestCustomMesh(unittest.TestCase):
         self.assertIsNot(copied_mesh.normals, mesh.normals)
 
 
+class TestMeshMarkers(unittest.TestCase):
+    """Test mesh marker functionality."""
+    
+    def setUp(self):
+        """Set up test data."""
+        # Create a simple mesh
+        self.vertices = np.array([
+            [0.0, 0.0, 0.0],    # vertex 0
+            [1.0, 0.0, 0.0],    # vertex 1
+            [1.0, 1.0, 0.0],    # vertex 2
+            [0.0, 1.0, 0.0],    # vertex 3
+        ], dtype=np.float32)
+        
+        self.indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)  # Two triangles
+    
+    def test_marker_creation_from_lists(self):
+        """Test that markers can be created from list of lists format."""
+        markers = {
+            "boundary": [
+                [0, 1],  # line from vertex 0 to 1
+                [1, 2],  # line from vertex 1 to 2
+                [2, 3],  # line from vertex 2 to 3
+                [3, 0],  # line from vertex 3 to 0
+            ],
+            "corners": [
+                [0, 1, 2],  # triangle corner
+            ]
+        }
+        
+        mesh = Mesh(
+            vertices=self.vertices,
+            indices=self.indices,
+            markers=markers,
+            dim=2
+        )
+        
+        # Check that markers were converted to flattened structure
+        self.assertIsNone(mesh.markers)  # Should be cleared after conversion
+        self.assertIn("boundary", mesh.marker_indices)
+        self.assertIn("corners", mesh.marker_indices)
+        
+        # Check boundary marker
+        expected_boundary_indices = [0, 1, 1, 2, 2, 3, 3, 0]
+        np.testing.assert_array_equal(mesh.marker_indices["boundary"], expected_boundary_indices)
+        np.testing.assert_array_equal(mesh.marker_offsets["boundary"], [0, 2, 4, 6])
+        np.testing.assert_array_equal(mesh.marker_types["boundary"], [3, 3, 3, 3])  # VTK_LINE
+        
+        # Check corner marker
+        np.testing.assert_array_equal(mesh.marker_indices["corners"], [0, 1, 2])
+        np.testing.assert_array_equal(mesh.marker_offsets["corners"], [0])
+        np.testing.assert_array_equal(mesh.marker_types["corners"], [5])  # VTK_TRIANGLE
+    
+    def test_marker_reconstruction(self):
+        """Test that markers can be reconstructed from flattened structure."""
+        original_markers = {
+            "edges": [
+                [0, 1],
+                [1, 2],
+            ],
+            "faces": [
+                [0, 1, 2, 3],  # quad
+            ]
+        }
+        
+        mesh = Mesh(
+            vertices=self.vertices,
+            indices=self.indices,
+            markers=original_markers,
+            dim=2
+        )
+        
+        # Reconstruct markers
+        reconstructed = mesh.get_reconstructed_markers()
+        
+        # Verify reconstruction matches original
+        self.assertEqual(reconstructed["edges"], original_markers["edges"])
+        self.assertEqual(reconstructed["faces"], original_markers["faces"])
+    
+    def test_marker_type_detection(self):
+        """Test that marker types are correctly detected based on element size."""
+        markers = {
+            "lines": [[0, 1], [1, 2]],
+            "triangles": [[0, 1, 2]],
+            "quads": [[0, 1, 2, 3]],
+        }
+        
+        mesh = Mesh(
+            vertices=self.vertices,
+            indices=self.indices,
+            markers=markers,
+            dim=2
+        )
+        
+        # Check VTK types
+        np.testing.assert_array_equal(mesh.marker_types["lines"], [3, 3])  # VTK_LINE
+        np.testing.assert_array_equal(mesh.marker_types["triangles"], [5])  # VTK_TRIANGLE
+        np.testing.assert_array_equal(mesh.marker_types["quads"], [9])  # VTK_QUAD
+    
+    def test_marker_invalid_size(self):
+        """Test that invalid marker element sizes raise an error."""
+        markers = {
+            "invalid": [[0, 1, 2, 3, 4, 5]],  # 6-element polygon (unsupported)
+        }
+        
+        with self.assertRaises(ValueError) as context:
+            Mesh(
+                vertices=self.vertices,
+                indices=self.indices,
+                markers=markers,
+                dim=2
+            )
+        
+        self.assertIn("Unsupported marker element size: 6", str(context.exception))
+    
+    def test_marker_serialization(self):
+        """Test that markers are preserved during serialization."""
+        markers = {
+            "boundary": [[0, 1], [1, 2], [2, 3], [3, 0]],
+            "center": [[0, 1, 2]],
+        }
+        
+        mesh = Mesh(
+            vertices=self.vertices,
+            indices=self.indices,
+            markers=markers,
+            dim=2
+        )
+        
+        # Create a temporary file for testing
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        try:
+            # Save the mesh to a zip file
+            MeshUtils.save_to_zip(mesh, temp_path)
+            
+            # Load the mesh from the zip file
+            loaded_mesh = MeshUtils.load_from_zip(Mesh, temp_path)
+            
+            # Check that marker data is preserved
+            self.assertIn("boundary", loaded_mesh.marker_indices)
+            self.assertIn("center", loaded_mesh.marker_indices)
+            
+            # Reconstruct and verify
+            reconstructed = loaded_mesh.get_reconstructed_markers()
+            self.assertEqual(reconstructed["boundary"], markers["boundary"])
+            self.assertEqual(reconstructed["center"], markers["center"])
+        finally:
+            # Clean up
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+
 if __name__ == '__main__':
     unittest.main()

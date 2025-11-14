@@ -136,6 +136,19 @@ class Mesh(BaseModel):
     If explicitly provided, must have same length as index_sizes.
     """
 
+    # Mesh dimension
+    dim: int = Field(default=3, description="Mesh dimension (2D or 3D)")
+
+    # Flattened marker structure to handle variable-sized elements (lines=2, triangles=3, quads=4, etc.)
+    marker_indices: dict[str, np.ndarray] = Field(default_factory=dict, description="flattened marker node indices")
+    # offset indices to reconstruct individual marker elements
+    marker_offsets: dict[str, np.ndarray] = Field(default_factory=dict, description="offset indices to reconstruct individual marker elements")
+    # VTK cell types for each marker element, map to GMSH types with VTK_TO_GMSH_ELEMENT_TYPE
+    marker_types: dict[str, np.ndarray] = Field(default_factory=dict, description="VTK cell types for each marker element")
+
+    # Optional: Allow setting markers as list of lists and auto-convert via validator
+    markers: Optional[Dict[str, List[List[int]]]] = Field(None, description="Optional markers as list of lists, auto-converted to flattened structure")
+
     def copy(self: T) -> T:
         """
         Create a deep copy of the mesh.
@@ -209,6 +222,43 @@ class Mesh(BaseModel):
                 result.append(self.indices[offset:offset+size].tolist())
                 offset += size
             return result
+
+    def get_reconstructed_markers(self) -> Dict[str, List[List[int]]]:
+        """Reconstruct marker elements from flattened structure back to list of lists"""
+        reconstructed = {}
+
+        for marker_name, flattened_indices in self.marker_indices.items():
+            offsets = self.marker_offsets[marker_name]
+            marker_types = self.marker_types[marker_name]
+
+            # Reconstruct individual marker elements
+            elements = []
+            for j in range(len(marker_types)):
+                start_idx = offsets[j]
+
+                # Determine element size based on VTK cell type
+                vtk_cell_type = marker_types[j]
+                if vtk_cell_type == 1:  # VTK_VERTEX
+                    elem_size = 1
+                elif vtk_cell_type == 3:  # VTK_LINE
+                    elem_size = 2
+                elif vtk_cell_type == 5:  # VTK_TRIANGLE
+                    elem_size = 3
+                elif vtk_cell_type == 9:  # VTK_QUAD
+                    elem_size = 4
+                else:
+                    # Fallback: calculate from next offset
+                    end_idx = offsets[j + 1] if j + \
+                        1 < len(offsets) else len(flattened_indices)
+                    elem_size = end_idx - start_idx
+
+                element = flattened_indices[start_idx:start_idx +
+                                            elem_size].tolist()
+                elements.append(element)
+
+            reconstructed[marker_name] = elements
+
+        return reconstructed
 
     def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, np.ndarray]:
         """
@@ -403,6 +453,42 @@ class Mesh(BaseModel):
         elif self.cell_types is not None:
             # If cell_types provided but no index_sizes, convert to array but can't validate
             self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
+
+        # Handle marker conversion if markers field is provided
+        if self.markers is not None:
+            # Convert list-based markers to flattened structure
+            for marker_name, marker_elements in self.markers.items():
+                # Flatten all marker elements
+                flattened_indices = []
+                offsets = [0]
+                element_vtk_types = []
+
+                for element in marker_elements:
+                    flattened_indices.extend(element)
+                    offsets.append(len(flattened_indices))
+
+                    # Auto-detect marker types based on element size
+                    if len(element) == 1:
+                        element_vtk_types.append(1)  # VTK_VERTEX
+                    elif len(element) == 2:
+                        element_vtk_types.append(3)  # VTK_LINE
+                    elif len(element) == 3:
+                        element_vtk_types.append(5)  # VTK_TRIANGLE
+                    elif len(element) == 4:
+                        element_vtk_types.append(9)  # VTK_QUAD
+                    else:
+                        raise ValueError(
+                            f"Unsupported marker element size: {len(element)}")
+
+                self.marker_indices[marker_name] = np.array(
+                    flattened_indices, dtype=np.uint32)
+                self.marker_offsets[marker_name] = np.array(
+                    offsets[:-1], dtype=np.uint32)  # Remove last offset
+                self.marker_types[marker_name] = np.array(
+                    element_vtk_types, dtype=np.uint8)
+
+            # Clear the temporary markers field
+            self.markers = None
 
         return self
 

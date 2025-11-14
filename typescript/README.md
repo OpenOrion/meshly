@@ -308,22 +308,57 @@ Decodes an encoded mesh. This function decodes the mesh's vertices, indices, and
 
 A decoded Mesh object.
 
+#### `MeshUtils.getPolygonIndices(mesh: Mesh): Uint32Array[] | Uint32Array`
 
-### ArrayUtils
-
-#### `ArrayUtils.encodeArray(data: Float32Array): EncodedArray`
-
-Encodes a Float32Array using the meshoptimizer algorithm.
+Gets indices in their original polygon structure.
 
 ##### Parameters
 
-- `data`: Float32Array to encode
+- `mesh`: The mesh to get polygon indices from
+
+##### Returns
+
+For uniform polygons: Uint32Array with flat indices. For mixed polygons: Array of Uint32Arrays where each represents a polygon.
+
+#### `MeshUtils.normalizeVertices(vertices: Float32Array): Float32Array`
+
+Normalizes vertices to fit within a unit cube centered at the origin.
+
+##### Parameters
+
+- `vertices`: The vertices to normalize
+
+##### Returns
+
+Normalized vertices as Float32Array.
+
+#### `MeshUtils.triangulateIndices(mesh: Mesh): Uint32Array` (private)
+
+Converts mesh indices to triangulated indices for THREE.js compatibility. This is used internally by `convertToBufferGeometry`.
+
+##### Parameters
+
+- `mesh`: The mesh to triangulate
+
+##### Returns
+
+Triangulated indices suitable for THREE.js rendering.
+
+### ArrayUtils
+
+#### `ArrayUtils.encodeArray(data: Float32Array | Uint32Array): EncodedArray`
+
+Encodes a Float32Array or Uint32Array using the meshoptimizer algorithm.
+
+##### Parameters
+
+- `data`: Float32Array or Uint32Array to encode
 
 ##### Returns
 
 EncodedArray object containing the encoded data and metadata.
 
-#### `ArrayUtils.decodeArray(data: Uint8Array, metadata: ArrayMetadata): Float32Array`
+#### `ArrayUtils.decodeArray(data: Uint8Array, metadata: ArrayMetadata): Float32Array | Uint32Array`
 
 Decodes an encoded array using the meshoptimizer algorithm.
 
@@ -334,7 +369,84 @@ Decodes an encoded array using the meshoptimizer algorithm.
 
 ##### Returns
 
-Decoded array as a Float32Array.
+Decoded array as a Float32Array or Uint32Array based on the metadata dtype.
+
+#### `ArrayUtils.loadFromZip<T>(zipInput: JSZip | ArrayBuffer | Uint8Array, loadCustomMetadata?: boolean): Promise<ArrayResult<T>>`
+
+Loads an array from a zip buffer containing array.bin and metadata.json.
+
+##### Parameters
+
+- `zipInput`: The zip buffer, JSZip instance, or raw data
+- `loadCustomMetadata`: Whether to load custom metadata if present (default: false)
+
+##### Returns
+
+Promise resolving to ArrayResult containing the decoded array and optional custom metadata.
+
+## Interfaces and Types
+
+### Mesh Interface
+
+```typescript
+interface Mesh {
+  vertices: Float32Array;
+  indices?: Uint32Array;
+  indexSizes?: Uint32Array;
+  cellTypes?: Uint32Array;
+  dim?: number;
+  markerIndices?: Record<string, Uint32Array>;
+  markerOffsets?: Record<string, Uint32Array>;
+  markerTypes?: Record<string, Uint8Array>;
+  markers?: Record<string, number[][]>;
+  [key: string]: any; // Additional arrays and properties
+}
+```
+
+### EncodedMesh Interface
+
+```typescript
+interface EncodedMesh {
+  vertices: Uint8Array;
+  indices?: Uint8Array;
+  vertex_count: number;
+  vertex_size: number;
+  index_count?: number | null;
+  index_size: number;
+  indexSizes?: Uint8Array;
+  arrays?: Record<string, EncodedArray>;
+}
+```
+
+### EncodedArray Interface
+
+```typescript
+interface EncodedArray {
+  data: Uint8Array;
+  shape: number[];
+  dtype: string;
+  itemsize: number;
+}
+```
+
+### ArrayMetadata Interface
+
+```typescript
+interface ArrayMetadata {
+  shape: number[];
+  dtype: string;
+  itemsize: number;
+}
+```
+
+### DecodeMeshOptions Interface
+
+```typescript
+interface DecodeMeshOptions {
+  normalize?: boolean;    // Default: false
+  computeNormals?: boolean; // Default: true
+}
+```
 
 ## Python Mesh Format
 

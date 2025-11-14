@@ -492,7 +492,7 @@ class TestMeshMarkers(unittest.TestCase):
     def test_marker_invalid_size(self):
         """Test that invalid marker element sizes raise an error."""
         markers = {
-            "invalid": [[0, 1, 2, 3, 4, 5]],  # 6-element polygon (unsupported)
+            "invalid": [[0, 1, 2, 3, 4, 5, 6]],  # 7-element polygon (unsupported)
         }
         
         with self.assertRaises(ValueError) as context:
@@ -503,7 +503,7 @@ class TestMeshMarkers(unittest.TestCase):
                 dim=2
             )
         
-        self.assertIn("Unsupported marker element size: 6", str(context.exception))
+        self.assertIn("Unsupported marker element size: 7", str(context.exception))
     
     def test_marker_serialization(self):
         """Test that markers are preserved during serialization."""

@@ -28,6 +28,12 @@ from .array import (
     ArrayUtils,
 )
 
+from .cell_types import (
+    CellType,
+    VTKCellType,
+    CellTypeUtils,
+)
+
 
 __all__ = [
     # Mesh classes
@@ -42,4 +48,8 @@ __all__ = [
     "ArrayMetadata",
     "ArrayResult",
     "ArrayUtils",
+    # Cell type utilities
+    "CellType",
+    "VTKCellType",
+    "CellTypeUtils",
 ]

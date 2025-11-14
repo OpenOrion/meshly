@@ -39,6 +39,7 @@ from meshoptimizer import (
 
 from .array import ArrayMetadata, EncodedArray, ArrayUtils
 from .common import PathLike
+from .cell_types import CellTypeUtils, VTKCellType
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
@@ -238,16 +239,10 @@ class Mesh(BaseModel):
 
                 # Determine element size based on VTK cell type
                 vtk_cell_type = marker_types[j]
-                if vtk_cell_type == 1:  # VTK_VERTEX
-                    elem_size = 1
-                elif vtk_cell_type == 3:  # VTK_LINE
-                    elem_size = 2
-                elif vtk_cell_type == 5:  # VTK_TRIANGLE
-                    elem_size = 3
-                elif vtk_cell_type == 9:  # VTK_QUAD
-                    elem_size = 4
-                else:
-                    # Fallback: calculate from next offset
+                elem_size = CellTypeUtils.vtk_cell_type_to_size(vtk_cell_type)
+                
+                if elem_size == 0:
+                    # Fallback: calculate from next offset for unknown types
                     end_idx = offsets[j + 1] if j + \
                         1 < len(offsets) else len(flattened_indices)
                     elem_size = end_idx - start_idx
@@ -403,56 +398,32 @@ class Mesh(BaseModel):
                         f"total number of indices ({len(self.indices)})"
                     )
         
-        # Handle cell_types - validate and auto-infer if needed
-        if self.index_sizes is not None:
-            if self.cell_types is not None:
-                # Ensure cell_types is uint32 array
-                self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
-                
-                # Validate that cell_types length matches index_sizes length
-                if len(self.cell_types) != len(self.index_sizes):
-                    raise ValueError(
-                        f"Length of cell_types ({len(self.cell_types)}) does not match "
-                        f"length of index_sizes ({len(self.index_sizes)})"
-                    )
-            else:
-                # Auto-infer cell_types from index_sizes
-                # Common VTK cell type mappings
-                size_to_cell_type = {
-                    1: 1,   # VTK_VERTEX
-                    2: 3,   # VTK_LINE
-                    3: 5,   # VTK_TRIANGLE
-                    4: 9,   # VTK_QUAD
-                    8: 12,  # VTK_HEXAHEDRON (cube)
-                    4: 10,  # VTK_TETRA (tetrahedral, but conflicts with quad)
-                    6: 13,  # VTK_WEDGE (prism)
-                    5: 14   # VTK_PYRAMID
-                }
-                
-                # For ambiguous cases, prefer common types
-                def infer_cell_type(size):
-                    if size == 1:
-                        return 1    # VTK_VERTEX
-                    elif size == 2:
-                        return 3    # VTK_LINE
-                    elif size == 3:
-                        return 5    # VTK_TRIANGLE
-                    elif size == 4:
-                        return 9    # VTK_QUAD (prefer over tetrahedron)
-                    elif size == 5:
-                        return 14   # VTK_PYRAMID
-                    elif size == 6:
-                        return 13   # VTK_WEDGE
-                    elif size == 8:
-                        return 12   # VTK_HEXAHEDRON
-                    else:
-                        return 7    # VTK_POLYGON (generic polygon)
-                
-                inferred_cell_types = [infer_cell_type(size) for size in self.index_sizes]
-                self.cell_types = np.array(inferred_cell_types, dtype=np.uint32)
-        elif self.cell_types is not None:
-            # If cell_types provided but no index_sizes, convert to array but can't validate
+        # Handle cell_types and index_sizes relationship
+        if self.index_sizes is not None and self.cell_types is not None:
+            # Both provided - validate consistency
+            self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
             self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
+            
+            # Validate that cell_types length matches index_sizes length
+            if len(self.cell_types) != len(self.index_sizes):
+                raise ValueError(
+                    f"Length of cell_types ({len(self.cell_types)}) does not match "
+                    f"length of index_sizes ({len(self.index_sizes)})"
+                )
+            
+            # Validate that sizes and types are consistent
+            if not CellTypeUtils.validate_sizes_and_vtk_types(self.index_sizes, self.cell_types):
+                raise ValueError("Element sizes do not match VTK cell types")
+                
+        elif self.index_sizes is not None:
+            # Only index_sizes provided - infer cell_types
+            self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
+            self.cell_types = CellTypeUtils.infer_vtk_cell_types_from_sizes(self.index_sizes)
+            
+        elif self.cell_types is not None:
+            # Only cell_types provided - infer index_sizes
+            self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
+            self.index_sizes = CellTypeUtils.infer_sizes_from_vtk_cell_types(self.cell_types)
 
         # Handle marker conversion if markers field is provided
         if self.markers is not None:
@@ -468,17 +439,11 @@ class Mesh(BaseModel):
                     offsets.append(len(flattened_indices))
 
                     # Auto-detect marker types based on element size
-                    if len(element) == 1:
-                        element_vtk_types.append(1)  # VTK_VERTEX
-                    elif len(element) == 2:
-                        element_vtk_types.append(3)  # VTK_LINE
-                    elif len(element) == 3:
-                        element_vtk_types.append(5)  # VTK_TRIANGLE
-                    elif len(element) == 4:
-                        element_vtk_types.append(9)  # VTK_QUAD
-                    else:
+                    vtk_type = CellTypeUtils.size_to_vtk_cell_type(len(element))
+                    if vtk_type == VTKCellType.VTK_POLYGON and len(element) not in [1, 2, 3, 4, 5, 6, 8]:
                         raise ValueError(
                             f"Unsupported marker element size: {len(element)}")
+                    element_vtk_types.append(vtk_type)
 
                 self.marker_indices[marker_name] = np.array(
                     flattened_indices, dtype=np.uint32)

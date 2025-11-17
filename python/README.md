@@ -398,7 +398,7 @@ Markers are stored internally using an efficient flattened format that supports 
 # Access flattened marker structure
 for name, indices in mesh.marker_indices.items():
     offsets = mesh.marker_offsets[name]
-    types = mesh.marker_types[name]
+    types = mesh.marker_cell_types[name]
     
     print(f"{name}:")
     print(f"  Flattened indices: {indices}")
@@ -428,7 +428,7 @@ advanced_mesh = Mesh(
 )
 
 # Automatic VTK cell type detection
-print(f"Marker types detected: {advanced_mesh.marker_types}")
+print(f"Marker types detected: {advanced_mesh.marker_cell_types}")
 ```
 
 ### Custom Mesh Classes with Markers

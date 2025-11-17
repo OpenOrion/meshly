@@ -230,6 +230,67 @@ export class MeshUtils {
   }
 
   /**
+   * Convert VTK cell types to element sizes
+   * @param cellTypes Array of VTK cell type identifiers
+   * @returns Array of element sizes
+   */
+  static inferSizesFromCellTypes(cellTypes: Uint8Array | Uint32Array): Uint32Array {
+    const sizes = new Uint32Array(cellTypes.length)
+    
+    for (let i = 0; i < cellTypes.length; i++) {
+      const cellType = cellTypes[i]
+      switch (cellType) {
+        case 1: // VTK_VERTEX
+          sizes[i] = 1
+          break
+        case 3: // VTK_LINE
+          sizes[i] = 2
+          break
+        case 5: // VTK_TRIANGLE
+          sizes[i] = 3
+          break
+        case 9: // VTK_QUAD
+          sizes[i] = 4
+          break
+        case 10: // VTK_TETRA
+          sizes[i] = 4
+          break
+        case 14: // VTK_PYRAMID
+          sizes[i] = 5
+          break
+        case 13: // VTK_WEDGE
+          sizes[i] = 6
+          break
+        case 12: // VTK_HEXAHEDRON
+          sizes[i] = 8
+          break
+        default:
+          throw new Error(`Unknown VTK cell type: ${cellType}`)
+      }
+    }
+    
+    return sizes
+  }
+
+  /**
+   * Convert element sizes to offsets
+   * @param sizes Array of element sizes
+   * @returns Array of offset indices
+   */
+  static sizesToOffsets(sizes: Uint32Array): Uint32Array {
+    const offsets = new Uint32Array(sizes.length)
+    let currentOffset = 0
+    
+    for (let i = 0; i < sizes.length; i++) {
+      offsets[i] = currentOffset
+      currentOffset += sizes[i]
+    }
+    
+    return offsets
+  }
+
+
+  /**
    * Get indices in their original polygon structure
    */
   static getPolygonIndices(mesh: Mesh): Uint32Array[] | Uint32Array {

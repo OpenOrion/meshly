@@ -38,9 +38,9 @@ class TestIndexSizes(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=indices)
         
         self.assertEqual(mesh.index_count, 6)
-        self.assertEqual(mesh.polygon_count, 0)  # No index_sizes means no polygon info
-        self.assertTrue(mesh.is_uniform_polygons)  # No polygon info means uniform
-        self.assertIsNone(mesh.index_sizes)
+        self.assertEqual(mesh.polygon_count, 2)  # Now auto-infers triangles
+        self.assertTrue(mesh.is_uniform_polygons)  # Auto-inferred uniform triangles
+        np.testing.assert_array_equal(mesh.index_sizes, [3, 3])  # Auto-inferred triangle sizes
     
     def test_quad_indices_2d_array(self):
         """Test quad mesh using 2D numpy array with automatic index_sizes inference."""

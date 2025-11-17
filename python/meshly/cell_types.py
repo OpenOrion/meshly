@@ -9,6 +9,7 @@ import numpy as np
 from typing import Union, List
 
 
+
 class CellType:
     """Standard cell type definitions."""
     POINT = 15
@@ -32,6 +33,7 @@ class VTKCellType:
     VTK_WEDGE = 13
     VTK_PYRAMID = 14
     VTK_POLYGON = 7
+
 
 
 class CellTypeUtils:
@@ -109,20 +111,20 @@ class CellTypeUtils:
         return cell_types
     
     @staticmethod
-    def infer_sizes_from_vtk_cell_types(vtk_types: Union[np.ndarray, List[int]]) -> np.ndarray:
+    def infer_sizes_from_vtk_cell_types(vtk_cell_types: Union[np.ndarray, List[int]]) -> np.ndarray:
         """
         Infer element sizes from VTK cell types.
         
         Args:
-            vtk_types: Array or list of VTK cell type identifiers
+            vtk_cell_types: Array or list of VTK cell type identifiers
             
         Returns:
             Array of element sizes
         """
-        vtk_types_array = np.asarray(vtk_types)
-        sizes = np.zeros(len(vtk_types_array), dtype=np.uint32)
+        vtk_cell_types = np.asarray(vtk_cell_types)
+        sizes = np.zeros(len(vtk_cell_types), dtype=np.uint32)
         
-        for i, vtk_type in enumerate(vtk_types_array):
+        for i, vtk_type in enumerate(vtk_cell_types):
             size = CellTypeUtils.vtk_cell_type_to_size(vtk_type)
             if size == 0:
                 raise ValueError(f"Unknown VTK cell type: {vtk_type}")

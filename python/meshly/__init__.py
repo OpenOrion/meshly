@@ -34,6 +34,10 @@ from .cell_types import (
     CellTypeUtils,
 )
 
+from .element_utils import (
+    ElementUtils,
+)
+
 
 __all__ = [
     # Mesh classes
@@ -52,4 +56,6 @@ __all__ = [
     "CellType",
     "VTKCellType",
     "CellTypeUtils",
+    # Element utilities
+    "ElementUtils",
 ]

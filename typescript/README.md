@@ -153,6 +153,61 @@ console.log(cellTypes); // [3, 5, 9, 14, 13, 12]
 // 7: VTK_POLYGON (generic)
 ```
 
+### Marker Auto-Calculation
+
+Meshly automatically calculates `markerOffsets` when only `markerTypes` is provided, eliminating the need to manually specify both:
+
+```typescript
+import { MeshUtils } from 'meshly';
+
+// Create a mesh with marker types - offsets calculated automatically
+const mesh = {
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+  indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+  markerIndices: {
+    "boundary": new Uint32Array([0, 1, 2, 3]) // Flattened marker indices
+  },
+  markerTypes: {
+    "boundary": new Uint8Array([3, 3]) // Two lines (VTK_LINE = 3)
+  }
+  // markerOffsets automatically calculated as [0, 2] during decode
+};
+
+// Encode and decode to trigger auto-calculation
+const encoded = MeshUtils.encode(mesh);
+const decoded = MeshUtils.decode(encoded);
+
+console.log(decoded.markerOffsets!.boundary); // Uint32Array([0, 2])
+
+// Works with mixed cell types too
+const mixedMesh = {
+  vertices: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 1]),
+  indices: new Uint32Array([0, 1, 2]),
+  markerIndices: {
+    "mixed": new Uint32Array([0, 1, 2, 0, 1, 4]) // vertex + line + triangle
+  },
+  markerTypes: {
+    "mixed": new Uint8Array([1, 3, 5]) // VTK_VERTEX, VTK_LINE, VTK_TRIANGLE
+  }
+  // markerOffsets automatically calculated as [0, 1, 3]
+};
+```
+
+The auto-calculation uses the VTK cell type mapping through utility functions:
+
+```typescript
+// Direct utility usage
+const cellTypes = new Uint8Array([1, 3, 5]); // vertex, line, triangle
+const sizes = MeshUtils.inferSizesFromCellTypes(cellTypes);        // [1, 2, 3]
+const offsets = MeshUtils.sizesToOffsets(sizes);                   // [0, 1, 3]
+
+// VTK cell type to size mapping:
+// VTK_VERTEX (1) → 1 vertex, VTK_LINE (3) → 2 vertices
+// VTK_TRIANGLE (5) → 3 vertices, VTK_QUAD (9) → 4 vertices
+// VTK_TETRA (10) → 4 vertices, VTK_PYRAMID (14) → 5 vertices
+// VTK_WEDGE (13) → 6 vertices, VTK_HEXAHEDRON (12) → 8 vertices
+```
+
 ### Array Utilities
 
 The library also provides utilities for working with arrays:
@@ -268,6 +323,30 @@ Gets or infers cell types for a mesh.
 ##### Returns
 
 Array of VTK cell type identifiers, or undefined if no polygon information is available.
+
+#### `MeshUtils.inferSizesFromCellTypes(cellTypes: Uint8Array | Uint32Array): Uint32Array`
+
+Converts VTK cell types to element sizes. This is used for automatic marker offset calculation.
+
+##### Parameters
+
+- `cellTypes`: Array of VTK cell type identifiers
+
+##### Returns
+
+Array of element sizes corresponding to each cell type.
+
+#### `MeshUtils.sizesToOffsets(sizes: Uint32Array): Uint32Array`
+
+Converts element sizes to offset arrays. This is used for automatic marker offset calculation.
+
+##### Parameters
+
+- `sizes`: Array of element sizes
+
+##### Returns
+
+Array of offset indices where each element starts in the flattened marker data.
 
 #### `MeshUtils.decodeVertexBuffer(vertexCount: number, vertexSize: number, data: Uint8Array): Float32Array`
 

@@ -19,6 +19,7 @@ from typing import (
     TypeVar,
     Union,
     List,
+    Sequence,
     get_type_hints,
 )
 import numpy as np
@@ -40,6 +41,7 @@ from meshoptimizer import (
 from .array import ArrayMetadata, EncodedArray, ArrayUtils
 from .common import PathLike
 from .cell_types import CellTypeUtils, VTKCellType
+from .element_utils import ElementUtils
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
@@ -60,7 +62,8 @@ class EncodedMesh(BaseModel):
     )
     vertex_count: int = Field(..., description="Number of vertices")
     vertex_size: int = Field(..., description="Size of each vertex in bytes")
-    index_count: Optional[int] = Field(None, description="Number of indices (optional)")
+    index_count: Optional[int] = Field(
+        None, description="Number of indices (optional)")
     index_size: int = Field(..., description="Size of each index in bytes")
     index_sizes: Optional[bytes] = Field(
         None, description="Encoded polygon sizes (optional)"
@@ -84,7 +87,8 @@ class MeshSize(BaseModel):
 
     vertex_count: int = Field(..., description="Number of vertices")
     vertex_size: int = Field(..., description="Size of each vertex in bytes")
-    index_count: Optional[int] = Field(None, description="Number of indices (optional)")
+    index_count: Optional[int] = Field(
+        None, description="Number of indices (optional)")
     index_size: int = Field(..., description="Size of each index in bytes")
 
 
@@ -102,7 +106,8 @@ class MeshMetadata(BaseModel):
     field_data: Optional[Dict[str, Any]] = Field(
         None, description="Dictionary of model fields that aren't numpy arrays"
     )
-    mesh_size: MeshSize = Field(description="Size metadata for the encoded mesh")
+    mesh_size: MeshSize = Field(
+        description="Size metadata for the encoded mesh")
 
 
 class Mesh(BaseModel):
@@ -114,7 +119,8 @@ class Mesh(BaseModel):
     """
 
     # Required fields
-    vertices: np.ndarray = Field(..., description="Vertex data as a numpy array")
+    vertices: np.ndarray = Field(...,
+                                 description="Vertex data as a numpy array")
     indices: Optional[Union[np.ndarray, List[Any]]] = Field(
         None, description="Index data as a flattened 1D numpy array or list of polygons"
     )
@@ -126,7 +132,7 @@ class Mesh(BaseModel):
     "- For list of lists: individual polygon sizes "
     "If explicitly provided, will be validated against inferred structure.
     """
-    
+
     cell_types: Optional[Union[np.ndarray, List[int]]] = None
     """
     Cell type identifier for each polygon, corresponding to index_sizes.
@@ -140,26 +146,26 @@ class Mesh(BaseModel):
     # Mesh dimension
     dim: int = Field(default=3, description="Mesh dimension (2D or 3D)")
 
-    # Flattened marker structure to handle variable-sized elements (lines=2, triangles=3, quads=4, etc.)
-    marker_indices: dict[str, np.ndarray] = Field(default_factory=dict, description="flattened marker node indices")
-    # offset indices to reconstruct individual marker elements
-    marker_offsets: dict[str, np.ndarray] = Field(default_factory=dict, description="offset indices to reconstruct individual marker elements")
+    # Marker structure - accepts both sequence of sequences and flattened arrays, converts to flattened internally
+    markers: Dict[str, Union[Sequence[Union[Sequence[int], np.ndarray]], np.ndarray]] = Field(
+        default_factory=dict, description="marker node indices - accepts sequence of sequences or flattened arrays")
+    # sizes of each marker element (standardized approach like index_sizes)
+    marker_sizes: dict[str, np.ndarray] = Field(
+        default_factory=dict, description="sizes of each marker element")
     # VTK cell types for each marker element, map to GMSH types with VTK_TO_GMSH_ELEMENT_TYPE
-    marker_types: dict[str, np.ndarray] = Field(default_factory=dict, description="VTK cell types for each marker element")
-
-    # Optional: Allow setting markers as list of lists and auto-convert via validator
-    markers: Optional[Dict[str, List[List[int]]]] = Field(None, description="Optional markers as list of lists, auto-converted to flattened structure")
+    marker_cell_types: dict[str, np.ndarray] = Field(
+        default_factory=dict, description="VTK cell types for each marker element")
 
     def copy(self: T) -> T:
         """
         Create a deep copy of the mesh.
-        
+
         Returns:
             A new mesh instance with copied data
         """
         # Create a dictionary to hold the copied fields
         copied_fields = {}
-        
+
         # Copy all fields, with special handling for numpy arrays
         for field_name in self.model_fields_set:
             value = getattr(self, field_name)
@@ -167,7 +173,7 @@ class Mesh(BaseModel):
                 copied_fields[field_name] = value.copy()
             else:
                 copied_fields[field_name] = value
-                
+
         # Create a new instance of the same class
         return self.__class__(**copied_fields)
 
@@ -191,95 +197,75 @@ class Mesh(BaseModel):
         """Check if all polygons have the same number of vertices."""
         if self.index_sizes is None:
             return True  # No polygon info means uniform (legacy)
-        return len(np.unique(self.index_sizes)) == 1
+        return ElementUtils.is_uniform_elements(self.index_sizes)
 
     def get_polygon_indices(self) -> Union[np.ndarray, list]:
         """
         Get indices in their original polygon structure.
-        
+
         Returns:
             For uniform polygons: 2D numpy array where each row is a polygon
             For mixed polygons: List of lists where each sublist is a polygon
         """
         if self.indices is None:
             return None
-            
+
         if self.index_sizes is None:
             # Legacy format - assume triangles
             if len(self.indices) % 3 == 0:
                 return self.indices.reshape(-1, 3)
             else:
-                raise ValueError("Cannot determine polygon structure without index_sizes")
-        
-        if self.is_uniform_polygons:
-            # Uniform case: return as 2D numpy array
-            polygon_size = self.index_sizes[0]
-            return self.indices.reshape(-1, polygon_size)
-        else:
-            # Mixed case: return as list of lists
-            result = []
-            offset = 0
-            for size in self.index_sizes:
-                result.append(self.indices[offset:offset+size].tolist())
-                offset += size
-            return result
+                raise ValueError(
+                    "Cannot determine polygon structure without index_sizes")
+
+        # Use ElementUtils for consistent reconstruction
+        return ElementUtils.get_element_structure(self.indices, self.index_sizes)
 
     def get_reconstructed_markers(self) -> Dict[str, List[List[int]]]:
         """Reconstruct marker elements from flattened structure back to list of lists"""
         reconstructed = {}
 
-        for marker_name, flattened_indices in self.marker_indices.items():
-            offsets = self.marker_offsets[marker_name]
-            marker_types = self.marker_types[marker_name]
+        for marker_name, flattened_indices in self.markers.items():
+            sizes = self.marker_sizes[marker_name]
+            marker_cell_types = self.marker_cell_types.get(marker_name, None)
 
-            # Reconstruct individual marker elements
-            elements = []
-            for j in range(len(marker_types)):
-                start_idx = offsets[j]
-
-                # Determine element size based on VTK cell type
-                vtk_cell_type = marker_types[j]
-                elem_size = CellTypeUtils.vtk_cell_type_to_size(vtk_cell_type)
-                
-                if elem_size == 0:
-                    # Fallback: calculate from next offset for unknown types
-                    end_idx = offsets[j + 1] if j + \
-                        1 < len(offsets) else len(flattened_indices)
-                    elem_size = end_idx - start_idx
-
-                element = flattened_indices[start_idx:start_idx +
-                                            elem_size].tolist()
-                elements.append(element)
-
-            reconstructed[marker_name] = elements
+            # Use ElementUtils to reconstruct elements
+            try:
+                elements = ElementUtils.convert_flattened_to_list(
+                    flattened_indices, sizes, marker_cell_types
+                )
+                reconstructed[marker_name] = elements
+            except ValueError as e:
+                raise ValueError(
+                    f"Error reconstructing marker '{marker_name}': {e}")
 
         return reconstructed
 
     def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, np.ndarray]:
         """
         Recursively extract numpy arrays from nested structures.
-        
+
         Args:
             obj: The object to extract arrays from
             prefix: The current path prefix for nested keys
-            
+
         Returns:
             Dictionary mapping dotted paths to numpy arrays
         """
         arrays = {}
-        
+
         if isinstance(obj, dict):
             for key, value in obj.items():
                 nested_key = f"{prefix}.{key}" if prefix else key
                 if isinstance(value, np.ndarray):
                     arrays[nested_key] = value
                 elif isinstance(value, dict):
-                    arrays.update(self._extract_nested_arrays(value, nested_key))
+                    arrays.update(
+                        self._extract_nested_arrays(value, nested_key))
         elif isinstance(obj, np.ndarray):
             arrays[prefix] = obj
-            
-        return arrays
 
+        return arrays
 
     @property
     def array_fields(self) -> Set[str]:
@@ -297,7 +283,8 @@ class Mesh(BaseModel):
                     result.add(field_name)
                 elif isinstance(value, dict):
                     # Extract nested arrays and add them with dotted notation
-                    nested_arrays = self._extract_nested_arrays(value, field_name)
+                    nested_arrays = self._extract_nested_arrays(
+                        value, field_name)
                     result.update(nested_arrays.keys())
             except AttributeError:
                 # Skip attributes that don't exist
@@ -305,30 +292,27 @@ class Mesh(BaseModel):
 
         return result
 
-
     class Config:
         arbitrary_types_allowed = True
-
-
 
     @model_validator(mode="after")
     def validate_arrays(self) -> "Mesh":
         """
         Validate and convert arrays to the correct types.
-        
+
         This method handles various input formats for indices and automatically infers
         index_sizes when not explicitly provided:
-        
+
         - 2D numpy arrays: Assumes uniform polygons, infers size from array shape
         - List of lists: Supports mixed polygon sizes, infers from individual polygon lengths
         - Flat arrays: Requires explicit index_sizes for polygon structure
-        
+
         When index_sizes is explicitly provided, it validates that the structure matches
         the inferred polygon sizes and that the sum equals the total number of indices.
-        
+
         Cell types are automatically inferred from polygon sizes if not provided:
         - Size 1: Vertex (1), Size 2: Line (3), Size 3: Triangle (5), Size 4: Quad (9)
-        
+
         Raises:
             ValueError: If explicit index_sizes doesn't match inferred structure or
                        if sum of index_sizes doesn't match total indices count, or
@@ -338,122 +322,51 @@ class Mesh(BaseModel):
         if self.vertices is not None:
             self.vertices = np.asarray(self.vertices, dtype=np.float32)
 
-        # Handle indices - convert to flattened 1D array and extract size info
+        # Handle indices - convert to flattened 1D array and extract size info using ElementUtils
         if self.indices is not None:
-            # Store original index_sizes if explicitly provided for validation
-            explicit_index_sizes = self.index_sizes
-            inferred_index_sizes = None
-            
-            # Convert various input formats to flattened indices
-            if isinstance(self.indices, (list, tuple)):
-                # Handle list of lists (mixed polygons) or flat list
-                if len(self.indices) > 0 and isinstance(self.indices[0], (list, tuple, np.ndarray)):
-                    # List of lists - mixed polygon format
-                    flat_indices = []
-                    sizes = []
-                    for polygon in self.indices:
-                        polygon_array = np.asarray(polygon, dtype=np.uint32)
-                        flat_indices.extend(polygon_array.flatten())
-                        sizes.append(len(polygon_array.flatten()))
-                    self.indices = np.array(flat_indices, dtype=np.uint32)
-                    inferred_index_sizes = np.array(sizes, dtype=np.uint32)
-                    
-                    # Set index_sizes only if not explicitly provided
-                    if self.index_sizes is None:
-                        self.index_sizes = inferred_index_sizes
-                else:
-                    # Flat list
-                    self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
-            else:
-                # Numpy array input
-                original_shape = self.indices.shape
-                self.indices = np.asarray(self.indices, dtype=np.uint32).flatten()
-                
-                # If it was a 2D array, extract size information
-                if len(original_shape) > 1:
-                    # Infer uniform polygons from 2D array shape
-                    inferred_index_sizes = np.full(original_shape[0], original_shape[1], dtype=np.uint32)
-                    
-                    # Set index_sizes only if not explicitly provided
-                    if self.index_sizes is None:
-                        self.index_sizes = inferred_index_sizes
-
-            # Ensure index_sizes is uint32 array if present
-            if self.index_sizes is not None:
-                self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
-                
-                # Validate that explicit index_sizes matches inferred structure if both exist
-                if explicit_index_sizes is not None and inferred_index_sizes is not None:
-                    explicit_array = np.asarray(explicit_index_sizes, dtype=np.uint32)
-                    if not np.array_equal(explicit_array, inferred_index_sizes):
-                        raise ValueError(
-                            f"Explicit index_sizes {explicit_array.tolist()} does not match "
-                            f"inferred structure {inferred_index_sizes.tolist()}"
-                        )
-                
-                # Validate that index_sizes sum matches total indices
-                if len(self.indices) != np.sum(self.index_sizes):
-                    raise ValueError(
-                        f"Sum of index_sizes ({np.sum(self.index_sizes)}) does not match "
-                        f"total number of indices ({len(self.indices)})"
-                    )
-        
-        # Handle cell_types and index_sizes relationship
-        if self.index_sizes is not None and self.cell_types is not None:
-            # Both provided - validate consistency
-            self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
-            self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
-            
-            # Validate that cell_types length matches index_sizes length
-            if len(self.cell_types) != len(self.index_sizes):
-                raise ValueError(
-                    f"Length of cell_types ({len(self.cell_types)}) does not match "
-                    f"length of index_sizes ({len(self.index_sizes)})"
+            try:
+                self.indices, self.index_sizes, self.cell_types = ElementUtils.convert_array_input(
+                    self.indices, self.index_sizes, self.cell_types
                 )
-            
-            # Validate that sizes and types are consistent
-            if not CellTypeUtils.validate_sizes_and_vtk_types(self.index_sizes, self.cell_types):
-                raise ValueError("Element sizes do not match VTK cell types")
-                
-        elif self.index_sizes is not None:
-            # Only index_sizes provided - infer cell_types
-            self.index_sizes = np.asarray(self.index_sizes, dtype=np.uint32)
-            self.cell_types = CellTypeUtils.infer_vtk_cell_types_from_sizes(self.index_sizes)
-            
-        elif self.cell_types is not None:
-            # Only cell_types provided - infer index_sizes
-            self.cell_types = np.asarray(self.cell_types, dtype=np.uint32)
-            self.index_sizes = CellTypeUtils.infer_sizes_from_vtk_cell_types(self.cell_types)
+            except ValueError as e:
+                raise ValueError(f"Error processing indices: {e}")
 
-        # Handle marker conversion if markers field is provided
-        if self.markers is not None:
-            # Convert list-based markers to flattened structure
-            for marker_name, marker_elements in self.markers.items():
-                # Flatten all marker elements
-                flattened_indices = []
-                offsets = [0]
-                element_vtk_types = []
+        # Handle marker conversion - convert sequence format to flattened arrays
+        if self.markers:
+            converted_markers = {}
+            for marker_name, marker_data in self.markers.items():
+                try:
+                    if isinstance(marker_data, np.ndarray):
+                        # Already a numpy array, keep as is but validate it has corresponding sizes/types
+                        converted_markers[marker_name] = np.asarray(
+                            marker_data, dtype=np.uint32)
 
-                for element in marker_elements:
-                    flattened_indices.extend(element)
-                    offsets.append(len(flattened_indices))
+                        # If marker_cell_types is defined but marker_sizes is missing, calculate it automatically
+                        if marker_name in self.marker_cell_types and marker_name not in self.marker_sizes:
+                            self.marker_sizes[marker_name] = CellTypeUtils.infer_sizes_from_vtk_cell_types(
+                                self.marker_cell_types[marker_name])
 
-                    # Auto-detect marker types based on element size
-                    vtk_type = CellTypeUtils.size_to_vtk_cell_type(len(element))
-                    if vtk_type == VTKCellType.VTK_POLYGON and len(element) not in [1, 2, 3, 4, 5, 6, 8]:
-                        raise ValueError(
-                            f"Unsupported marker element size: {len(element)}")
-                    element_vtk_types.append(vtk_type)
+                        # Validate that we have both sizes and types
+                        if marker_name not in self.marker_sizes or marker_name not in self.marker_cell_types:
+                            raise ValueError(
+                                f"Marker '{marker_name}' provided as array but missing marker_sizes or marker_cell_types")
+                    else:
+                        # Convert sequence of sequences to flattened structure using ElementUtils
+                        # This handles lists, tuples, or any sequence type
+                        marker_list = [list(element)
+                                       for element in marker_data]
+                        flattened_indices, sizes, cell_types = ElementUtils.convert_list_to_flattened(
+                            marker_list)
+                        converted_markers[marker_name] = flattened_indices
+                        self.marker_sizes[marker_name] = sizes
+                        self.marker_cell_types[marker_name] = cell_types
 
-                self.marker_indices[marker_name] = np.array(
-                    flattened_indices, dtype=np.uint32)
-                self.marker_offsets[marker_name] = np.array(
-                    offsets[:-1], dtype=np.uint32)  # Remove last offset
-                self.marker_types[marker_name] = np.array(
-                    element_vtk_types, dtype=np.uint8)
+                except ValueError as e:
+                    raise ValueError(
+                        f"Error converting markers for '{marker_name}': {e}")
 
-            # Clear the temporary markers field
-            self.markers = None
+            # Update markers to be the flattened arrays
+            self.markers = converted_markers
 
         return self
 
@@ -479,7 +392,7 @@ class MeshUtils:
 
         # Create a copy of the mesh
         result_mesh = mesh.copy()
-        
+
         optimized_indices = np.zeros_like(result_mesh.indices)
         optimize_vertex_cache(
             optimized_indices, result_mesh.indices, result_mesh.index_count, result_mesh.vertex_count
@@ -505,7 +418,7 @@ class MeshUtils:
 
         # Create a copy of the mesh
         result_mesh = mesh.copy()
-        
+
         optimized_indices = np.zeros_like(result_mesh.indices)
         optimize_overdraw(
             optimized_indices,
@@ -536,7 +449,7 @@ class MeshUtils:
 
         # Create a copy of the mesh
         result_mesh = mesh.copy()
-        
+
         optimized_vertices = np.zeros_like(result_mesh.vertices)
         unique_vertex_count = optimize_vertex_fetch(
             optimized_vertices,
@@ -575,7 +488,7 @@ class MeshUtils:
 
         # Create a copy of the mesh
         result_mesh = mesh.copy()
-        
+
         target_index_count = int(result_mesh.index_count * target_ratio)
         simplified_indices = np.zeros(result_mesh.index_count, dtype=np.uint32)
 
@@ -641,13 +554,13 @@ class MeshUtils:
                         obj = obj[part]
                     else:
                         obj = getattr(obj, part)
-                
+
                 # Get the final array
                 if isinstance(obj, dict):
                     array = obj[parts[-1]]
                 else:
                     array = getattr(obj, parts[-1])
-                    
+
                 if isinstance(array, np.ndarray):
                     encoded_arrays[field_name] = ArrayUtils.encode_array(array)
             else:
@@ -655,18 +568,21 @@ class MeshUtils:
                 try:
                     array = getattr(mesh, field_name)
                     if isinstance(array, np.ndarray):
-                        encoded_arrays[field_name] = ArrayUtils.encode_array(array)
+                        encoded_arrays[field_name] = ArrayUtils.encode_array(
+                            array)
                 except AttributeError:
                     # Skip attributes that don't exist
                     pass
 
         # Handle index_sizes as a special case - store in arrays if present
         if mesh.index_sizes is not None:
-            encoded_arrays["index_sizes"] = ArrayUtils.encode_array(mesh.index_sizes)
-        
+            encoded_arrays["index_sizes"] = ArrayUtils.encode_array(
+                mesh.index_sizes)
+
         # Handle cell_types as a special case - store in arrays if present
         if mesh.cell_types is not None:
-            encoded_arrays["cell_types"] = ArrayUtils.encode_array(mesh.cell_types)
+            encoded_arrays["cell_types"] = ArrayUtils.encode_array(
+                mesh.cell_types)
 
         # Create encoded mesh
         return EncodedMesh(
@@ -693,7 +609,7 @@ class MeshUtils:
 
         # Add model fields that aren't numpy arrays, preserving non-array values in dicts
         model_data = {}
-        
+
         def extract_non_arrays(obj: Any, prefix: str = "") -> Any:
             """Recursively extract non-array values from nested structures."""
             if isinstance(obj, dict):
@@ -718,12 +634,12 @@ class MeshUtils:
             else:
                 # Include non-array values
                 return obj
-        
+
         for field_name, field_value in mesh.model_dump().items():
             # Skip direct array fields (they're stored separately)
             if field_name in mesh.array_fields:
                 continue
-            
+
             if isinstance(field_value, dict):
                 # Extract non-array values from dictionaries
                 non_array_content = extract_non_arrays(field_value, field_name)
@@ -732,7 +648,6 @@ class MeshUtils:
             else:
                 # Include scalar fields directly
                 model_data[field_name] = field_value
-
 
         with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
             # Create mesh size metadata
@@ -752,18 +667,20 @@ class MeshUtils:
 
             # Collect all files to write in sorted order for deterministic output
             files_to_write = []
-            
+
             # Add mesh data
             files_to_write.append(("mesh/vertices.bin", encoded_mesh.vertices))
             if encoded_mesh.indices is not None:
-                files_to_write.append(("mesh/indices.bin", encoded_mesh.indices))
+                files_to_write.append(
+                    ("mesh/indices.bin", encoded_mesh.indices))
 
             # Add array data (sorted by name for deterministic order)
             for name in sorted(encoded_mesh.arrays.keys()):
                 encoded_array = encoded_mesh.arrays[name]
                 # Convert dots to nested directory structure, each array gets its own directory
                 array_path = name.replace(".", "/")
-                files_to_write.append((f"arrays/{array_path}/array.bin", encoded_array.data))
+                files_to_write.append(
+                    (f"arrays/{array_path}/array.bin", encoded_array.data))
 
                 # Save array metadata
                 array_metadata = ArrayMetadata(
@@ -773,16 +690,19 @@ class MeshUtils:
                 )
                 files_to_write.append((
                     f"arrays/{array_path}/metadata.json",
-                    json.dumps(array_metadata.model_dump(), indent=2, sort_keys=True)
+                    json.dumps(array_metadata.model_dump(),
+                               indent=2, sort_keys=True)
                 ))
 
             # Add general metadata
-            files_to_write.append(("metadata.json", json.dumps(metadata.model_dump(), indent=2, sort_keys=True)))
+            files_to_write.append(("metadata.json", json.dumps(
+                metadata.model_dump(), indent=2, sort_keys=True)))
 
             # Sort files by path for deterministic order and write them
             for filename, data in sorted(files_to_write):
                 if date_time is not None:
-                    info = zipfile.ZipInfo(filename=filename, date_time=date_time)
+                    info = zipfile.ZipInfo(
+                        filename=filename, date_time=date_time)
                 else:
                     info = zipfile.ZipInfo(filename=filename)
                 info.compress_type = zipfile.ZIP_DEFLATED
@@ -790,8 +710,6 @@ class MeshUtils:
                 if isinstance(data, str):
                     data = data.encode('utf-8')
                 zipf.writestr(info, data)
-
-
 
     @staticmethod
     def load_from_zip(cls: Type[T], destination: Union[PathLike, BytesIO]) -> T:
@@ -854,7 +772,8 @@ class MeshUtils:
                 if file_name.startswith("arrays/") and file_name.endswith("/array.bin")
             ]:
                 # Extract the array path by removing "arrays/" prefix and "/array.bin" suffix
-                array_path = array_file_name[7:-10]  # Remove "arrays/" and "/array.bin"
+                # Remove "arrays/" and "/array.bin"
+                array_path = array_file_name[7:-10]
 
                 # Load array metadata
                 with zipf.open(f"arrays/{array_path}/metadata.json") as f:
@@ -895,7 +814,7 @@ class MeshUtils:
                                     merge_dicts(target[key], value)
                                 else:
                                     target[key] = value
-                        
+
                         merge_dicts(existing_value, field_value)
                     else:
                         # Set scalar fields directly
@@ -939,12 +858,12 @@ class MeshUtils:
 
         # Decode additional arrays if present
         dict_fields = {}  # Will store reconstructed dictionary fields
-        
+
         if encoded_mesh.arrays:
             for name, encoded_array in encoded_mesh.arrays.items():
                 # Decode the array
                 decoded_array = ArrayUtils.decode_array(encoded_array)
-                
+
                 # Check if this is a nested array (contains dots)
                 if name == "index_sizes":
                     # Special handling for index_sizes
@@ -956,18 +875,18 @@ class MeshUtils:
                     # This is a nested array from a dictionary field
                     parts = name.split(".")
                     field_name = parts[0]
-                    
+
                     # Initialize the dictionary field if not exists
                     if field_name not in dict_fields:
                         dict_fields[field_name] = {}
-                    
+
                     # Navigate/create the nested structure
                     current_dict = dict_fields[field_name]
                     for part in parts[1:-1]:
                         if part not in current_dict:
                             current_dict[part] = {}
                         current_dict = current_dict[part]
-                    
+
                     # Set the final array
                     current_dict[parts[-1]] = decoded_array
                 else:

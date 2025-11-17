@@ -83,7 +83,7 @@ class TestDictArrays(unittest.TestCase):
         # Check that nested arrays are detected
         array_fields = mesh.array_fields
         expected_fields = {
-            "vertices", "indices",
+            "vertices", "indices", "index_sizes", "cell_types",
             "textures.diffuse", "textures.normal", "textures.specular",
             "material_data.surface.roughness", "material_data.surface.metallic",
             "material_data.lighting.emission"
@@ -119,6 +119,7 @@ class TestDictArrays(unittest.TestCase):
         
         # Check that all arrays are encoded
         expected_array_names = {
+            "index_sizes", "cell_types",
             "textures.diffuse", "textures.normal", "textures.specular",
             "material_data.surface.roughness", "material_data.surface.metallic",
             "material_data.lighting.emission"
@@ -241,7 +242,7 @@ class TestDictArrays(unittest.TestCase):
         )
         
         # Verify empty dictionaries don't cause issues
-        self.assertEqual(len(mesh.array_fields), 2)  # Only vertices and indices
+        self.assertEqual(len(mesh.array_fields), 4)  # vertices, indices, index_sizes, cell_types
         
         # Test encoding/decoding works with empty dictionaries
         encoded_mesh = MeshUtils.encode(mesh)

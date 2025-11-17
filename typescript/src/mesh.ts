@@ -66,6 +66,38 @@ export interface Mesh {
   indexSizes?: Uint32Array
 
   /**
+   * Cell type identifier for each polygon, corresponding to indexSizes.
+   * Common VTK cell types include:
+   * - 1: Vertex, 3: Line, 5: Triangle, 9: Quad, 10: Tetra, 12: Hexahedron, 13: Wedge, 14: Pyramid
+   */
+  cellTypes?: Uint32Array
+
+  /**
+   * Mesh dimension (2D or 3D)
+   */
+  dim?: number
+
+  /**
+   * Flattened marker node indices
+   */
+  markerIndices?: Record<string, Uint32Array>
+
+  /**
+   * Offset indices to reconstruct individual marker elements
+   */
+  markerOffsets?: Record<string, Uint32Array>
+
+  /**
+   * VTK cell types for each marker element
+   */
+  markerTypes?: Record<string, Uint8Array>
+
+  /**
+   * Optional markers as list of lists, auto-converted to flattened structure
+   */
+  markers?: Record<string, number[][]>
+
+  /**
    * Additional properties that can be any type of array
    */
   [key: string]: Float32Array | Uint32Array | undefined | any
@@ -138,6 +170,125 @@ export class MeshUtils {
     const firstSize = mesh.indexSizes[0]
     return mesh.indexSizes.every(size => size === firstSize)
   }
+
+  /**
+   * Infer VTK cell types from polygon sizes
+   * @param indexSizes Array of polygon sizes
+   * @returns Array of VTK cell type identifiers
+   */
+  static inferCellTypes(indexSizes: Uint32Array): Uint32Array {
+    const cellTypes = new Uint32Array(indexSizes.length)
+    
+    for (let i = 0; i < indexSizes.length; i++) {
+      const size = indexSizes[i]
+      switch (size) {
+        case 1:
+          cellTypes[i] = 1 // VTK_VERTEX
+          break
+        case 2:
+          cellTypes[i] = 3 // VTK_LINE
+          break
+        case 3:
+          cellTypes[i] = 5 // VTK_TRIANGLE
+          break
+        case 4:
+          cellTypes[i] = 9 // VTK_QUAD
+          break
+        case 5:
+          cellTypes[i] = 14 // VTK_PYRAMID
+          break
+        case 6:
+          cellTypes[i] = 13 // VTK_WEDGE
+          break
+        case 8:
+          cellTypes[i] = 12 // VTK_HEXAHEDRON
+          break
+        default:
+          cellTypes[i] = 7 // VTK_POLYGON (generic polygon)
+          break
+      }
+    }
+    
+    return cellTypes
+  }
+
+  /**
+   * Get or infer cell types for a mesh
+   * @param mesh The mesh to get cell types for
+   * @returns Array of VTK cell type identifiers
+   */
+  static getCellTypes(mesh: Mesh): Uint32Array | undefined {
+    if (mesh.cellTypes) {
+      return mesh.cellTypes
+    }
+    
+    if (mesh.indexSizes) {
+      return MeshUtils.inferCellTypes(mesh.indexSizes)
+    }
+    
+    return undefined
+  }
+
+  /**
+   * Convert VTK cell types to element sizes
+   * @param cellTypes Array of VTK cell type identifiers
+   * @returns Array of element sizes
+   */
+  static inferSizesFromCellTypes(cellTypes: Uint8Array | Uint32Array): Uint32Array {
+    const sizes = new Uint32Array(cellTypes.length)
+    
+    for (let i = 0; i < cellTypes.length; i++) {
+      const cellType = cellTypes[i]
+      switch (cellType) {
+        case 1: // VTK_VERTEX
+          sizes[i] = 1
+          break
+        case 3: // VTK_LINE
+          sizes[i] = 2
+          break
+        case 5: // VTK_TRIANGLE
+          sizes[i] = 3
+          break
+        case 9: // VTK_QUAD
+          sizes[i] = 4
+          break
+        case 10: // VTK_TETRA
+          sizes[i] = 4
+          break
+        case 14: // VTK_PYRAMID
+          sizes[i] = 5
+          break
+        case 13: // VTK_WEDGE
+          sizes[i] = 6
+          break
+        case 12: // VTK_HEXAHEDRON
+          sizes[i] = 8
+          break
+        default:
+          throw new Error(`Unknown VTK cell type: ${cellType}`)
+      }
+    }
+    
+    return sizes
+  }
+
+  /**
+   * Convert element sizes to offsets
+   * @param sizes Array of element sizes
+   * @returns Array of offset indices
+   */
+  static sizesToOffsets(sizes: Uint32Array): Uint32Array {
+    const offsets = new Uint32Array(sizes.length)
+    let currentOffset = 0
+    
+    for (let i = 0; i < sizes.length; i++) {
+      offsets[i] = currentOffset
+      currentOffset += sizes[i]
+    }
+    
+    return offsets
+  }
+
 
   /**
    * Get indices in their original polygon structure
@@ -294,6 +445,35 @@ export class MeshUtils {
       encodedArrays['indexSizes'] = ArrayUtils.encodeArray(mesh.indexSizes)
     }
 
+    // Handle cellTypes as a special case - store in arrays if present
+    if (mesh.cellTypes) {
+      encodedArrays['cellTypes'] = ArrayUtils.encodeArray(mesh.cellTypes)
+    }
+
+    // Handle marker arrays as special cases - store in arrays if present
+    if (mesh.markerIndices) {
+      for (const [name, array] of Object.entries(mesh.markerIndices)) {
+        encodedArrays[`markerIndices.${name}`] = ArrayUtils.encodeArray(array)
+      }
+    }
+
+    if (mesh.markerOffsets) {
+      for (const [name, array] of Object.entries(mesh.markerOffsets)) {
+        encodedArrays[`markerOffsets.${name}`] = ArrayUtils.encodeArray(array)
+      }
+    }
+
+    if (mesh.markerTypes) {
+      for (const [name, array] of Object.entries(mesh.markerTypes)) {
+        // Convert Uint8Array to Uint32Array for encoding
+        const uint32Array = new Uint32Array(array.length)
+        for (let i = 0; i < array.length; i++) {
+          uint32Array[i] = array[i]
+        }
+        encodedArrays[`markerTypes.${name}`] = ArrayUtils.encodeArray(uint32Array)
+      }
+    }
+
     // Create and return the encoded mesh
     return {
       vertices: encodedVertices,
@@ -352,6 +532,10 @@ export class MeshUtils {
     // Decode additional arrays if present
     const decodedArrays: Record<string, Float32Array | Uint32Array> = {}
     let indexSizes: Uint32Array | undefined
+    let cellTypes: Uint32Array | undefined
+    const markerIndices: Record<string, Uint32Array> = {}
+    const markerOffsets: Record<string, Uint32Array> = {}
+    const markerTypes: Record<string, Uint8Array> = {}
     
     if (encodedMesh.arrays) {
       for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
@@ -367,15 +551,49 @@ export class MeshUtils {
         if (name === 'indexSizes') {
           // Special handling for indexSizes
           indexSizes = decodedArray as Uint32Array
+        } else if (name === 'cellTypes') {
+          // Special handling for cellTypes
+          cellTypes = decodedArray as Uint32Array
+        } else if (name.startsWith('markerIndices.')) {
+          // Special handling for marker indices
+          const markerName = name.substring('markerIndices.'.length)
+          markerIndices[markerName] = decodedArray as Uint32Array
+        } else if (name.startsWith('markerOffsets.')) {
+          // Special handling for marker offsets
+          const markerName = name.substring('markerOffsets.'.length)
+          markerOffsets[markerName] = decodedArray as Uint32Array
+        } else if (name.startsWith('markerTypes.')) {
+          // Special handling for marker types - convert back from Uint32Array to Uint8Array
+          const markerName = name.substring('markerTypes.'.length)
+          const uint32Array = decodedArray as Uint32Array
+          const uint8Array = new Uint8Array(uint32Array.length)
+          for (let i = 0; i < uint32Array.length; i++) {
+            uint8Array[i] = uint32Array[i]
+          }
+          markerTypes[markerName] = uint8Array
         } else {
           decodedArrays[name] = decodedArray
         }
       }
     }
 
-    // Add indexSizes to result if present
+    // Add indexSizes and cellTypes to result if present
     if (indexSizes) {
       result.indexSizes = indexSizes
+    }
+    if (cellTypes) {
+      result.cellTypes = cellTypes
+    }
+
+    // Add marker arrays to result if present
+    if (Object.keys(markerIndices).length > 0) {
+      result.markerIndices = markerIndices
+    }
+    if (Object.keys(markerOffsets).length > 0) {
+      result.markerOffsets = markerOffsets
+    }
+    if (Object.keys(markerTypes).length > 0) {
+      result.markerTypes = markerTypes
     }
 
     // Reconstruct dictionary structure from decoded arrays
@@ -615,8 +833,92 @@ export class MeshUtils {
   }
 
   /**
+   * Triangulates a polygon using fan triangulation
+   * @param indices The polygon indices
+   * @returns Array of triangulated indices
+   */
+  private static triangulatePoly(indices: Uint32Array): Uint32Array {
+    if (indices.length < 3) {
+      throw new Error('Polygon must have at least 3 vertices')
+    }
+    
+    if (indices.length === 3) {
+      // Already a triangle
+      return indices
+    }
+    
+    if (indices.length === 4) {
+      // Quad: split into 2 triangles
+      return new Uint32Array([
+        indices[0], indices[1], indices[2],
+        indices[0], indices[2], indices[3]
+      ])
+    }
+    
+    // General polygon: fan triangulation from first vertex
+    const triangulated: number[] = []
+    for (let i = 1; i < indices.length - 1; i++) {
+      triangulated.push(indices[0], indices[i], indices[i + 1])
+    }
+    
+    return new Uint32Array(triangulated)
+  }
+
+  /**
+   * Converts mesh indices to triangulated indices for THREE.js compatibility
+   * @param mesh The mesh to triangulate
+   * @returns Triangulated indices
+   */
+  private static triangulateIndices(mesh: Mesh): Uint32Array {
+    if (!mesh.indices) {
+      return new Uint32Array()
+    }
+
+    // If no indexSizes, assume triangles (legacy format)
+    if (!mesh.indexSizes) {
+      return mesh.indices
+    }
+
+    const triangulatedIndices: number[] = []
+    let offset = 0
+
+    for (let i = 0; i < mesh.indexSizes.length; i++) {
+      const polygonSize = mesh.indexSizes[i]
+      const cellType = mesh.cellTypes ? mesh.cellTypes[i] : undefined
+      
+      // Extract polygon indices
+      const polygonIndices = mesh.indices.slice(offset, offset + polygonSize)
+      
+      // Skip degenerate polygons
+      if (polygonSize < 3) {
+        offset += polygonSize
+        continue
+      }
+
+      // Triangulate based on polygon size and cell type
+      let triangulated: Uint32Array
+      
+      if (polygonSize === 3) {
+        // Triangle - no triangulation needed
+        triangulated = polygonIndices
+      } else if (polygonSize === 4 && (!cellType || cellType === 9)) {
+        // Quad (VTK_QUAD = 9) - split into 2 triangles
+        triangulated = MeshUtils.triangulatePoly(polygonIndices)
+      } else {
+        // General polygon - fan triangulation
+        triangulated = MeshUtils.triangulatePoly(polygonIndices)
+      }
+      
+      triangulatedIndices.push(...Array.from(triangulated))
+      offset += polygonSize
+    }
+
+    return new Uint32Array(triangulatedIndices)
+  }
+
+  /**
    * Converts a mesh to a THREE.js BufferGeometry
-   * 
+   *
    * @param mesh The mesh to convert
    * @param options Options for the conversion
    * @returns THREE.js BufferGeometry
@@ -646,9 +948,12 @@ export class MeshUtils {
     // Add the vertices to the geometry
     geometry.setAttribute('position', new THREE.BufferAttribute(normalizedVertices, 3))
 
-    // Add indices if they exist
+    // Add indices if they exist, triangulating non-triangular polygons
     if (mesh.indices) {
-      geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1))
+      const triangulatedIndices = MeshUtils.triangulateIndices(mesh)
+      if (triangulatedIndices.length > 0) {
+        geometry.setIndex(new THREE.BufferAttribute(triangulatedIndices, 1))
+      }
     }
 
     // Add normals if they exist, otherwise compute them if requested

@@ -14,7 +14,8 @@ pip install meshly
 - `Mesh` class: A Pydantic-based representation of a 3D mesh with methods for optimization and simplification
 - Support for custom mesh subclasses with additional attributes
 - Automatic encoding/decoding of numpy array attributes, including nested arrays in dictionaries
-- Enhanced polygon support with automatic inference of polygon structure from input data
+- Enhanced polygon support with automatic `index_sizes` inference and mixed polygon mesh support
+- VTK-compatible `cell_types` with automatic inference from polygon structure
 - Mesh copying functionality for creating independent copies
 - `EncodedMesh` class: A container for encoded mesh data
 
@@ -41,7 +42,10 @@ pip install meshly
 ### Advanced Features
 
 - **Nested Array Support**: Automatically encode/decode numpy arrays within nested dictionary structures
-- **Flexible Polygon Formats**: Support for triangles, quads, and mixed polygon meshes with automatic structure inference
+- **Flexible Polygon Formats**: Support for triangles, quads, and mixed polygon meshes with automatic `index_sizes` inference
+- **Index Sizes Management**: Automatic calculation and validation of polygon vertex counts for complex mesh structures
+- **VTK Cell Types**: Automatic inference and validation of VTK-compatible cell type identifiers
+- **Marker Support**: Define boundary conditions, material regions, and geometric features with automatic conversion between list and flattened formats
 - **Deep Copying**: Create independent mesh copies with the [`copy()`](python/meshly/mesh.py:129) method
 - **Enhanced Validation**: Automatic validation and conversion of polygon structures and array data
 
@@ -196,6 +200,7 @@ np.testing.assert_allclose(array, decoded_array)
 For more detailed examples, see the Jupyter notebooks in the [examples](examples/) directory:
 - [array_example.ipynb](examples/array_example.ipynb): Working with arrays, compression, and file I/O
 - [mesh_example.ipynb](examples/mesh_example.ipynb): Working with Pydantic-based meshes, custom subclasses, and serialization
+- [markers_example.ipynb](examples/markers_example.ipynb): Working with mesh markers, cell types, and boundary conditions for finite element analysis
 
 ## Custom Mesh Subclasses
 
@@ -256,7 +261,7 @@ Benefits of custom mesh subclasses:
 
 ## Enhanced Polygon Support
 
-Meshly provides enhanced support for different polygon types and automatically infers polygon structure:
+Meshly provides enhanced support for different polygon types and automatically infers polygon structure through the `index_sizes` field, with optional `cell_types` for VTK compatibility:
 
 ```python
 # Triangular mesh (traditional format)
@@ -275,16 +280,226 @@ mixed_indices = [
     [7, 8, 9, 10, 11] # Pentagon
 ]
 
-# All formats are automatically handled
+# All formats are automatically handled with automatic index_sizes inference
 mesh1 = Mesh(vertices=vertices, indices=triangular_indices)
-mesh2 = Mesh(vertices=vertices, indices=quad_indices)
-mesh3 = Mesh(vertices=vertices, indices=mixed_indices)
+mesh2 = Mesh(vertices=vertices, indices=quad_indices)  # index_sizes: [4, 4]
+mesh3 = Mesh(vertices=vertices, indices=mixed_indices)  # index_sizes: [3, 4, 5]
 
 # Access polygon information
 print(f"Polygon count: {mesh2.polygon_count}")
 print(f"Is uniform: {mesh2.is_uniform_polygons}")
+print(f"Index sizes: {mesh2.index_sizes}")  # Shows polygon sizes
 print(f"Original structure: {mesh2.get_polygon_indices()}")
+
+# You can also explicitly provide index_sizes for validation
+flat_indices = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8], dtype=np.uint32)
+explicit_sizes = np.array([3, 4, 2], dtype=np.uint32)  # Triangle, quad, line
+mesh4 = Mesh(
+    vertices=vertices,
+    indices=flat_indices,
+    index_sizes=explicit_sizes
+)
 ```
+
+### Index Sizes Field
+
+The [`index_sizes`](python/meshly/mesh.py:120) field stores the number of vertices for each polygon and enables support for mixed polygon meshes:
+
+- **Automatic Inference**: When you provide 2D arrays or lists of lists, `index_sizes` is automatically calculated
+- **Validation**: When explicitly provided, it validates against the inferred structure
+- **Reconstruction**: Used by [`get_polygon_indices()`](python/meshly/mesh.py:172) to recreate the original polygon structure
+- **Storage**: Automatically encoded and stored with the mesh data
+
+```python
+# Mixed polygon mesh with explicit index_sizes
+vertices = np.array([[0,0,0], [1,0,0], [1,1,0], [0,1,0], [0.5,0.5,1]], dtype=np.float32)
+indices = np.array([0, 1, 2, 3, 4, 1, 2], dtype=np.uint32)  # Quad + triangle
+index_sizes = np.array([4, 3], dtype=np.uint32)
+
+mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+
+# Check polygon structure
+print(f"Polygon count: {mesh.polygon_count}")  # 2
+print(f"Index count: {mesh.index_count}")      # 7
+print(f"Is uniform: {mesh.is_uniform_polygons}")  # False
+print(f"Polygons: {mesh.get_polygon_indices()}")  # [[0,1,2,3], [4,1,2]]
+print(f"Cell types: {mesh.cell_types}")  # [9, 5] (VTK_QUAD, VTK_TRIANGLE)
+```
+
+### Cell Types Support
+
+The [`cell_types`](python/meshly/mesh.py:129) field provides VTK-compatible cell type identifiers for each polygon, automatically inferred from `index_sizes`:
+
+```python
+# Automatic cell type inference
+mixed_indices = [
+    [0],              # Vertex
+    [0, 1],           # Line
+    [0, 1, 2],        # Triangle
+    [0, 1, 2, 3],     # Quad
+    [0, 1, 2, 3, 4]   # Pentagon
+]
+
+mesh = Mesh(vertices=vertices, indices=mixed_indices)
+print(f"Cell types: {mesh.cell_types}")  # [1, 3, 5, 9, 14]
+
+# Explicit cell types
+explicit_types = [1, 3, 5, 9, 14]  # VTK cell type constants
+mesh_explicit = Mesh(
+    vertices=vertices,
+    indices=mixed_indices,
+    cell_types=explicit_types
+)
+
+# Common VTK cell types:
+# 1: VTK_VERTEX, 3: VTK_LINE, 5: VTK_TRIANGLE, 9: VTK_QUAD
+# 10: VTK_TETRA, 12: VTK_HEXAHEDRON, 13: VTK_WEDGE, 14: VTK_PYRAMID
+```
+
+## Mesh Markers
+
+Meshly provides comprehensive support for mesh markers, which are essential for defining boundary conditions, material regions, and other geometric features in computational meshes:
+
+### Basic Marker Usage
+
+```python
+# Create a 2D mesh with boundary markers
+vertices = np.array([
+    [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]
+], dtype=np.float32)
+
+indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+
+# Define markers using list-of-lists format (automatically converted)
+markers = {
+    "bottom_edge": [[0, 1]],      # Line marker for bottom boundary
+    "right_edge": [[1, 2]],       # Line marker for right boundary
+    "top_edge": [[2, 3]],         # Line marker for top boundary
+    "left_edge": [[3, 0]],        # Line marker for left boundary
+    "center_triangle": [[0, 1, 2]], # Triangle marker for element region
+}
+
+mesh = Mesh(
+    vertices=vertices,
+    indices=indices,
+    markers=markers,
+    dim=2  # 2D mesh dimension
+)
+
+print(f"Markers: {list(mesh.marker_indices.keys())}")
+print(f"Boundary elements: {mesh.get_reconstructed_markers()['bottom_edge']}")
+```
+
+### Marker Storage and Efficiency
+
+Markers are stored internally using an efficient flattened format that supports variable-sized elements:
+
+```python
+# Access flattened marker structure
+for name, indices in mesh.marker_indices.items():
+    offsets = mesh.marker_offsets[name]
+    types = mesh.marker_cell_types[name]
+    
+    print(f"{name}:")
+    print(f"  Flattened indices: {indices}")
+    print(f"  Element offsets: {offsets}")
+    print(f"  VTK cell types: {types}")
+
+# Reconstruct original list format when needed
+original_format = mesh.get_reconstructed_markers()
+```
+
+### Advanced Marker Features
+
+```python
+# Mixed marker types in a single mesh
+mixed_markers = {
+    "boundary_vertices": [[0], [2]],           # Vertex markers (VTK type 1)
+    "boundary_edges": [[0, 1], [1, 2]],       # Line markers (VTK type 3)
+    "material_regions": [[0, 1, 4], [2, 3, 4]], # Triangle markers (VTK type 5)
+    "interface_quads": [[1, 2, 5, 4]],         # Quad markers (VTK type 9)
+}
+
+advanced_mesh = Mesh(
+    vertices=vertices,
+    indices=mixed_indices,
+    markers=mixed_markers,
+    dim=2
+)
+
+# Automatic VTK cell type detection
+print(f"Marker types detected: {advanced_mesh.marker_cell_types}")
+```
+
+### Custom Mesh Classes with Markers
+
+```python
+class FiniteElementMesh(Mesh):
+    """Mesh with finite element analysis features."""
+    
+    # Material properties for different regions
+    material_properties: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    
+    # Boundary condition specifications
+    boundary_conditions: Dict[str, Dict[str, any]] = Field(default_factory=dict)
+    
+    def get_boundary_elements(self, boundary_name: str) -> List[List[int]]:
+        """Get elements on a specific boundary."""
+        return self.get_reconstructed_markers().get(boundary_name, [])
+
+# Create FEM mesh with materials and boundary conditions
+fem_mesh = FiniteElementMesh(
+    vertices=vertices,
+    indices=indices,
+    markers={
+        "dirichlet_bc": [[0, 3]],    # Fixed displacement boundary
+        "neumann_bc": [[1, 2]],      # Applied force boundary
+        "material_steel": [[0, 1, 4]], # Steel region
+        "material_aluminum": [[2, 3, 4]], # Aluminum region
+    },
+    material_properties={
+        "steel": {"young_modulus": 200e9, "poisson_ratio": 0.3},
+        "aluminum": {"young_modulus": 70e9, "poisson_ratio": 0.33},
+    },
+    boundary_conditions={
+        "dirichlet_bc": {"type": "displacement", "value": [0.0, 0.0]},
+        "neumann_bc": {"type": "force", "value": [1000.0, 0.0]},
+    }
+)
+```
+
+### Marker Serialization
+
+Markers are fully preserved during mesh encoding/decoding and file I/O:
+
+```python
+# Encode mesh with markers
+encoded = MeshUtils.encode(fem_mesh)
+print(f"Encoded marker arrays: {[k for k in encoded.arrays.keys() if 'marker' in k]}")
+
+# Decode preserves all marker data
+decoded = MeshUtils.decode(FiniteElementMesh, encoded)
+assert fem_mesh.get_reconstructed_markers() == decoded.get_reconstructed_markers()
+
+# ZIP file serialization also preserves markers
+MeshUtils.save_to_zip(fem_mesh, "fem_mesh.zip")
+loaded = MeshUtils.load_from_zip(FiniteElementMesh, "fem_mesh.zip")
+assert loaded.material_properties == fem_mesh.material_properties
+```
+
+Key marker features:
+- **Automatic conversion** between list-of-lists and efficient flattened storage
+- **VTK compatibility** with standard cell type identifiers
+- **Mixed element types** (points, lines, triangles, quads) in a single marker set
+- **Type validation** ensures only supported element sizes (1-4 vertices)
+- **Full serialization** support with encoding/decoding and ZIP file I/O
+- **Easy reconstruction** back to list format for processing algorithms
+
+Common use cases:
+- **Finite element analysis**: Boundary conditions and material regions
+- **Computational fluid dynamics**: Inlet/outlet boundaries and wall conditions
+- **Mesh processing**: Feature identification and region marking
+- **Visualization**: Highlighting specific mesh regions or boundaries
 
 ## Mesh Copying
 

@@ -208,6 +208,39 @@ const offsets = MeshUtils.sizesToOffsets(sizes);                   // [0, 1, 3]
 // VTK_WEDGE (13) → 6 vertices, VTK_HEXAHEDRON (12) → 8 vertices
 ```
 
+### Extracting Meshes by Marker
+
+You can extract submeshes by marker name and convert them to THREE.js geometries:
+
+```typescript
+import { MeshUtils, Mesh } from 'meshly';
+
+// Load a mesh with markers
+const zipData = await fetch('mesh-with-markers.zip').then(r => r.arrayBuffer());
+const mesh = await MeshUtils.loadMeshFromZip(zipData);
+
+console.log('Available markers:', Object.keys(mesh.markerIndices!));
+
+// Extract a specific marker as a new mesh
+const boundaryMesh = MeshUtils.extractByMarker(mesh, 'boundary');
+console.log(`Boundary mesh has ${boundaryMesh.vertices.length / 3} vertices`);
+
+// Convert directly to BufferGeometry
+const boundaryGeometry = MeshUtils.extractMarkerAsBufferGeometry(mesh, 'boundary', {
+  computeNormals: true
+});
+
+// Use in THREE.js
+const boundaryMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+const boundaryMeshObj = new THREE.Mesh(boundaryGeometry, boundaryMaterial);
+
+// Extract multiple markers
+const markers = ['inlet', 'outlet', 'walls'];
+const geometries = markers.map(name => 
+  MeshUtils.extractMarkerAsBufferGeometry(mesh, name)
+);
+```
+
 ### Array Utilities
 
 The library also provides utilities for working with arrays:
@@ -422,6 +455,41 @@ Converts mesh indices to triangulated indices for THREE.js compatibility. This i
 ##### Returns
 
 Triangulated indices suitable for THREE.js rendering.
+
+#### `MeshUtils.extractByMarker(mesh: Mesh, markerName: string): Mesh`
+
+Extracts a submesh containing only the elements referenced by a specific marker.
+
+##### Parameters
+
+- `mesh`: The source mesh
+- `markerName`: Name of the marker to extract
+
+##### Returns
+
+A new Mesh object containing only the vertices/elements from the marker.
+
+##### Throws
+
+Error if marker doesn't exist or is missing offset/type information.
+
+#### `MeshUtils.extractMarkerAsBufferGeometry(mesh: Mesh, markerName: string, options?: DecodeMeshOptions): THREE.BufferGeometry`
+
+Extracts a submesh by marker and converts it to a THREE.js BufferGeometry. This is a convenience method combining `extractByMarker` and `convertToBufferGeometry`.
+
+##### Parameters
+
+- `mesh`: The source mesh
+- `markerName`: Name of the marker to extract
+- `options`: Options for the conversion to BufferGeometry
+
+##### Returns
+
+THREE.js BufferGeometry containing only the marker elements.
+
+##### Throws
+
+Error if marker doesn't exist or is missing offset/type information.
 
 ### ArrayUtils
 

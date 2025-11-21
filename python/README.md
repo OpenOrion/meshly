@@ -501,6 +501,93 @@ Common use cases:
 - **Mesh processing**: Feature identification and region marking
 - **Visualization**: Highlighting specific mesh regions or boundaries
 
+### Combining and Extracting Meshes
+
+Meshly provides powerful functionality for combining multiple meshes and extracting submeshes by marker:
+
+#### Combining Meshes
+
+```python
+# Create multiple meshes to combine
+mesh1 = Mesh(
+    vertices=np.array([[0, 0, 0], [1, 0, 0], [0.5, 1, 0]], dtype=np.float32),
+    indices=np.array([0, 1, 2], dtype=np.uint32)
+)
+
+mesh2 = Mesh(
+    vertices=np.array([[2, 0, 0], [3, 0, 0], [2.5, 1, 0]], dtype=np.float32),
+    indices=np.array([0, 1, 2], dtype=np.uint32)
+)
+
+# Combine meshes without markers
+combined = Mesh.combine([mesh1, mesh2])
+print(f"Combined mesh has {combined.vertex_count} vertices")
+
+# Combine meshes and assign marker names to each
+combined_with_markers = Mesh.combine(
+    [mesh1, mesh2],
+    marker_names=["part1", "part2"]
+)
+print(f"Markers: {list(combined_with_markers.markers.keys())}")
+
+# Preserve existing markers when combining
+mesh1.markers = {"boundary": np.array([0, 1], dtype=np.uint32)}
+mesh2.markers = {"boundary": np.array([1, 2], dtype=np.uint32)}
+
+combined_preserve = Mesh.combine([mesh1, mesh2], preserve_markers=True)
+print(f"Combined boundary marker has {len(combined_preserve.markers['boundary'])} elements")
+
+# If meshes have the same marker name, they are merged
+# If marker_names is provided, it takes precedence over existing markers
+```
+
+#### Extracting Submeshes by Marker
+
+```python
+# Create a mesh with multiple marked regions
+vertices = np.array([
+    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+    [0.5, 0.5, 1]
+], dtype=np.float32)
+
+indices = np.array([
+    0, 1, 4,  # bottom triangle
+    1, 2, 4,  # right triangle
+    2, 3, 4,  # top triangle
+    3, 0, 4   # left triangle
+], dtype=np.uint32)
+
+mesh = Mesh(
+    vertices=vertices,
+    indices=indices,
+    markers={
+        "bottom_faces": [[0, 1, 4]],
+        "side_faces": [[1, 2, 4], [2, 3, 4], [3, 0, 4]]
+    }
+)
+
+# Extract a submesh containing only the bottom face
+bottom_mesh = mesh.extract_by_marker("bottom_faces")
+print(f"Bottom mesh has {bottom_mesh.vertex_count} vertices")
+print(f"Bottom mesh has {bottom_mesh.polygon_count} polygons")
+
+# Extract side faces
+side_mesh = mesh.extract_by_marker("side_faces")
+print(f"Side mesh has {side_mesh.vertex_count} vertices")
+print(f"Side mesh has {side_mesh.polygon_count} polygons")
+
+# The extracted mesh contains only the referenced vertices and elements
+# Vertex indices are automatically remapped to the new mesh
+```
+
+Features of mesh combining and extraction:
+- **Automatic vertex offset computation** for efficient merging
+- **Marker preservation** with optional marker name assignment
+- **Cell-based markers** that reference mesh elements, not just vertices
+- **Vertex remapping** using efficient numpy operations (O(n log n))
+- **Element structure preservation** maintains polygon sizes and cell types
+- **Error handling** for invalid markers or missing data
+
 ## Mesh Copying
 
 Create independent copies of meshes with the [`copy()`](python/meshly/mesh.py:129) method:

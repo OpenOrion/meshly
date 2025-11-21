@@ -178,7 +178,7 @@ export class MeshUtils {
    */
   static inferCellTypes(indexSizes: Uint32Array): Uint32Array {
     const cellTypes = new Uint32Array(indexSizes.length)
-    
+
     for (let i = 0; i < indexSizes.length; i++) {
       const size = indexSizes[i]
       switch (size) {
@@ -208,7 +208,7 @@ export class MeshUtils {
           break
       }
     }
-    
+
     return cellTypes
   }
 
@@ -221,11 +221,11 @@ export class MeshUtils {
     if (mesh.cellTypes) {
       return mesh.cellTypes
     }
-    
+
     if (mesh.indexSizes) {
       return MeshUtils.inferCellTypes(mesh.indexSizes)
     }
-    
+
     return undefined
   }
 
@@ -236,7 +236,7 @@ export class MeshUtils {
    */
   static inferSizesFromCellTypes(cellTypes: Uint8Array | Uint32Array): Uint32Array {
     const sizes = new Uint32Array(cellTypes.length)
-    
+
     for (let i = 0; i < cellTypes.length; i++) {
       const cellType = cellTypes[i]
       switch (cellType) {
@@ -268,7 +268,7 @@ export class MeshUtils {
           throw new Error(`Unknown VTK cell type: ${cellType}`)
       }
     }
-    
+
     return sizes
   }
 
@@ -280,12 +280,12 @@ export class MeshUtils {
   static sizesToOffsets(sizes: Uint32Array): Uint32Array {
     const offsets = new Uint32Array(sizes.length)
     let currentOffset = 0
-    
+
     for (let i = 0; i < sizes.length; i++) {
       offsets[i] = currentOffset
       currentOffset += sizes[i]
     }
-    
+
     return offsets
   }
 
@@ -335,11 +335,11 @@ export class MeshUtils {
    */
   private static extractNestedArrays(obj: any, prefix: string = ''): Record<string, Float32Array | Uint32Array> {
     const arrays: Record<string, Float32Array | Uint32Array> = {}
-    
+
     if (typeof obj === 'object' && obj !== null && !ArrayBuffer.isView(obj)) {
       for (const [key, value] of Object.entries(obj)) {
         const nestedKey = prefix ? `${prefix}.${key}` : key
-        
+
         if (value instanceof Float32Array || value instanceof Uint32Array) {
           arrays[nestedKey] = value
         } else if (typeof value === 'object' && value !== null && !ArrayBuffer.isView(value)) {
@@ -347,7 +347,7 @@ export class MeshUtils {
         }
       }
     }
-    
+
     return arrays
   }
 
@@ -360,13 +360,13 @@ export class MeshUtils {
   private static reconstructDictionaries(arrays: Record<string, Float32Array | Uint32Array>): Record<string, any> {
     const result: Record<string, any> = {}
     const directArrays: Record<string, Float32Array | Uint32Array> = {}
-    
+
     for (const [key, array] of Object.entries(arrays)) {
       if (key.includes('.')) {
         // This is a nested array
         const parts = key.split('.')
         let current = result
-        
+
         // Navigate/create the nested structure
         for (let i = 0; i < parts.length - 1; i++) {
           const part = parts[i]
@@ -375,7 +375,7 @@ export class MeshUtils {
           }
           current = current[part]
         }
-        
+
         // Set the final array
         current[parts[parts.length - 1]] = array
       } else {
@@ -383,7 +383,7 @@ export class MeshUtils {
         directArrays[key] = array
       }
     }
-    
+
     return { ...result, ...directArrays }
   }
 
@@ -429,7 +429,7 @@ export class MeshUtils {
 
     // Extract all arrays (including nested ones)
     const allArrays = MeshUtils.extractNestedArrays(mesh)
-    
+
     for (const [key, array] of Object.entries(allArrays)) {
       if (key !== 'vertices' && key !== 'indices') {
         if (array instanceof Float32Array) {
@@ -536,7 +536,7 @@ export class MeshUtils {
     const markerIndices: Record<string, Uint32Array> = {}
     const markerOffsets: Record<string, Uint32Array> = {}
     const markerTypes: Record<string, Uint8Array> = {}
-    
+
     if (encodedMesh.arrays) {
       for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
         const decodedArray = ArrayUtils.decodeArray(
@@ -547,7 +547,7 @@ export class MeshUtils {
             itemsize: encodedArray.itemsize
           }
         )
-        
+
         if (name === 'indexSizes') {
           // Special handling for indexSizes
           indexSizes = decodedArray as Uint32Array
@@ -598,7 +598,7 @@ export class MeshUtils {
 
     // Reconstruct dictionary structure from decoded arrays
     const reconstructedStructure = MeshUtils.reconstructDictionaries(decodedArrays)
-    
+
     // Merge reconstructed structure into result
     Object.assign(result, reconstructedStructure)
 
@@ -648,26 +648,26 @@ export class MeshUtils {
    */
   static async saveMeshToZip<MeshType extends Mesh>(mesh: MeshType): Promise<Uint8Array> {
     const zip = new JSZip()
-    
+
     // Encode the mesh
     const encodedMesh = MeshUtils.encode(mesh)
-    
+
     // Save mesh data
     zip.file('mesh/vertices.bin', encodedMesh.vertices)
     if (encodedMesh.indices) {
       zip.file('mesh/indices.bin', encodedMesh.indices)
     }
-    
+
     // Extract non-array field data for metadata
     const fieldData: any = {}
     const allArrays = MeshUtils.extractNestedArrays(mesh)
     const arrayFieldNames = new Set([...Object.keys(allArrays), 'vertices', 'indices', 'indexSizes'])
-    
+
     for (const [fieldName, fieldValue] of Object.entries(mesh)) {
       if (arrayFieldNames.has(fieldName)) {
         continue // Skip array fields
       }
-      
+
       if (typeof fieldValue === 'object' && fieldValue !== null && !ArrayBuffer.isView(fieldValue)) {
         // Extract non-array values from dictionaries
         const nonArrayContent = MeshUtils.extractNonArrays(fieldValue, fieldName)
@@ -679,7 +679,7 @@ export class MeshUtils {
         fieldData[fieldName] = fieldValue
       }
     }
-    
+
     // Create metadata
     const meshSize: MeshSize = {
       vertex_count: encodedMesh.vertex_count,
@@ -687,22 +687,22 @@ export class MeshUtils {
       index_count: encodedMesh.index_count ?? null,
       index_size: encodedMesh.index_size
     }
-    
+
     const metadata: MeshMetadata = {
       class_name: 'FlexibleMesh',  // Use FlexibleMesh class name for Python compatibility
       module_name: '__main__',
       field_data: Object.keys(fieldData).length > 0 ? fieldData : undefined,
       mesh_size: meshSize
     }
-    
+
     // Save array data
     if (encodedMesh.arrays) {
       for (const [name, encodedArray] of Object.entries(encodedMesh.arrays)) {
         // Convert dots to nested directory structure, each array gets its own directory
         const arrayPath = name.replace(/\./g, '/')
-        
+
         zip.file(`arrays/${arrayPath}/array.bin`, encodedArray.data)
-        
+
         // Save array metadata
         const arrayMetadata: ArrayMetadata = {
           shape: encodedArray.shape,
@@ -712,10 +712,10 @@ export class MeshUtils {
         zip.file(`arrays/${arrayPath}/metadata.json`, JSON.stringify(arrayMetadata, null, 2))
       }
     }
-    
+
     // Save general metadata
     zip.file('metadata.json', JSON.stringify(metadata, null, 2))
-    
+
     // Generate and return zip data
     const zipData = await zip.generateAsync({ type: 'uint8array' })
     return zipData
@@ -808,19 +808,19 @@ export class MeshUtils {
       for (const [fieldName, fieldValue] of Object.entries(metadata.field_data)) {
         const existingValue = (result as any)[fieldName]
         if (existingValue && typeof existingValue === 'object' && typeof fieldValue === 'object' &&
-            !ArrayBuffer.isView(existingValue) && !ArrayBuffer.isView(fieldValue)) {
+          !ArrayBuffer.isView(existingValue) && !ArrayBuffer.isView(fieldValue)) {
           // Merge non-array values into existing dictionary structure
           function mergeDicts(target: any, source: any): void {
             for (const [key, value] of Object.entries(source)) {
               if (key in target && typeof target[key] === 'object' && typeof value === 'object' &&
-                  !ArrayBuffer.isView(target[key]) && !ArrayBuffer.isView(value)) {
+                !ArrayBuffer.isView(target[key]) && !ArrayBuffer.isView(value)) {
                 mergeDicts(target[key], value)
               } else {
                 target[key] = value
               }
             }
           }
-          
+
           mergeDicts(existingValue, fieldValue)
         } else {
           // Set scalar fields directly
@@ -841,12 +841,12 @@ export class MeshUtils {
     if (indices.length < 3) {
       throw new Error('Polygon must have at least 3 vertices')
     }
-    
+
     if (indices.length === 3) {
       // Already a triangle
       return indices
     }
-    
+
     if (indices.length === 4) {
       // Quad: split into 2 triangles
       return new Uint32Array([
@@ -854,13 +854,13 @@ export class MeshUtils {
         indices[0], indices[2], indices[3]
       ])
     }
-    
+
     // General polygon: fan triangulation from first vertex
     const triangulated: number[] = []
     for (let i = 1; i < indices.length - 1; i++) {
       triangulated.push(indices[0], indices[i], indices[i + 1])
     }
-    
+
     return new Uint32Array(triangulated)
   }
 
@@ -885,10 +885,10 @@ export class MeshUtils {
     for (let i = 0; i < mesh.indexSizes.length; i++) {
       const polygonSize = mesh.indexSizes[i]
       const cellType = mesh.cellTypes ? mesh.cellTypes[i] : undefined
-      
+
       // Extract polygon indices
       const polygonIndices = mesh.indices.slice(offset, offset + polygonSize)
-      
+
       // Skip degenerate polygons
       if (polygonSize < 3) {
         offset += polygonSize
@@ -897,7 +897,7 @@ export class MeshUtils {
 
       // Triangulate based on polygon size and cell type
       let triangulated: Uint32Array
-      
+
       if (polygonSize === 3) {
         // Triangle - no triangulation needed
         triangulated = polygonIndices
@@ -908,7 +908,7 @@ export class MeshUtils {
         // General polygon - fan triangulation
         triangulated = MeshUtils.triangulatePoly(polygonIndices)
       }
-      
+
       triangulatedIndices.push(...Array.from(triangulated))
       offset += polygonSize
     }
@@ -1030,6 +1030,126 @@ export class MeshUtils {
     return normalizedVertices
   }
 
+
+  /**
+   * Extract a submesh containing only elements referenced by a specific marker.
+   * 
+   * This method creates a new mesh containing only the vertices and elements (if any)
+   * that are referenced by the specified marker.
+   * 
+   * @param mesh The source mesh
+   * @param markerName Name of the marker to extract
+   * @returns A new Mesh object containing only the vertices/elements from the marker
+   * @throws Error if marker_name doesn't exist in the mesh
+   * 
+   * @example
+   * ```typescript
+   * const mesh = { vertices, indices, markerIndices: { "boundary": boundaryIndices } }
+   * const boundaryMesh = MeshUtils.extractByMarker(mesh, "boundary")
+   * ```
+   */
+  static extractByMarker(mesh: Mesh, markerName: string): Mesh {
+    // Check if marker exists
+    if (!mesh.markerIndices || !(markerName in mesh.markerIndices)) {
+      const availableMarkers = mesh.markerIndices ? Object.keys(mesh.markerIndices).join(', ') : 'none'
+      throw new Error(`Marker '${markerName}' not found. Available markers: ${availableMarkers}`)
+    }
+
+    // Get marker data
+    const markerIndices = mesh.markerIndices[markerName]
+    const markerOffsets = mesh.markerOffsets?.[markerName]
+    const markerTypes = mesh.markerTypes?.[markerName]
+
+    if (!markerOffsets || !markerTypes) {
+      throw new Error(`Marker '${markerName}' is missing offset or type information`)
+    }
+
+    // Convert offsets to sizes
+    const markerSizes = new Uint32Array(markerOffsets.length)
+    for (let i = 0; i < markerOffsets.length - 1; i++) {
+      markerSizes[i] = markerOffsets[i + 1] - markerOffsets[i]
+    }
+    if (markerOffsets.length > 0) {
+      markerSizes[markerOffsets.length - 1] = markerIndices.length - markerOffsets[markerOffsets.length - 1]
+    }
+
+    // Find all unique vertex indices referenced by the marker
+    const uniqueVerticesSet = new Set<number>()
+    for (let i = 0; i < markerIndices.length; i++) {
+      uniqueVerticesSet.add(markerIndices[i])
+    }
+    const uniqueVertices = new Uint32Array(Array.from(uniqueVerticesSet).sort((a, b) => a - b))
+
+    // Extract vertices
+    const extractedVertices = new Float32Array(uniqueVertices.length * 3)
+    for (let i = 0; i < uniqueVertices.length; i++) {
+      const vertexIndex = uniqueVertices[i]
+      extractedVertices[i * 3] = mesh.vertices[vertexIndex * 3]
+      extractedVertices[i * 3 + 1] = mesh.vertices[vertexIndex * 3 + 1]
+      extractedVertices[i * 3 + 2] = mesh.vertices[vertexIndex * 3 + 2]
+    }
+
+    // Create vectorized mapping using binary search for O(n log n) instead of O(n^2)
+    const remappedIndices = new Uint32Array(markerIndices.length)
+    for (let i = 0; i < markerIndices.length; i++) {
+      // Binary search to find the new index
+      let left = 0
+      let right = uniqueVertices.length
+      const target = markerIndices[i]
+
+      while (left < right) {
+        const mid = Math.floor((left + right) / 2)
+        if (uniqueVertices[mid] < target) {
+          left = mid + 1
+        } else {
+          right = mid
+        }
+      }
+
+      remappedIndices[i] = left
+    }
+
+    // Convert markerTypes from Uint8Array to Uint32Array for consistency
+    const cellTypes = new Uint32Array(markerTypes.length)
+    for (let i = 0; i < markerTypes.length; i++) {
+      cellTypes[i] = markerTypes[i]
+    }
+
+    // Create new mesh with extracted data
+    return {
+      vertices: extractedVertices,
+      indices: remappedIndices,
+      indexSizes: markerSizes,
+      cellTypes: cellTypes,
+      dim: mesh.dim
+    }
+  }
+
+  /**
+   * Extract a submesh by marker and convert it to a THREE.js BufferGeometry.
+   * 
+   * This is a convenience method that combines extractByMarker and convertToBufferGeometry.
+   * 
+   * @param mesh The source mesh
+   * @param markerName Name of the marker to extract
+   * @param options Options for the conversion to BufferGeometry
+   * @returns THREE.js BufferGeometry containing only the marker elements
+   * @throws Error if marker_name doesn't exist in the mesh
+   * 
+   * @example
+   * ```typescript
+   * const mesh = await MeshUtils.loadMeshFromZip(zipData)
+   * const boundaryGeometry = MeshUtils.extractMarkerAsBufferGeometry(mesh, "boundary", { computeNormals: true })
+   * ```
+   */
+  static extractMarkerAsBufferGeometry(
+    mesh: Mesh,
+    markerName: string,
+    options: DecodeMeshOptions = {}
+  ): THREE.BufferGeometry {
+    const extractedMesh = MeshUtils.extractByMarker(mesh, markerName)
+    return MeshUtils.convertToBufferGeometry(extractedMesh, options)
+  }
 
   /**
    * Main function to load a mesh from a zip file and convert it to a THREE.js BufferGeometry

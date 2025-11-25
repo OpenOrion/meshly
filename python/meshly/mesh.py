@@ -20,6 +20,7 @@ from typing import (
     Union,
     List,
     Sequence,
+    Tuple,
     get_type_hints,
 )
 import numpy as np
@@ -370,11 +371,334 @@ class Mesh(BaseModel):
 
         return self
 
+    @staticmethod
+    def combine(
+        meshes: List["Mesh"],
+        marker_names: Optional[List[str]] = None,
+        preserve_markers: bool = True,
+    ) -> "Mesh":
+        """
+        Combine multiple meshes into a single mesh.
+
+        Args:
+            meshes: List of Mesh objects to combine
+            marker_names: Optional list of marker names to assign to each mesh.
+                         If provided, each mesh is assigned exclusively to its corresponding marker name,
+                         completely replacing any existing markers from that mesh.
+                         Must have same length as meshes list.
+            preserve_markers: Whether to preserve existing markers from source meshes (default: True).
+                            Only applies when marker_names is None. If marker_names is provided, this is ignored.
+                            If True, existing markers are kept with their original names.
+                            If multiple meshes have the same marker name, their elements are combined.
+
+        Returns:
+            A new combined Mesh object
+
+        Raises:
+            ValueError: If meshes list is empty or if marker_names length doesn't match meshes length
+
+        Example:
+            >>> mesh1 = Mesh(vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]]), indices=np.array([0, 1, 2]))
+            >>> mesh2 = Mesh(vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]]), indices=np.array([0, 1, 2]))
+            >>> combined = Mesh.combine([mesh1, mesh2], marker_names=["part1", "part2"])
+        """
+        if not meshes:
+            raise ValueError("Cannot combine empty list of meshes")
+
+        if marker_names is not None and len(marker_names) != len(meshes):
+            raise ValueError(
+                f"marker_names length ({len(marker_names)}) must match meshes length ({len(meshes)})"
+            )
+
+        # Pre-compute vertex offsets for all meshes
+        vertex_offsets = MeshUtils.compute_vertex_offsets(meshes)
+
+        # Collect vertices and indices from all meshes
+        all_vertices = [mesh.vertices for mesh in meshes]
+        all_indices = [mesh.indices + vertex_offsets[i]
+                       for i, mesh in enumerate(meshes) if mesh.indices is not None]
+        all_index_sizes = [
+            mesh.index_sizes for mesh in meshes if mesh.index_sizes is not None]
+        all_cell_types = [
+            mesh.cell_types for mesh in meshes if mesh.cell_types is not None]
+
+        # Build markers using utility methods
+        if marker_names is not None:
+            combined_markers, combined_marker_sizes, combined_marker_cell_types = \
+                MeshUtils.combine_markers_with_names(
+                    meshes, marker_names, vertex_offsets)
+        elif preserve_markers:
+            combined_markers, combined_marker_sizes, combined_marker_cell_types = \
+                MeshUtils.preserve_existing_markers(meshes, vertex_offsets)
+        else:
+            combined_markers = {}
+            combined_marker_sizes = {}
+            combined_marker_cell_types = {}
+
+        # Concatenate all arrays
+        combined_vertices = np.concatenate(all_vertices, axis=0)
+        combined_indices = np.concatenate(
+            all_indices, axis=0) if all_indices else None
+        combined_index_sizes = np.concatenate(
+            all_index_sizes, axis=0) if all_index_sizes else None
+        combined_cell_types_array = np.concatenate(
+            all_cell_types, axis=0) if all_cell_types else None
+
+        # Get dimension from first mesh
+        dim = meshes[0].dim
+
+        # Create combined mesh
+        return Mesh(
+            vertices=combined_vertices,
+            indices=combined_indices,
+            index_sizes=combined_index_sizes,
+            cell_types=combined_cell_types_array,
+            dim=dim,
+            markers=combined_markers,
+            marker_sizes=combined_marker_sizes,
+            marker_cell_types=combined_marker_cell_types,
+        )
+
+    def extract_by_marker(self, marker_name: str) -> "Mesh":
+        """
+        Extract a submesh containing only the elements referenced by a specific marker.
+
+        This method creates a new mesh containing only the vertices and elements (if any)
+        that are referenced by the specified marker.
+
+        Args:
+            marker_name: Name of the marker to extract
+
+        Returns:
+            A new Mesh object containing only the vertices/elements from the marker
+
+        Raises:
+            ValueError: If marker_name doesn't exist in the mesh
+
+        Example:
+            >>> mesh = Mesh(vertices=vertices, indices=indices, markers={"boundary": [0, 1, 2]})
+            >>> boundary_mesh = mesh.extract_by_marker("boundary")
+        """
+        if marker_name not in self.markers:
+            raise ValueError(
+                f"Marker '{marker_name}' not found. Available markers: {list(self.markers.keys())}"
+            )
+
+        # Get marker data
+        marker_indices = self.markers[marker_name]
+        marker_sizes = self.marker_sizes.get(marker_name)
+        marker_cell_types = self.marker_cell_types.get(marker_name)
+
+        if marker_sizes is None or marker_cell_types is None:
+            raise ValueError(
+                f"Marker '{marker_name}' is missing size or cell type information"
+            )
+
+        # Reconstruct marker elements
+        marker_elements = ElementUtils.get_element_structure(
+            marker_indices, marker_sizes
+        )
+
+        # Find all unique vertex indices referenced by the marker
+        unique_vertices = np.unique(marker_indices)
+
+        # Extract vertices
+        extracted_vertices = self.vertices[unique_vertices]
+
+        # Create vectorized mapping using searchsorted for O(n log n) instead of O(n^2)
+        # searchsorted finds where each marker_index would be inserted in the sorted unique_vertices array
+        remapped_indices = np.searchsorted(
+            unique_vertices, marker_indices).astype(np.uint32)
+
+        # Create new mesh with extracted data
+        return Mesh(
+            vertices=extracted_vertices,
+            indices=remapped_indices,
+            index_sizes=marker_sizes.copy(),
+            cell_types=marker_cell_types.copy(),
+            dim=self.dim,
+        )
+
 
 class MeshUtils:
     """
     Utility class for mesh optimization and encoding/decoding operations.
     """
+
+    @staticmethod
+    def compute_vertex_offsets(meshes: List[Mesh]) -> np.ndarray:
+        """
+        Compute vertex offsets for combining multiple meshes.
+
+        Args:
+            meshes: List of meshes to compute offsets for
+
+        Returns:
+            Array of vertex offsets for each mesh
+        """
+        vertex_counts = np.array([mesh.vertex_count for mesh in meshes])
+        return np.concatenate([[0], np.cumsum(vertex_counts)[:-1]])
+
+    @staticmethod
+    def add_marker_to_dict(
+        marker_dict: Dict[str, np.ndarray],
+        marker_sizes: Dict[str, np.ndarray],
+        marker_cell_types: Dict[str, np.ndarray],
+        marker_name: str,
+        indices: np.ndarray,
+        sizes: np.ndarray,
+        cell_types: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        Add or append marker data to marker dictionaries.
+
+        If the marker name already exists, the data is concatenated.
+        Otherwise, a new marker is created.
+
+        Args:
+            marker_dict: Dictionary of marker indices (modified in place)
+            marker_sizes: Dictionary of marker sizes (modified in place)
+            marker_cell_types: Dictionary of marker cell types (modified in place)
+            marker_name: Name of the marker
+            indices: Indices for this marker
+            sizes: Sizes for this marker
+            cell_types: Optional cell types for this marker
+        """
+        if marker_name in marker_dict:
+            marker_dict[marker_name] = np.concatenate(
+                [marker_dict[marker_name], indices]
+            )
+            marker_sizes[marker_name] = np.concatenate(
+                [marker_sizes[marker_name], sizes]
+            )
+            if cell_types is not None:
+                marker_cell_types[marker_name] = np.concatenate(
+                    [marker_cell_types[marker_name], cell_types]
+                )
+        else:
+            marker_dict[marker_name] = indices
+            marker_sizes[marker_name] = sizes
+            if cell_types is not None:
+                marker_cell_types[marker_name] = cell_types
+
+    @staticmethod
+    def create_cell_marker_from_mesh(
+        mesh: Mesh,
+        vertex_offset: int,
+    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """
+        Create marker data from a mesh's cell structure.
+
+        Args:
+            mesh: Source mesh
+            vertex_offset: Offset to apply to vertex indices
+
+        Returns:
+            Tuple of (indices, sizes, cell_types)
+        """
+        if mesh.indices is not None and mesh.index_sizes is not None:
+            # Create marker from mesh's cell structure
+            indices = mesh.indices.copy() + vertex_offset
+            sizes = mesh.index_sizes.copy()
+            cell_types = mesh.cell_types.copy() if mesh.cell_types is not None else None
+            return indices, sizes, cell_types
+        else:
+            # No cells, create vertex marker instead
+            vertex_count = mesh.vertex_count
+            indices = np.arange(vertex_offset, vertex_offset +
+                                vertex_count, dtype=np.uint32)
+            sizes = np.ones(vertex_count, dtype=np.uint32)
+            cell_types = np.ones(vertex_count, dtype=np.uint32)
+            return indices, sizes, cell_types
+
+    @staticmethod
+    def combine_markers_with_names(
+        meshes: List[Mesh],
+        marker_names: List[str],
+        vertex_offsets: np.ndarray,
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """
+        Create markers from meshes using provided marker names.
+
+        Each mesh is assigned to its corresponding marker name.
+
+        Args:
+            meshes: List of meshes
+            marker_names: List of marker names (must match length of meshes)
+            vertex_offsets: Precomputed vertex offsets for each mesh
+
+        Returns:
+            Tuple of (markers, marker_sizes, marker_cell_types) dictionaries
+        """
+        combined_markers = {}
+        combined_marker_sizes = {}
+        combined_marker_cell_types = {}
+
+        for mesh_idx, marker_name in enumerate(marker_names):
+            mesh = meshes[mesh_idx]
+            indices, sizes, cell_types = MeshUtils.create_cell_marker_from_mesh(
+                mesh, vertex_offsets[mesh_idx]
+            )
+            MeshUtils.add_marker_to_dict(
+                combined_markers,
+                combined_marker_sizes,
+                combined_marker_cell_types,
+                marker_name,
+                indices,
+                sizes,
+                cell_types,
+            )
+
+        return combined_markers, combined_marker_sizes, combined_marker_cell_types
+
+    @staticmethod
+    def preserve_existing_markers(
+        meshes: List[Mesh],
+        vertex_offsets: np.ndarray,
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """
+        Preserve existing markers from source meshes.
+
+        If multiple meshes have the same marker name, their elements are combined.
+
+        Args:
+            meshes: List of meshes
+            vertex_offsets: Precomputed vertex offsets for each mesh
+
+        Returns:
+            Tuple of (markers, marker_sizes, marker_cell_types) dictionaries
+        """
+        combined_markers = {}
+        combined_marker_sizes = {}
+        combined_marker_cell_types = {}
+
+        for mesh_idx, mesh in enumerate(meshes):
+            if not mesh.markers:
+                continue
+
+            for marker_name, marker_indices in mesh.markers.items():
+                offset_marker_indices = marker_indices + \
+                    vertex_offsets[mesh_idx]
+
+                # Get sizes and types for this marker
+                sizes = mesh.marker_sizes.get(marker_name)
+                cell_types = mesh.marker_cell_types.get(marker_name)
+
+                if sizes is None:
+                    # Skip markers without size info
+                    continue
+
+                MeshUtils.add_marker_to_dict(
+                    combined_markers,
+                    combined_marker_sizes,
+                    combined_marker_cell_types,
+                    marker_name,
+                    offset_marker_indices,
+                    sizes,
+                    cell_types,
+                )
+
+        return combined_markers, combined_marker_sizes, combined_marker_cell_types
 
     @staticmethod
     def optimize_vertex_cache(mesh: Mesh) -> Mesh:

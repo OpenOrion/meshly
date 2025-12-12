@@ -5,6 +5,15 @@ This module provides:
 1. Mesh class as a Pydantic base class for representing 3D meshes
 2. MeshUtils class for mesh optimization and encoding/decoding operations
 3. Functions for encoding and decoding meshes
+
+MeshUtils provides the following operations:
+- triangulate: Convert meshes with mixed polygon types to pure triangle meshes
+- optimize_vertex_cache: Optimize mesh for vertex cache efficiency
+- optimize_overdraw: Optimize mesh to reduce overdraw
+- optimize_vertex_fetch: Optimize mesh for vertex fetch efficiency
+- simplify: Reduce mesh complexity while preserving shape
+- encode/decode: Compress meshes for efficient storage and transmission
+- save_to_zip/load_from_zip: Persist meshes to compressed archive format
 """
 
 import json
@@ -42,7 +51,7 @@ from meshoptimizer import (
 from .array import ArrayMetadata, EncodedArray, ArrayUtils
 from .common import PathLike
 from .cell_types import CellTypeUtils, VTKCellType
-from .element_utils import ElementUtils
+from .element_utils import ElementUtils, TriangulationUtils
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
@@ -144,8 +153,8 @@ class Mesh(BaseModel):
     If explicitly provided, must have same length as index_sizes.
     """
 
-    # Mesh dimension
-    dim: int = Field(default=3, description="Mesh dimension (2D or 3D)")
+    # Mesh dimension - auto-computed from cell_types if not provided
+    dim: Optional[int] = Field(default=None, description="Mesh dimension (2D or 3D). Auto-computed from cell types if not provided.")
 
     # Marker structure - accepts both sequence of sequences and flattened arrays, converts to flattened internally
     markers: Dict[str, Union[Sequence[Union[Sequence[int], np.ndarray]], np.ndarray]] = Field(
@@ -331,6 +340,14 @@ class Mesh(BaseModel):
                 )
             except ValueError as e:
                 raise ValueError(f"Error processing indices: {e}")
+
+        # Auto-compute dimension from cell types if not explicitly provided
+        if self.dim is None:
+            if self.cell_types is not None and len(self.cell_types) > 0:
+                self.dim = CellTypeUtils.get_mesh_dimension(self.cell_types)
+            else:
+                # Default to 3D if no cell types available
+                self.dim = 3
 
         # Handle marker conversion - convert sequence format to flattened arrays
         if self.markers:
@@ -699,6 +716,135 @@ class MeshUtils:
                 )
 
         return combined_markers, combined_marker_sizes, combined_marker_cell_types
+
+    @staticmethod
+    def triangulate(mesh: Mesh) -> Mesh:
+        """
+        Convert a mesh to a pure triangle surface mesh.
+
+        For polygon meshes (2D surface cells like triangles, quads, polygons):
+            Uses fan triangulation: for each polygon with n vertices (n >= 3),
+            creates (n-2) triangles by connecting the first vertex to all
+            non-adjacent vertex pairs.
+
+        For volume meshes (3D cells like hexahedra, tetrahedra, wedges, pyramids):
+            Extracts the surface faces of each cell and triangulates them.
+            This creates a surface mesh representation of the volume.
+
+        Examples:
+            - Triangle (3 vertices): 1 triangle
+            - Quad (4 vertices): 2 triangles
+            - Pentagon (5 vertices): 3 triangles
+            - Tetrahedron (4 vertices, 4 faces): 4 triangles
+            - Hexahedron (8 vertices, 6 quad faces): 12 triangles
+            - Wedge (6 vertices, 5 faces): 8 triangles
+            - Pyramid (5 vertices, 5 faces): 6 triangles
+
+        Args:
+            mesh: The mesh to triangulate (can have mixed cell types)
+
+        Returns:
+            A new mesh with all cells converted to triangles
+
+        Raises:
+            ValueError: If mesh has no indices or index_sizes, or contains
+                        unsupported cell types
+
+        Note:
+            - Vertices are preserved unchanged
+            - Markers are preserved unchanged
+            - Only the cell structure (indices, index_sizes, cell_types) is modified
+        """
+        if mesh.indices is None or mesh.index_sizes is None:
+            raise ValueError("Mesh must have indices and index_sizes to triangulate")
+
+        # Check if already all triangles
+        if np.all(mesh.index_sizes == 3) and np.all(mesh.cell_types == VTKCellType.VTK_TRIANGLE):
+            return mesh.copy()
+
+        # Compute cell offsets once
+        cell_offsets = np.concatenate([[0], np.cumsum(mesh.index_sizes[:-1])]).astype(np.uint32)
+        
+        cell_types = mesh.cell_types
+        index_sizes = mesh.index_sizes
+        indices = mesh.indices
+        vertices = mesh.vertices
+        
+        # Pre-check planarity for volume cells to reclassify them as polygons
+        volume_types = set(TriangulationUtils._get_volume_cell_patterns().keys())
+        effective_types = cell_types.copy()
+        for i, (cell_type, size, offset) in enumerate(zip(cell_types, index_sizes, cell_offsets)):
+            if cell_type in volume_types:
+                cell_indices = indices[offset:offset + size]
+                if TriangulationUtils.is_planar_cell(vertices, cell_indices):
+                    effective_types[i] = VTKCellType.VTK_POLYGON
+        
+        result_chunks = []
+        
+        # Process triangles (already done, just copy)
+        tri_mask = effective_types == VTKCellType.VTK_TRIANGLE
+        if np.any(tri_mask):
+            tri_offsets = cell_offsets[tri_mask]
+            tri_sizes = index_sizes[tri_mask]
+            for offset, size in zip(tri_offsets, tri_sizes):
+                result_chunks.append(indices[offset:offset + size].copy())
+        
+        # Process all polygon types (quads, general polygons, reclassified planar cells)
+        polygon_types = {VTKCellType.VTK_QUAD, VTKCellType.VTK_POLYGON}
+        polygon_mask = np.isin(effective_types, list(polygon_types))
+        if np.any(polygon_mask):
+            poly_offsets = cell_offsets[polygon_mask]
+            poly_sizes = index_sizes[polygon_mask]
+            
+            if np.any(poly_sizes < 3):
+                invalid_idx = np.where(poly_sizes < 3)[0][0]
+                raise ValueError(f"Polygon with {poly_sizes[invalid_idx]} vertices cannot be triangulated (minimum 3 required)")
+            
+            # Group by size for efficient batch processing
+            for size in np.unique(poly_sizes):
+                size_mask = poly_sizes == size
+                size_offsets = poly_offsets[size_mask]
+                if len(size_offsets) > 0:
+                    tris = TriangulationUtils.triangulate_polygons(indices, size_offsets, size)
+                    if len(tris) > 0:
+                        result_chunks.append(tris)
+        
+        # Process volume cells using pattern-based triangulation
+        volume_patterns = TriangulationUtils._get_volume_cell_patterns()
+        for cell_type, (cell_size, tri_pattern) in volume_patterns.items():
+            mask = effective_types == cell_type
+            if np.any(mask):
+                offsets = cell_offsets[mask]
+                if len(offsets) > 0:
+                    tris = TriangulationUtils.triangulate_uniform_cells(indices, offsets, cell_size, tri_pattern)
+                    if len(tris) > 0:
+                        result_chunks.append(tris)
+        
+        # Check for unsupported types
+        skip_types = {VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE}
+        supported_types = {VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
+        all_handled = supported_types | skip_types
+        
+        for i, ct in enumerate(effective_types):
+            if ct not in all_handled:
+                raise ValueError(f"Unsupported cell type {ct} at cell {i}")
+        
+        if not result_chunks:
+            raise ValueError("No triangulatable cells found in mesh")
+
+        triangulated_indices_flat = np.concatenate(result_chunks)
+        num_triangles = len(triangulated_indices_flat) // 3
+
+        return Mesh(
+            vertices=mesh.vertices.copy(),
+            indices=triangulated_indices_flat,
+            index_sizes=np.full(num_triangles, 3, dtype=np.uint32),
+            cell_types=np.full(num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32),
+            dim=mesh.dim,
+            markers={name: data.copy() for name, data in mesh.markers.items()},
+            marker_sizes={name: data.copy() for name, data in mesh.marker_sizes.items()},
+            marker_cell_types={name: data.copy() for name, data in mesh.marker_cell_types.items()},
+        )
 
     @staticmethod
     def optimize_vertex_cache(mesh: Mesh) -> Mesh:

@@ -10,6 +10,195 @@ from typing import Union, List, Dict, Tuple, Any, Optional
 from .cell_types import CellTypeUtils, VTKCellType
 
 
+class TriangulationUtils:
+    """Utilities for triangulating mesh elements."""
+    
+    # Pre-computed triangulation patterns for volume cells
+    # Each pattern is an array of local vertex indices forming triangles
+    _TETRA_TRI_PATTERN = np.array([
+        [0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]
+    ], dtype=np.uint32)  # 4 triangles
+    
+    _HEXAHEDRON_TRI_PATTERN = np.array([
+        # bottom face (0,3,2,1) -> 2 triangles
+        [0, 3, 2], [0, 2, 1],
+        # top face (4,5,6,7) -> 2 triangles
+        [4, 5, 6], [4, 6, 7],
+        # front face (0,1,5,4) -> 2 triangles
+        [0, 1, 5], [0, 5, 4],
+        # back face (2,3,7,6) -> 2 triangles
+        [2, 3, 7], [2, 7, 6],
+        # left face (0,4,7,3) -> 2 triangles
+        [0, 4, 7], [0, 7, 3],
+        # right face (1,2,6,5) -> 2 triangles
+        [1, 2, 6], [1, 6, 5],
+    ], dtype=np.uint32)  # 12 triangles
+    
+    _WEDGE_TRI_PATTERN = np.array([
+        # bottom triangle (0,1,2)
+        [0, 1, 2],
+        # top triangle (3,5,4) - reversed for outward normal
+        [3, 5, 4],
+        # front quad (0,1,4,3) -> 2 triangles
+        [0, 1, 4], [0, 4, 3],
+        # right quad (1,2,5,4) -> 2 triangles
+        [1, 2, 5], [1, 5, 4],
+        # left quad (0,2,5,3) -> 2 triangles
+        [0, 2, 5], [0, 5, 3],
+    ], dtype=np.uint32)  # 8 triangles
+    
+    _PYRAMID_TRI_PATTERN = np.array([
+        # base quad (0,3,2,1) -> 2 triangles
+        [0, 3, 2], [0, 2, 1],
+        # front triangle (0,1,4)
+        [0, 1, 4],
+        # right triangle (1,2,4)
+        [1, 2, 4],
+        # back triangle (2,3,4)
+        [2, 3, 4],
+        # left triangle (3,0,4)
+        [3, 0, 4],
+    ], dtype=np.uint32)  # 6 triangles
+
+    # Mapping of volume cell types to (cell_size, triangulation_pattern)
+    _VOLUME_CELL_PATTERNS: Optional[Dict[int, Tuple[int, np.ndarray]]] = None
+    
+    # Cache for fan triangulation patterns
+    _FAN_PATTERN_CACHE: Dict[int, np.ndarray] = {}
+    
+    @classmethod
+    def _get_volume_cell_patterns(cls) -> Dict[int, Tuple[int, np.ndarray]]:
+        """Get mapping of volume cell types to (cell_size, tri_pattern)."""
+        if cls._VOLUME_CELL_PATTERNS is None:
+            cls._VOLUME_CELL_PATTERNS = {
+                VTKCellType.VTK_HEXAHEDRON: (8, cls._HEXAHEDRON_TRI_PATTERN),
+                VTKCellType.VTK_TETRA: (4, cls._TETRA_TRI_PATTERN),
+                VTKCellType.VTK_WEDGE: (6, cls._WEDGE_TRI_PATTERN),
+                VTKCellType.VTK_PYRAMID: (5, cls._PYRAMID_TRI_PATTERN),
+            }
+        return cls._VOLUME_CELL_PATTERNS
+    
+    @classmethod
+    def _get_fan_pattern(cls, polygon_size: int) -> np.ndarray:
+        """Get or create a fan triangulation pattern for a given polygon size."""
+        if polygon_size not in cls._FAN_PATTERN_CACHE:
+            triangles_per_polygon = polygon_size - 2
+            cls._FAN_PATTERN_CACHE[polygon_size] = np.column_stack([
+                np.zeros(triangles_per_polygon, dtype=np.uint32),  # pivot (vertex 0)
+                np.arange(1, triangles_per_polygon + 1, dtype=np.uint32),  # second vertex
+                np.arange(2, triangles_per_polygon + 2, dtype=np.uint32),  # third vertex
+            ])
+        return cls._FAN_PATTERN_CACHE[polygon_size]
+
+    @staticmethod
+    def is_planar_cell(vertices: np.ndarray, cell_indices: np.ndarray, tolerance: float = 1e-6) -> bool:
+        """
+        Check if a cell's vertices are coplanar (lie in the same plane).
+        
+        This is used to distinguish between 2D polygon cells and 3D volume cells
+        that happen to have the same number of vertices (e.g., pentagon vs pyramid).
+        
+        Args:
+            vertices: The mesh vertices array
+            cell_indices: Indices of the cell's vertices
+            tolerance: Tolerance for planarity check
+            
+        Returns:
+            True if all vertices are coplanar, False otherwise
+        """
+        if len(cell_indices) < 4:
+            # 3 or fewer points are always coplanar
+            return True
+            
+        cell_vertices = vertices[cell_indices]
+        
+        # Use the first 3 vertices to define a plane
+        v0, v1, v2 = cell_vertices[0], cell_vertices[1], cell_vertices[2]
+        
+        # Compute normal to the plane
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normal = np.cross(edge1, edge2)
+        
+        # If normal is zero, first 3 points are collinear - check another combo
+        if np.linalg.norm(normal) < tolerance:
+            if len(cell_indices) >= 4:
+                v3 = cell_vertices[3]
+                edge2 = v3 - v0
+                normal = np.cross(edge1, edge2)
+                if np.linalg.norm(normal) < tolerance:
+                    return True  # All points are collinear, so coplanar
+        
+        # Normalize
+        normal = normal / (np.linalg.norm(normal) + 1e-12)
+        
+        # Check if all remaining vertices are in the same plane
+        for i in range(3, len(cell_indices)):
+            v = cell_vertices[i]
+            distance = abs(np.dot(v - v0, normal))
+            if distance > tolerance:
+                return False
+                
+        return True
+
+    @classmethod
+    def triangulate_uniform_cells(
+        cls,
+        indices: np.ndarray,
+        offsets: np.ndarray,
+        cell_size: int,
+        pattern: np.ndarray
+    ) -> np.ndarray:
+        """
+        Vectorized triangulation for uniform cells using a pre-defined pattern.
+        
+        Args:
+            indices: Flattened array of cell vertex indices
+            offsets: Start offset for each cell
+            cell_size: Number of vertices per cell
+            pattern: Array of shape (n_triangles, 3) with local vertex indices
+            
+        Returns:
+            Flattened array of triangle indices
+        """
+        if len(offsets) == 0:
+            return np.array([], dtype=np.uint32)
+        
+        # Gather cell vertices: (num_cells, cell_size)
+        vertex_gather = offsets[:, np.newaxis] + np.arange(cell_size, dtype=np.uint32)
+        cell_vertices = indices[vertex_gather]
+        
+        # Apply pattern: (num_cells, n_tris_per_cell, 3)
+        return cell_vertices[:, pattern].ravel().astype(np.uint32)
+
+    @classmethod
+    def triangulate_polygons(
+        cls,
+        indices: np.ndarray,
+        offsets: np.ndarray,
+        polygon_size: int
+    ) -> np.ndarray:
+        """
+        Vectorized fan triangulation for uniform polygons (all same size).
+        
+        Uses fan triangulation: for polygon with vertices [v0, v1, v2, ..., vn-1],
+        creates triangles: (v0, v1, v2), (v0, v2, v3), ..., (v0, vn-2, vn-1)
+        
+        Args:
+            indices: Flattened array of polygon vertex indices
+            offsets: Start offset for each polygon
+            polygon_size: Number of vertices per polygon (same for all)
+            
+        Returns:
+            Flattened array of triangle indices
+        """
+        if len(offsets) == 0:
+            return np.array([], dtype=np.uint32)
+        
+        fan_pattern = cls._get_fan_pattern(polygon_size)
+        return cls.triangulate_uniform_cells(indices, offsets, polygon_size, fan_pattern)
+
+
 class ElementUtils:
     """Utilities for processing mesh elements (indices, markers) in a standardized way."""
     

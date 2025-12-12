@@ -153,8 +153,8 @@ class Mesh(BaseModel):
     If explicitly provided, must have same length as index_sizes.
     """
 
-    # Mesh dimension
-    dim: int = Field(default=3, description="Mesh dimension (2D or 3D)")
+    # Mesh dimension - auto-computed from cell_types if not provided
+    dim: Optional[int] = Field(default=None, description="Mesh dimension (2D or 3D). Auto-computed from cell types if not provided.")
 
     # Marker structure - accepts both sequence of sequences and flattened arrays, converts to flattened internally
     markers: Dict[str, Union[Sequence[Union[Sequence[int], np.ndarray]], np.ndarray]] = Field(
@@ -340,6 +340,14 @@ class Mesh(BaseModel):
                 )
             except ValueError as e:
                 raise ValueError(f"Error processing indices: {e}")
+
+        # Auto-compute dimension from cell types if not explicitly provided
+        if self.dim is None:
+            if self.cell_types is not None and len(self.cell_types) > 0:
+                self.dim = CellTypeUtils.get_mesh_dimension(self.cell_types)
+            else:
+                # Default to 3D if no cell types available
+                self.dim = 3
 
         # Handle marker conversion - convert sequence format to flattened arrays
         if self.markers:

@@ -153,3 +153,40 @@ class CellTypeUtils:
                 return False
         
         return True
+
+    @staticmethod
+    def get_mesh_dimension(cell_types: np.ndarray) -> int:
+        """
+        Determine mesh dimension from cell types.
+
+        Args:
+            cell_types: Array of VTK cell types
+
+        Returns:
+            Dimension: 2 for surface meshes, 3 for volume meshes
+        """
+        # Map VTK cell types to dimensions
+        # 2D elements: TRIANGLE (5), QUAD (9)
+        # 3D elements: TETRA (10), HEXAHEDRON (12), WEDGE (13), PYRAMID (14)
+        vtk_2d_types = {
+            VTKCellType.VTK_TRIANGLE,
+            VTKCellType.VTK_QUAD,
+        }
+        vtk_3d_types = {
+            VTKCellType.VTK_TETRA,
+            VTKCellType.VTK_HEXAHEDRON,
+            VTKCellType.VTK_WEDGE,
+            VTKCellType.VTK_PYRAMID,
+        }
+
+        unique_types = set(cell_types)
+
+        # Check for 3D elements first
+        if unique_types & vtk_3d_types:
+            return 3
+        # Check for 2D elements
+        elif unique_types & vtk_2d_types:
+            return 2
+        else:
+            # Default to 2D for other cases (lines, points, polygons)
+            return 2

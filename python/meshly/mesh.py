@@ -51,7 +51,7 @@ from meshoptimizer import (
 from .array import ArrayMetadata, EncodedArray, ArrayUtils
 from .common import PathLike
 from .cell_types import CellTypeUtils, VTKCellType
-from .element_utils import ElementUtils
+from .element_utils import ElementUtils, TriangulationUtils
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
@@ -717,91 +717,6 @@ class MeshUtils:
 
         return combined_markers, combined_marker_sizes, combined_marker_cell_types
 
-    # Face definitions for 3D volume cells (VTK vertex ordering)
-    # Each tuple contains the vertex indices that form a face
-    _HEXAHEDRON_FACES = [
-        (0, 3, 2, 1),  # bottom face (z-)
-        (4, 5, 6, 7),  # top face (z+)
-        (0, 1, 5, 4),  # front face (y-)
-        (2, 3, 7, 6),  # back face (y+)
-        (0, 4, 7, 3),  # left face (x-)
-        (1, 2, 6, 5),  # right face (x+)
-    ]
-
-    _TETRAHEDRON_FACES = [
-        (0, 1, 2),  # base
-        (0, 1, 3),  # front
-        (1, 2, 3),  # right
-        (0, 2, 3),  # left
-    ]
-
-    _WEDGE_FACES = [
-        (0, 1, 2),     # bottom triangle
-        (3, 5, 4),     # top triangle (reversed for outward normal)
-        (0, 1, 4, 3),  # front quad
-        (1, 2, 5, 4),  # right quad
-        (0, 2, 5, 3),  # left quad
-    ]
-
-    _PYRAMID_FACES = [
-        (0, 3, 2, 1),  # base quad
-        (0, 1, 4),     # front triangle
-        (1, 2, 4),     # right triangle
-        (2, 3, 4),     # back triangle
-        (3, 0, 4),     # left triangle
-    ]
-
-    @staticmethod
-    def _is_planar_cell(vertices: np.ndarray, cell_indices: np.ndarray, tolerance: float = 1e-6) -> bool:
-        """
-        Check if a cell's vertices are coplanar (lie in the same plane).
-        
-        This is used to distinguish between 2D polygon cells and 3D volume cells
-        that happen to have the same number of vertices (e.g., pentagon vs pyramid).
-        
-        Args:
-            vertices: The mesh vertices array
-            cell_indices: Indices of the cell's vertices
-            tolerance: Tolerance for planarity check
-            
-        Returns:
-            True if all vertices are coplanar, False otherwise
-        """
-        if len(cell_indices) < 4:
-            # 3 or fewer points are always coplanar
-            return True
-            
-        cell_vertices = vertices[cell_indices]
-        
-        # Use the first 3 vertices to define a plane
-        v0, v1, v2 = cell_vertices[0], cell_vertices[1], cell_vertices[2]
-        
-        # Compute normal to the plane
-        edge1 = v1 - v0
-        edge2 = v2 - v0
-        normal = np.cross(edge1, edge2)
-        
-        # If normal is zero, first 3 points are collinear - check another combo
-        if np.linalg.norm(normal) < tolerance:
-            if len(cell_indices) >= 4:
-                v3 = cell_vertices[3]
-                edge2 = v3 - v0
-                normal = np.cross(edge1, edge2)
-                if np.linalg.norm(normal) < tolerance:
-                    return True  # All points are collinear, so coplanar
-        
-        # Normalize
-        normal = normal / (np.linalg.norm(normal) + 1e-12)
-        
-        # Check if all remaining vertices are in the same plane
-        for i in range(3, len(cell_indices)):
-            v = cell_vertices[i]
-            distance = abs(np.dot(v - v0, normal))
-            if distance > tolerance:
-                return False
-                
-        return True
-
     @staticmethod
     def triangulate(mesh: Mesh) -> Mesh:
         """
@@ -845,121 +760,86 @@ class MeshUtils:
 
         # Check if already all triangles
         if np.all(mesh.index_sizes == 3) and np.all(mesh.cell_types == VTKCellType.VTK_TRIANGLE):
-            # Already triangulated, return a copy
             return mesh.copy()
 
-        # Collect triangulated indices
-        triangulated_indices = []
-
-        # Define a helper function for polygon fan triangulation
-        def fan_triangulate(cell_indices):
-            """Apply fan triangulation to a polygon."""
-            pivot = cell_indices[0]
-            triangles = []
-            for j in range(1, len(cell_indices) - 1):
-                triangle = np.array([pivot, cell_indices[j], cell_indices[j + 1]], dtype=np.uint32)
-                triangles.append(triangle)
-            return triangles
-
-        # Process each cell based on its type
-        offset = 0
-        for i, (size, cell_type) in enumerate(zip(mesh.index_sizes, mesh.cell_types)):
-            # Get the cell's vertex indices
-            cell_indices = mesh.indices[offset:offset + size]
-
-            # For 3D volume cell types, check if the cell is actually planar (2D polygon)
-            # This can happen when cell types are inferred from size without geometric info
-            is_volume_type = cell_type in (VTKCellType.VTK_TETRA, VTKCellType.VTK_PYRAMID, 
-                                           VTKCellType.VTK_WEDGE, VTKCellType.VTK_HEXAHEDRON)
+        # Compute cell offsets once
+        cell_offsets = np.concatenate([[0], np.cumsum(mesh.index_sizes[:-1])]).astype(np.uint32)
+        
+        cell_types = mesh.cell_types
+        index_sizes = mesh.index_sizes
+        indices = mesh.indices
+        vertices = mesh.vertices
+        
+        # Pre-check planarity for volume cells to reclassify them as polygons
+        volume_types = set(TriangulationUtils._get_volume_cell_patterns().keys())
+        effective_types = cell_types.copy()
+        for i, (cell_type, size, offset) in enumerate(zip(cell_types, index_sizes, cell_offsets)):
+            if cell_type in volume_types:
+                cell_indices = indices[offset:offset + size]
+                if TriangulationUtils.is_planar_cell(vertices, cell_indices):
+                    effective_types[i] = VTKCellType.VTK_POLYGON
+        
+        result_chunks = []
+        
+        # Process triangles (already done, just copy)
+        tri_mask = effective_types == VTKCellType.VTK_TRIANGLE
+        if np.any(tri_mask):
+            tri_offsets = cell_offsets[tri_mask]
+            tri_sizes = index_sizes[tri_mask]
+            for offset, size in zip(tri_offsets, tri_sizes):
+                result_chunks.append(indices[offset:offset + size].copy())
+        
+        # Process all polygon types (quads, general polygons, reclassified planar cells)
+        polygon_types = {VTKCellType.VTK_QUAD, VTKCellType.VTK_POLYGON}
+        polygon_mask = np.isin(effective_types, list(polygon_types))
+        if np.any(polygon_mask):
+            poly_offsets = cell_offsets[polygon_mask]
+            poly_sizes = index_sizes[polygon_mask]
             
-            if is_volume_type and MeshUtils._is_planar_cell(mesh.vertices, cell_indices):
-                # Treat as a polygon - use fan triangulation
-                triangulated_indices.extend(fan_triangulate(cell_indices))
-
-            elif cell_type == VTKCellType.VTK_TRIANGLE:
-                # Already a triangle
-                triangulated_indices.append(cell_indices.copy())
-
-            elif cell_type == VTKCellType.VTK_QUAD:
-                # Quad → 2 triangles using fan
-                triangulated_indices.append(np.array([cell_indices[0], cell_indices[1], cell_indices[2]], dtype=np.uint32))
-                triangulated_indices.append(np.array([cell_indices[0], cell_indices[2], cell_indices[3]], dtype=np.uint32))
-
-            elif cell_type == VTKCellType.VTK_POLYGON:
-                # General polygon → fan triangulation
-                if size < 3:
-                    raise ValueError(f"Polygon with {size} vertices cannot be triangulated (minimum 3 required)")
-                pivot = cell_indices[0]
-                for j in range(1, size - 1):
-                    triangle = np.array([pivot, cell_indices[j], cell_indices[j + 1]], dtype=np.uint32)
-                    triangulated_indices.append(triangle)
-
-            elif cell_type == VTKCellType.VTK_HEXAHEDRON:
-                # Hexahedron → 6 quad faces → 12 triangles
-                for face in MeshUtils._HEXAHEDRON_FACES:
-                    face_indices = [cell_indices[v] for v in face]
-                    # Triangulate quad face
-                    triangulated_indices.append(np.array([face_indices[0], face_indices[1], face_indices[2]], dtype=np.uint32))
-                    triangulated_indices.append(np.array([face_indices[0], face_indices[2], face_indices[3]], dtype=np.uint32))
-
-            elif cell_type == VTKCellType.VTK_TETRA:
-                # Tetrahedron → 4 triangle faces
-                for face in MeshUtils._TETRAHEDRON_FACES:
-                    face_indices = [cell_indices[v] for v in face]
-                    triangulated_indices.append(np.array(face_indices, dtype=np.uint32))
-
-            elif cell_type == VTKCellType.VTK_WEDGE:
-                # Wedge → 2 triangles + 3 quads → 8 triangles
-                for face in MeshUtils._WEDGE_FACES:
-                    face_indices = [cell_indices[v] for v in face]
-                    if len(face) == 3:
-                        triangulated_indices.append(np.array(face_indices, dtype=np.uint32))
-                    else:
-                        # Quad face
-                        triangulated_indices.append(np.array([face_indices[0], face_indices[1], face_indices[2]], dtype=np.uint32))
-                        triangulated_indices.append(np.array([face_indices[0], face_indices[2], face_indices[3]], dtype=np.uint32))
-
-            elif cell_type == VTKCellType.VTK_PYRAMID:
-                # Pyramid → 1 quad base + 4 triangles → 6 triangles
-                for face in MeshUtils._PYRAMID_FACES:
-                    face_indices = [cell_indices[v] for v in face]
-                    if len(face) == 3:
-                        triangulated_indices.append(np.array(face_indices, dtype=np.uint32))
-                    else:
-                        # Quad base
-                        triangulated_indices.append(np.array([face_indices[0], face_indices[1], face_indices[2]], dtype=np.uint32))
-                        triangulated_indices.append(np.array([face_indices[0], face_indices[2], face_indices[3]], dtype=np.uint32))
-
-            elif cell_type in (VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE):
-                # Skip vertices and lines - they can't be triangulated
-                pass
-
-            else:
-                raise ValueError(f"Unsupported cell type {cell_type} at cell {i}")
-
-            offset += size
-
-        if not triangulated_indices:
+            if np.any(poly_sizes < 3):
+                invalid_idx = np.where(poly_sizes < 3)[0][0]
+                raise ValueError(f"Polygon with {poly_sizes[invalid_idx]} vertices cannot be triangulated (minimum 3 required)")
+            
+            # Group by size for efficient batch processing
+            for size in np.unique(poly_sizes):
+                size_mask = poly_sizes == size
+                size_offsets = poly_offsets[size_mask]
+                if len(size_offsets) > 0:
+                    tris = TriangulationUtils.triangulate_polygons(indices, size_offsets, size)
+                    if len(tris) > 0:
+                        result_chunks.append(tris)
+        
+        # Process volume cells using pattern-based triangulation
+        volume_patterns = TriangulationUtils._get_volume_cell_patterns()
+        for cell_type, (cell_size, tri_pattern) in volume_patterns.items():
+            mask = effective_types == cell_type
+            if np.any(mask):
+                offsets = cell_offsets[mask]
+                if len(offsets) > 0:
+                    tris = TriangulationUtils.triangulate_uniform_cells(indices, offsets, cell_size, tri_pattern)
+                    if len(tris) > 0:
+                        result_chunks.append(tris)
+        
+        # Check for unsupported types
+        skip_types = {VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE}
+        supported_types = {VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
+        all_handled = supported_types | skip_types
+        
+        for i, ct in enumerate(effective_types):
+            if ct not in all_handled:
+                raise ValueError(f"Unsupported cell type {ct} at cell {i}")
+        
+        if not result_chunks:
             raise ValueError("No triangulatable cells found in mesh")
 
-        # Flatten the list of triangles
-        triangulated_indices_flat = np.concatenate(triangulated_indices)
-
-        # Calculate number of triangles
+        triangulated_indices_flat = np.concatenate(result_chunks)
         num_triangles = len(triangulated_indices_flat) // 3
 
-        # Create index_sizes (all 3s for triangles)
-        triangulated_index_sizes = np.full(num_triangles, 3, dtype=np.uint32)
-
-        # Create cell_types (all VTK_TRIANGLE = 5)
-        triangulated_cell_types = np.full(num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32)
-
-        # Create new mesh with triangulated geometry
         return Mesh(
             vertices=mesh.vertices.copy(),
             indices=triangulated_indices_flat,
-            index_sizes=triangulated_index_sizes,
-            cell_types=triangulated_cell_types,
+            index_sizes=np.full(num_triangles, 3, dtype=np.uint32),
+            cell_types=np.full(num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32),
             dim=mesh.dim,
             markers={name: data.copy() for name, data in mesh.markers.items()},
             marker_sizes={name: data.copy() for name, data in mesh.marker_sizes.items()},

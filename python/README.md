@@ -21,7 +21,12 @@ pip install meshly
 
 ### Utility Classes
 
-- `MeshUtils`: Static methods for mesh operations (encoding, decoding, optimization)
+- `MeshUtils`: Static methods for mesh operations:
+  - `triangulate`: Convert meshes with mixed polygon types to pure triangle meshes
+  - `optimize_vertex_cache`, `optimize_overdraw`, `optimize_vertex_fetch`: Mesh optimization
+  - `simplify`: Reduce mesh complexity
+  - `encode`/`decode`: Mesh compression
+  - `save_to_zip`/`load_from_zip`: File I/O
 - `ArrayUtils`: Static methods for array operations (encoding, decoding)
 ### Metadata Models
 
@@ -587,6 +592,84 @@ Features of mesh combining and extraction:
 - **Vertex remapping** using efficient numpy operations (O(n log n))
 - **Element structure preservation** maintains polygon sizes and cell types
 - **Error handling** for invalid markers or missing data
+
+## Mesh Triangulation
+
+Convert meshes with mixed polygon types to pure triangle meshes using fan triangulation:
+
+```python
+# Create a mesh with mixed polygon types
+vertices = np.array([
+    # Triangle
+    [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0, 0.0],
+    # Quad
+    [2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 1.0, 0.0], [2.0, 1.0, 0.0],
+    # Pentagon
+    [4.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.5, 0.9, 0.0], [4.5, 1.5, 0.0], [3.5, 0.9, 0.0],
+], dtype=np.float32)
+
+indices = np.array([
+    0, 1, 2,              # Triangle (3 vertices)
+    3, 4, 5, 6,           # Quad (4 vertices)
+    7, 8, 9, 10, 11,      # Pentagon (5 vertices)
+], dtype=np.uint32)
+
+index_sizes = np.array([3, 4, 5], dtype=np.uint32)
+
+mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+
+# Triangulate the mesh
+triangulated_mesh = MeshUtils.triangulate(mesh)
+
+print(f"Original: {mesh.polygon_count} polygons")
+print(f"Triangulated: {triangulated_mesh.polygon_count} triangles")
+# Output:
+# Original: 3 polygons
+# Triangulated: 6 triangles (1 + 2 + 3 from triangle, quad, pentagon)
+```
+
+### Triangulation Algorithm
+
+The `triangulate` method uses **fan triangulation**:
+- For each polygon with n vertices, creates (n-2) triangles
+- Connects the first vertex (pivot) to all non-adjacent vertex pairs
+- Examples:
+  - Triangle (3 vertices): 1 triangle
+  - Quad (4 vertices): 2 triangles → [0,1,2], [0,2,3]
+  - Pentagon (5 vertices): 3 triangles → [0,1,2], [0,2,3], [0,3,4]
+  - Hexagon (6 vertices): 4 triangles → [0,1,2], [0,2,3], [0,3,4], [0,4,5]
+
+### Triangulation Features
+
+- **Preserves vertices**: All vertices remain unchanged
+- **Preserves markers**: Boundary conditions and regions are maintained
+- **Updates metadata**: Automatically sets all `index_sizes` to 3 and `cell_types` to VTK_TRIANGLE
+- **Efficient**: Processes large meshes quickly with numpy operations
+- **Safe**: Returns a new mesh, leaving the original unchanged
+- **Validated**: Checks for invalid polygons (< 3 vertices)
+
+```python
+# Already triangulated meshes are handled efficiently
+triangle_mesh = Mesh(vertices=vertices, indices=triangles)
+result = MeshUtils.triangulate(triangle_mesh)  # Quick return, just copies
+
+# Works with meshes that have markers
+mesh_with_markers = Mesh(
+    vertices=vertices,
+    indices=mixed_indices,
+    index_sizes=mixed_sizes,
+    markers={"boundary": [[0, 1], [1, 2]]}
+)
+tri_mesh = MeshUtils.triangulate(mesh_with_markers)
+# Markers are preserved unchanged
+```
+
+Use cases for triangulation:
+- **Rendering**: Most graphics APIs require triangle meshes
+- **Physics simulation**: Simplifies collision detection and physics calculations
+- **Mesh processing**: Many algorithms work only with triangles
+- **File export**: Convert to triangle-only formats (STL, OBJ, etc.)
+- **Optimization**: Prepare meshes for vertex cache/overdraw optimization
 
 ## Mesh Copying
 

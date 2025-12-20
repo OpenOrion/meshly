@@ -2,12 +2,12 @@
 Cell type utilities for mesh processing.
 
 This module provides standardized cell type definitions and conversion utilities
-for working with different mesh element types.
+for working with different mesh element types, including edge topology for 3D
+cell types used in wireframe visualization.
 """
 
 import numpy as np
-from typing import Union, List
-
+from typing import Union, List, Tuple, Sequence
 
 
 class CellType:
@@ -37,7 +37,129 @@ class VTKCellType:
 
 
 class CellTypeUtils:
-    """Utilities for working with cell types."""
+    """Utilities for working with cell types, including edge topology."""
+    
+    # Edge topology for VTK cell types
+    # Each entry maps local vertex indices to edges
+    VTK_EDGE_TOPOLOGY = {
+        VTKCellType.VTK_LINE: [(0, 1)],
+        VTKCellType.VTK_TRIANGLE: [(0, 1), (1, 2), (2, 0)],
+        VTKCellType.VTK_QUAD: [(0, 1), (1, 2), (2, 3), (3, 0)],
+        VTKCellType.VTK_TETRA: [
+            (0, 1), (0, 2), (0, 3),  # edges from vertex 0
+            (1, 2), (1, 3),          # edges from vertex 1
+            (2, 3),                   # edge from vertex 2
+        ],
+        VTKCellType.VTK_HEXAHEDRON: [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face
+            (4, 5), (5, 6), (6, 7), (7, 4),  # top face
+            (0, 4), (1, 5), (2, 6), (3, 7),  # vertical edges
+        ],
+        VTKCellType.VTK_WEDGE: [
+            (0, 1), (1, 2), (2, 0),  # bottom triangle
+            (3, 4), (4, 5), (5, 3),  # top triangle
+            (0, 3), (1, 4), (2, 5),  # vertical edges
+        ],
+        VTKCellType.VTK_PYRAMID: [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # base quad
+            (0, 4), (1, 4), (2, 4), (3, 4),  # edges to apex
+        ],
+    }
+    
+    @staticmethod
+    def get_edge_topology(vtk_type: int) -> np.ndarray:
+        """
+        Get the edge topology (local vertex index pairs) for a VTK cell type.
+        
+        Args:
+            vtk_type: VTK cell type identifier
+            
+        Returns:
+            numpy array of shape (n_edges, 2) with local vertex indices.
+            Returns empty array for unknown cell types.
+        """
+        topology = CellTypeUtils.VTK_EDGE_TOPOLOGY.get(vtk_type)
+        if topology is None:
+            return np.empty((0, 2), dtype=np.int32)
+        return np.array(topology, dtype=np.int32)
+    
+    @staticmethod
+    def get_cell_edges(
+        cell_vertices: Sequence[int], 
+        cell_type: int
+    ) -> np.ndarray:
+        """
+        Extract global vertex edges from a cell based on its VTK cell type.
+        
+        Args:
+            cell_vertices: Sequence of global vertex indices for this cell
+            cell_type: VTK cell type constant
+            
+        Returns:
+            numpy array of shape (n_edges, 2) with global vertex indices, 
+            where each row [u, v] has u < v
+        """
+        cell_verts = np.asarray(cell_vertices)
+        edge_topology = CellTypeUtils.get_edge_topology(cell_type)
+        
+        if len(edge_topology) > 0:
+            # Vectorized: index into cell_verts using edge topology
+            edges = cell_verts[edge_topology]  # shape (n_edges, 2)
+        else:
+            # Unknown type - treat as polygon (connect consecutive vertices)
+            n = len(cell_verts)
+            indices = np.arange(n)
+            edges = np.stack([cell_verts[indices], cell_verts[(indices + 1) % n]], axis=1)
+        
+        # Normalize edges so u < v (vectorized sort along axis 1)
+        edges = np.sort(edges, axis=1)
+        return edges
+    
+    @staticmethod
+    def get_edges_from_element_size(
+        element: Sequence[int]
+    ) -> np.ndarray:
+        """
+        Extract edges from an element based on its vertex count.
+        
+        This is useful when cell_type is not available. The function infers
+        the cell type from the number of vertices:
+        - 2 vertices: line
+        - 3 vertices: triangle
+        - 4 vertices: quad (not tetrahedron - use get_cell_edges for 3D)
+        - 5 vertices: pyramid
+        - 6 vertices: wedge/prism
+        - 8 vertices: hexahedron
+        
+        Args:
+            element: Sequence of global vertex indices
+            
+        Returns:
+            numpy array of shape (n_edges, 2) with global vertex indices,
+            where each row [u, v] has u < v
+        """
+        element_arr = np.asarray(element)
+        n = len(element_arr)
+        
+        # Map vertex count to likely VTK type
+        size_to_type = {
+            2: VTKCellType.VTK_LINE,
+            3: VTKCellType.VTK_TRIANGLE,
+            4: VTKCellType.VTK_QUAD,  # Assumes surface element
+            5: VTKCellType.VTK_PYRAMID,
+            6: VTKCellType.VTK_WEDGE,
+            8: VTKCellType.VTK_HEXAHEDRON,
+        }
+        
+        vtk_type = size_to_type.get(n)
+        if vtk_type is not None:
+            return CellTypeUtils.get_cell_edges(element_arr, vtk_type)
+        
+        # Unknown element size - treat as polygon (vectorized)
+        indices = np.arange(n)
+        edges = np.stack([element_arr[indices], element_arr[(indices + 1) % n]], axis=1)
+        edges = np.sort(edges, axis=1)
+        return edges
     
     @staticmethod
     def size_to_vtk_cell_type(size: int) -> int:

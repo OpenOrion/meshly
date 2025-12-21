@@ -124,13 +124,12 @@ class TestJAXSupport(unittest.TestCase):
             self.skipTest("JAX not available")
             
         import jax.numpy as jnp
+        from pydantic import Field
+        from typing import Optional
         
         # Create a custom mesh class with additional arrays
         class CustomMesh(Mesh):
-            def __init__(self, **kwargs):
-                # Extract additional fields
-                self.normals = kwargs.pop('normals', None)
-                super().__init__(**kwargs)
+            normals: Optional[Array] = Field(None, description="Normal vectors")
         
         normals = np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1]], dtype=np.float32)
         mesh = CustomMesh(vertices=self.vertices, indices=self.indices, normals=normals)
@@ -221,13 +220,13 @@ class TestJAXSupport(unittest.TestCase):
     def test_convert_arrays_with_additional_fields(self):
         """Test array conversion with custom mesh class that has additional array fields."""
         import jax.numpy as jnp
+        from pydantic import Field
+        from typing import Optional
         
         # Create a custom mesh class with additional arrays
         class CustomMesh(Mesh):
-            def __init__(self, **kwargs):
-                self.normals = kwargs.pop('normals', None)
-                self.texture_coords = kwargs.pop('texture_coords', None)
-                super().__init__(**kwargs)
+            normals: Optional[Array] = Field(None, description="Normal vectors")
+            texture_coords: Optional[Array] = Field(None, description="Texture coordinates")
         
         normals = np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1]], dtype=np.float32)
         texture_coords = np.array([[0, 0], [1, 0], [0.5, 1]], dtype=np.float32)
@@ -255,12 +254,12 @@ class TestJAXSupport(unittest.TestCase):
     def test_convert_arrays_with_nested_dict_arrays(self):
         """Test array conversion with nested dictionary fields containing arrays."""
         import jax.numpy as jnp
+        from pydantic import Field
+        from typing import Dict, Any, Optional
         
         # Create a custom mesh class with nested dictionary arrays
         class CustomMesh(Mesh):
-            def __init__(self, **kwargs):
-                self.materials = kwargs.pop('materials', None)
-                super().__init__(**kwargs)
+            materials: Optional[Dict[str, Any]] = Field(None, description="Material properties")
         
         materials = {
             'diffuse': np.array([1.0, 0.0, 0.0], dtype=np.float32),

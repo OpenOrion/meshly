@@ -10,6 +10,7 @@ meshoptimizer, including:
 4. EncodedMesh class for storing encoded mesh data
 5. I/O utilities for storing and loading meshes and arrays
 6. Support for custom Mesh subclasses with automatic encoding/decoding of numpy arrays
+7. CellTypeUtils for VTK cell type conversions and edge topology extraction
 """
 
 from .mesh import (
@@ -26,7 +27,18 @@ from .array import (
     EncodedArray,
     ArrayMetadata,
     EncodedArrayModel,
+    ArrayResult,
     ArrayUtils,
+)
+
+from .cell_types import (
+    CellType,
+    VTKCellType,
+    CellTypeUtils,
+)
+
+from .element_utils import (
+    ElementUtils,
 )
 
 
@@ -43,5 +55,12 @@ __all__ = [
     "EncodedArray",
     "EncodedArrayModel",
     "ArrayMetadata",
+    "ArrayResult",
     "ArrayUtils",
+    # Cell type utilities
+    "CellType",
+    "VTKCellType",
+    "CellTypeUtils",
+    # Element utilities
+    "ElementUtils",
 ]

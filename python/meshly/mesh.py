@@ -28,12 +28,27 @@ from typing import (
     TypeVar,
     Union,
     List,
+    Literal,
     Sequence,
     Tuple,
     get_type_hints,
 )
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
+
+# Optional JAX support
+try:
+    import jax.numpy as jnp
+    HAS_JAX = True
+except ImportError:
+    jnp = None
+    HAS_JAX = False
+
+# Array type union - supports both numpy and JAX arrays
+if HAS_JAX:
+    Array = Union[np.ndarray, jnp.ndarray]
+else:
+    Array = np.ndarray
 
 # Use meshoptimizer directly
 from meshoptimizer import (
@@ -129,21 +144,21 @@ class Mesh(BaseModel):
     """
 
     # Required fields
-    vertices: np.ndarray = Field(...,
-                                 description="Vertex data as a numpy array")
-    indices: Optional[Union[np.ndarray, List[Any]]] = Field(
-        None, description="Index data as a flattened 1D numpy array or list of polygons"
+    vertices: Array = Field(...,
+                            description="Vertex data as a numpy or JAX array")
+    indices: Optional[Union[Array, List[Any]]] = Field(
+        None, description="Index data as a flattened 1D numpy/JAX array or list of polygons"
     )
-    index_sizes: Optional[Union[np.ndarray, List[int]]] = None
+    index_sizes: Optional[Union[Array, List[int]]] = None
     """
-    Size of each polygon (number of vertices per polygon). "
-    "If not provided, will be automatically inferred from indices structure: "
-    "- For 2D numpy arrays: uniform polygon size from array shape "
-    "- For list of lists: individual polygon sizes "
-    "If explicitly provided, will be validated against inferred structure.
+    Size of each polygon (number of vertices per polygon).
+    If not provided, will be automatically inferred from indices structure:
+    - For 2D numpy/JAX arrays: uniform polygon size from array shape
+    - For list of lists: individual polygon sizes
+    If explicitly provided, will be validated against inferred structure.
     """
 
-    cell_types: Optional[Union[np.ndarray, List[int]]] = None
+    cell_types: Optional[Union[Array, List[int]]] = None
     """
     Cell type identifier for each polygon, corresponding to index_sizes.
     Common VTK cell types include:
@@ -154,16 +169,17 @@ class Mesh(BaseModel):
     """
 
     # Mesh dimension - auto-computed from cell_types if not provided
-    dim: Optional[int] = Field(default=None, description="Mesh dimension (2D or 3D). Auto-computed from cell types if not provided.")
+    dim: Optional[int] = Field(
+        default=None, description="Mesh dimension (2D or 3D). Auto-computed from cell types if not provided.")
 
     # Marker structure - accepts both sequence of sequences and flattened arrays, converts to flattened internally
-    markers: Dict[str, Union[Sequence[Union[Sequence[int], np.ndarray]], np.ndarray]] = Field(
+    markers: Dict[str, Union[Sequence[Union[Sequence[int], Array]], Array]] = Field(
         default_factory=dict, description="marker node indices - accepts sequence of sequences or flattened arrays")
     # sizes of each marker element (standardized approach like index_sizes)
-    marker_sizes: dict[str, np.ndarray] = Field(
+    marker_sizes: dict[str, Array] = Field(
         default_factory=dict, description="sizes of each marker element")
     # VTK cell types for each marker element, map to GMSH types with VTK_TO_GMSH_ELEMENT_TYPE
-    marker_cell_types: dict[str, np.ndarray] = Field(
+    marker_cell_types: dict[str, Array] = Field(
         default_factory=dict, description="VTK cell types for each marker element")
 
     def copy(self: T) -> T:
@@ -176,11 +192,13 @@ class Mesh(BaseModel):
         # Create a dictionary to hold the copied fields
         copied_fields = {}
 
-        # Copy all fields, with special handling for numpy arrays
+        # Copy all fields, with special handling for numpy/JAX arrays
         for field_name in self.model_fields_set:
             value = getattr(self, field_name)
             if isinstance(value, np.ndarray):
                 copied_fields[field_name] = value.copy()
+            elif HAS_JAX and isinstance(value, jnp.ndarray):
+                copied_fields[field_name] = value
             else:
                 copied_fields[field_name] = value
 
@@ -209,12 +227,12 @@ class Mesh(BaseModel):
             return True  # No polygon info means uniform (legacy)
         return ElementUtils.is_uniform_elements(self.index_sizes)
 
-    def get_polygon_indices(self) -> Union[np.ndarray, list]:
+    def get_polygon_indices(self) -> Union[Array, list]:
         """
         Get indices in their original polygon structure.
 
         Returns:
-            For uniform polygons: 2D numpy array where each row is a polygon
+            For uniform polygons: 2D numpy/JAX array where each row is a polygon
             For mixed polygons: List of lists where each sublist is a polygon
         """
         if self.indices is None:
@@ -251,35 +269,35 @@ class Mesh(BaseModel):
 
         return reconstructed
 
-    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, np.ndarray]:
+    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, Array]:
         """
-        Recursively extract numpy arrays from nested structures.
+        Recursively extract numpy/JAX arrays from nested structures.
 
         Args:
             obj: The object to extract arrays from
             prefix: The current path prefix for nested keys
 
         Returns:
-            Dictionary mapping dotted paths to numpy arrays
+            Dictionary mapping dotted paths to numpy/JAX arrays
         """
         arrays = {}
 
         if isinstance(obj, dict):
             for key, value in obj.items():
                 nested_key = f"{prefix}.{key}" if prefix else key
-                if isinstance(value, np.ndarray):
+                if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
                     arrays[nested_key] = value
                 elif isinstance(value, dict):
                     arrays.update(
                         self._extract_nested_arrays(value, nested_key))
-        elif isinstance(obj, np.ndarray):
+        elif isinstance(obj, np.ndarray) or (HAS_JAX and isinstance(obj, jnp.ndarray)):
             arrays[prefix] = obj
 
         return arrays
 
     @property
     def array_fields(self) -> Set[str]:
-        """Identify all numpy array fields in this class, including nested arrays in dictionaries."""
+        """Identify all numpy/JAX array fields in this class, including nested arrays in dictionaries."""
         result = set()
         type_hints = get_type_hints(self.__class__)
 
@@ -289,7 +307,7 @@ class Mesh(BaseModel):
                 continue
             try:
                 value = getattr(self, field_name, None)
-                if isinstance(value, np.ndarray):
+                if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
                     result.add(field_name)
                 elif isinstance(value, dict):
                     # Extract nested arrays and add them with dotted notation
@@ -328,15 +346,32 @@ class Mesh(BaseModel):
                        if sum of index_sizes doesn't match total indices count, or
                        if cell_types length doesn't match index_sizes length.
         """
-        # Ensure vertices is a float32 array
+        # Ensure vertices is a float32 array, preserving array type (numpy/JAX)
         if self.vertices is not None:
-            self.vertices = np.asarray(self.vertices, dtype=np.float32)
+            if HAS_JAX and isinstance(self.vertices, jnp.ndarray):
+                # Keep as JAX array
+                self.vertices = self.vertices.astype(jnp.float32)
+            else:
+                # Convert to numpy array
+                self.vertices = np.asarray(self.vertices, dtype=np.float32)
 
         # Handle indices - convert to flattened 1D array and extract size info using ElementUtils
         if self.indices is not None:
+            # Convert JAX arrays to numpy first if needed
+            indices_to_process = self.indices
+            index_sizes_to_process = self.index_sizes
+            cell_types_to_process = self.cell_types
+
+            if HAS_JAX and isinstance(indices_to_process, jnp.ndarray):
+                indices_to_process = np.asarray(indices_to_process)
+            if HAS_JAX and isinstance(index_sizes_to_process, jnp.ndarray):
+                index_sizes_to_process = np.asarray(index_sizes_to_process)
+            if HAS_JAX and isinstance(cell_types_to_process, jnp.ndarray):
+                cell_types_to_process = np.asarray(cell_types_to_process)
+
             try:
                 self.indices, self.index_sizes, self.cell_types = ElementUtils.convert_array_input(
-                    self.indices, self.index_sizes, self.cell_types
+                    indices_to_process, index_sizes_to_process, cell_types_to_process
                 )
             except ValueError as e:
                 raise ValueError(f"Error processing indices: {e}")
@@ -354,10 +389,16 @@ class Mesh(BaseModel):
             converted_markers = {}
             for marker_name, marker_data in self.markers.items():
                 try:
-                    if isinstance(marker_data, np.ndarray):
+                    # Handle JAX arrays
+                    marker_data_to_process = marker_data
+                    if HAS_JAX and isinstance(marker_data_to_process, jnp.ndarray):
+                        marker_data_to_process = np.asarray(
+                            marker_data_to_process)
+
+                    if isinstance(marker_data_to_process, np.ndarray):
                         # Already a numpy array, keep as is but validate it has corresponding sizes/types
                         converted_markers[marker_name] = np.asarray(
-                            marker_data, dtype=np.uint32)
+                            marker_data_to_process, dtype=np.uint32)
 
                         # If marker_cell_types is defined but marker_sizes is missing, calculate it automatically
                         if marker_name in self.marker_cell_types and marker_name not in self.marker_sizes:
@@ -372,7 +413,7 @@ class Mesh(BaseModel):
                         # Convert sequence of sequences to flattened structure using ElementUtils
                         # This handles lists, tuples, or any sequence type
                         marker_list = [list(element)
-                                       for element in marker_data]
+                                       for element in marker_data_to_process]
                         flattened_indices, sizes, cell_types = ElementUtils.convert_list_to_flattened(
                             marker_list)
                         converted_markers[marker_name] = flattened_indices
@@ -756,31 +797,34 @@ class MeshUtils:
             - Only the cell structure (indices, index_sizes, cell_types) is modified
         """
         if mesh.indices is None or mesh.index_sizes is None:
-            raise ValueError("Mesh must have indices and index_sizes to triangulate")
+            raise ValueError(
+                "Mesh must have indices and index_sizes to triangulate")
 
         # Check if already all triangles
         if np.all(mesh.index_sizes == 3) and np.all(mesh.cell_types == VTKCellType.VTK_TRIANGLE):
             return mesh.copy()
 
         # Compute cell offsets once
-        cell_offsets = np.concatenate([[0], np.cumsum(mesh.index_sizes[:-1])]).astype(np.uint32)
-        
+        cell_offsets = np.concatenate(
+            [[0], np.cumsum(mesh.index_sizes[:-1])]).astype(np.uint32)
+
         cell_types = mesh.cell_types
         index_sizes = mesh.index_sizes
         indices = mesh.indices
         vertices = mesh.vertices
-        
+
         # Pre-check planarity for volume cells to reclassify them as polygons
-        volume_types = set(TriangulationUtils._get_volume_cell_patterns().keys())
+        volume_types = set(
+            TriangulationUtils._get_volume_cell_patterns().keys())
         effective_types = cell_types.copy()
         for i, (cell_type, size, offset) in enumerate(zip(cell_types, index_sizes, cell_offsets)):
             if cell_type in volume_types:
                 cell_indices = indices[offset:offset + size]
                 if TriangulationUtils.is_planar_cell(vertices, cell_indices):
                     effective_types[i] = VTKCellType.VTK_POLYGON
-        
+
         result_chunks = []
-        
+
         # Process triangles (already done, just copy)
         tri_mask = effective_types == VTKCellType.VTK_TRIANGLE
         if np.any(tri_mask):
@@ -788,27 +832,29 @@ class MeshUtils:
             tri_sizes = index_sizes[tri_mask]
             for offset, size in zip(tri_offsets, tri_sizes):
                 result_chunks.append(indices[offset:offset + size].copy())
-        
+
         # Process all polygon types (quads, general polygons, reclassified planar cells)
         polygon_types = {VTKCellType.VTK_QUAD, VTKCellType.VTK_POLYGON}
         polygon_mask = np.isin(effective_types, list(polygon_types))
         if np.any(polygon_mask):
             poly_offsets = cell_offsets[polygon_mask]
             poly_sizes = index_sizes[polygon_mask]
-            
+
             if np.any(poly_sizes < 3):
                 invalid_idx = np.where(poly_sizes < 3)[0][0]
-                raise ValueError(f"Polygon with {poly_sizes[invalid_idx]} vertices cannot be triangulated (minimum 3 required)")
-            
+                raise ValueError(
+                    f"Polygon with {poly_sizes[invalid_idx]} vertices cannot be triangulated (minimum 3 required)")
+
             # Group by size for efficient batch processing
             for size in np.unique(poly_sizes):
                 size_mask = poly_sizes == size
                 size_offsets = poly_offsets[size_mask]
                 if len(size_offsets) > 0:
-                    tris = TriangulationUtils.triangulate_polygons(indices, size_offsets, size)
+                    tris = TriangulationUtils.triangulate_polygons(
+                        indices, size_offsets, size)
                     if len(tris) > 0:
                         result_chunks.append(tris)
-        
+
         # Process volume cells using pattern-based triangulation
         volume_patterns = TriangulationUtils._get_volume_cell_patterns()
         for cell_type, (cell_size, tri_pattern) in volume_patterns.items():
@@ -816,19 +862,21 @@ class MeshUtils:
             if np.any(mask):
                 offsets = cell_offsets[mask]
                 if len(offsets) > 0:
-                    tris = TriangulationUtils.triangulate_uniform_cells(indices, offsets, cell_size, tri_pattern)
+                    tris = TriangulationUtils.triangulate_uniform_cells(
+                        indices, offsets, cell_size, tri_pattern)
                     if len(tris) > 0:
                         result_chunks.append(tris)
-        
+
         # Check for unsupported types
         skip_types = {VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE}
-        supported_types = {VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
+        supported_types = {
+            VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
         all_handled = supported_types | skip_types
-        
+
         for i, ct in enumerate(effective_types):
             if ct not in all_handled:
                 raise ValueError(f"Unsupported cell type {ct} at cell {i}")
-        
+
         if not result_chunks:
             raise ValueError("No triangulatable cells found in mesh")
 
@@ -839,11 +887,14 @@ class MeshUtils:
             vertices=mesh.vertices.copy(),
             indices=triangulated_indices_flat,
             index_sizes=np.full(num_triangles, 3, dtype=np.uint32),
-            cell_types=np.full(num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32),
+            cell_types=np.full(
+                num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32),
             dim=mesh.dim,
             markers={name: data.copy() for name, data in mesh.markers.items()},
-            marker_sizes={name: data.copy() for name, data in mesh.marker_sizes.items()},
-            marker_cell_types={name: data.copy() for name, data in mesh.marker_cell_types.items()},
+            marker_sizes={name: data.copy()
+                          for name, data in mesh.marker_sizes.items()},
+            marker_cell_types={name: data.copy()
+                               for name, data in mesh.marker_cell_types.items()},
         )
 
     @staticmethod
@@ -1031,13 +1082,13 @@ class MeshUtils:
                 else:
                     array = getattr(obj, parts[-1])
 
-                if isinstance(array, np.ndarray):
+                if isinstance(array, np.ndarray) or (HAS_JAX and isinstance(array, jnp.ndarray)):
                     encoded_arrays[field_name] = ArrayUtils.encode_array(array)
             else:
                 # Handle direct array fields
                 try:
                     array = getattr(mesh, field_name)
-                    if isinstance(array, np.ndarray):
+                    if isinstance(array, np.ndarray) or (HAS_JAX and isinstance(array, jnp.ndarray)):
                         encoded_arrays[field_name] = ArrayUtils.encode_array(
                             array)
                 except AttributeError:
@@ -1086,7 +1137,7 @@ class MeshUtils:
                 result = {}
                 for key, value in obj.items():
                     nested_key = f"{prefix}.{key}" if prefix else key
-                    if isinstance(value, np.ndarray):
+                    if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
                         # Skip arrays - they're stored separately
                         continue
                     elif isinstance(value, dict):
@@ -1098,7 +1149,7 @@ class MeshUtils:
                         # Include non-array values
                         result[key] = value
                 return result if result else None
-            elif isinstance(obj, np.ndarray):
+            elif isinstance(obj, np.ndarray) or (HAS_JAX and isinstance(obj, jnp.ndarray)):
                 # Skip arrays
                 return None
             else:
@@ -1182,13 +1233,14 @@ class MeshUtils:
                 zipf.writestr(info, data)
 
     @staticmethod
-    def load_from_zip(cls: Type[T], destination: Union[PathLike, BytesIO]) -> T:
+    def load_from_zip(cls: Type[T], destination: Union[PathLike, BytesIO], use_jax: bool = False) -> T:
         """
         Load a mesh from a zip file.
 
         Args:
             cls: The mesh class to instantiate
             destination: Path to the input zip file
+            use_jax: If True and JAX is available, decode arrays as JAX arrays instead of numpy arrays
 
         Returns:
             Mesh object loaded from the zip file
@@ -1269,7 +1321,8 @@ class MeshUtils:
                 encoded_mesh.arrays[original_name] = encoded_array
 
             # Decode the mesh using MeshUtils.decode
-            decoded_mesh = MeshUtils.decode(target_cls, encoded_mesh)
+            decoded_mesh = MeshUtils.decode(
+                target_cls, encoded_mesh, use_jax=use_jax)
 
             # Add any additional field data from the metadata, merging with existing dict fields
             if metadata.field_data:
@@ -1293,21 +1346,27 @@ class MeshUtils:
             return decoded_mesh
 
     @staticmethod
-    def decode(cls: Type[T], encoded_mesh: EncodedMesh) -> T:
+    def decode(cls: Type[T], encoded_mesh: EncodedMesh, use_jax: bool = False) -> T:
         """
         Decode an encoded mesh.
 
         Args:
             cls: The mesh class to instantiate
             encoded_mesh: EncodedMesh object to decode
+            use_jax: If True and JAX is available, decode arrays as JAX arrays instead of numpy arrays
 
         Returns:
             Decoded Mesh object
         """
+        if use_jax and not HAS_JAX:
+            raise ValueError(
+                "JAX is not available. Install JAX to use JAX arrays.")
         # Decode vertex buffer
         vertices = decode_vertex_buffer(
             encoded_mesh.vertex_count, encoded_mesh.vertex_size, encoded_mesh.vertices
         )
+        if use_jax:
+            vertices = jnp.array(vertices)
 
         # Decode index buffer if present
         indices = None
@@ -1315,6 +1374,8 @@ class MeshUtils:
             indices = decode_index_sequence(
                 encoded_mesh.index_count, encoded_mesh.index_size, encoded_mesh.indices
             )
+            if use_jax:
+                indices = jnp.array(indices)
 
         # Create the base mesh object
         mesh_args = {
@@ -1333,6 +1394,10 @@ class MeshUtils:
             for name, encoded_array in encoded_mesh.arrays.items():
                 # Decode the array
                 decoded_array = ArrayUtils.decode_array(encoded_array)
+
+                # Convert to JAX array if requested
+                if use_jax and HAS_JAX:
+                    decoded_array = jnp.array(decoded_array)
 
                 # Check if this is a nested array (contains dots)
                 if name == "index_sizes":

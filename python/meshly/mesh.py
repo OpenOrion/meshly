@@ -1437,3 +1437,108 @@ class MeshUtils:
 
         # Create and return the mesh object
         return cls(**mesh_args)
+
+    @staticmethod
+    def to_numpy(mesh: Mesh) -> Mesh:
+        """
+        Create a new mesh with all arrays converted to NumPy arrays.
+
+        This method creates a new mesh instance where all arrays (including
+        nested arrays in dictionaries and custom fields) are converted to
+        NumPy arrays. The original mesh is unchanged.
+
+        Args:
+            mesh: The mesh to convert
+
+        Returns:
+            A new mesh with all arrays as NumPy arrays
+
+        Example:
+            >>> jax_mesh = Mesh(vertices=jnp.array([[0,0,0]]), indices=jnp.array([0]))
+            >>> numpy_mesh = MeshUtils.to_numpy(jax_mesh)
+            >>> isinstance(numpy_mesh.vertices, np.ndarray)  # True
+        """
+        if not HAS_JAX:
+            # If JAX isn't available, just return a copy
+            return mesh.copy()
+
+        mesh_copy = mesh.copy()
+
+        def convert_to_numpy(obj: Any) -> Any:
+            """Recursively convert arrays to NumPy."""
+            if isinstance(obj, jnp.ndarray):
+                return np.array(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj  # Already NumPy
+            elif isinstance(obj, dict):
+                return {key: convert_to_numpy(value) for key, value in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return type(obj)(convert_to_numpy(item) for item in obj)
+            else:
+                return obj
+
+        # Convert all fields
+        for field_name in mesh_copy.model_fields_set:
+            try:
+                value = getattr(mesh_copy, field_name)
+                if value is not None:
+                    converted_value = convert_to_numpy(value)
+                    setattr(mesh_copy, field_name, converted_value)
+            except AttributeError:
+                pass
+
+        return mesh_copy
+
+    @staticmethod
+    def to_jax(mesh: Mesh) -> Mesh:
+        """
+        Create a new mesh with all arrays converted to JAX arrays.
+
+        This method creates a new mesh instance where all arrays (including
+        nested arrays in dictionaries and custom fields) are converted to
+        JAX arrays. The original mesh is unchanged.
+
+        Args:
+            mesh: The mesh to convert
+
+        Returns:
+            A new mesh with all arrays as JAX arrays
+
+        Raises:
+            ValueError: If JAX is not available
+
+        Example:
+            >>> numpy_mesh = Mesh(vertices=np.array([[0,0,0]]), indices=np.array([0]))
+            >>> jax_mesh = MeshUtils.to_jax(numpy_mesh)
+            >>> hasattr(jax_mesh.vertices, 'device')  # True
+        """
+        if not HAS_JAX:
+            raise ValueError(
+                "JAX is not available. Install JAX to convert to JAX arrays.")
+
+        mesh_copy = mesh.copy()
+
+        def convert_to_jax(obj: Any) -> Any:
+            """Recursively convert arrays to JAX."""
+            if isinstance(obj, np.ndarray):
+                return jnp.array(obj)
+            elif HAS_JAX and isinstance(obj, jnp.ndarray):
+                return obj  # Already JAX
+            elif isinstance(obj, dict):
+                return {key: convert_to_jax(value) for key, value in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return type(obj)(convert_to_jax(item) for item in obj)
+            else:
+                return obj
+
+        # Convert all fields
+        for field_name in mesh_copy.model_fields_set:
+            try:
+                value = getattr(mesh_copy, field_name)
+                if value is not None:
+                    converted_value = convert_to_jax(value)
+                    setattr(mesh_copy, field_name, converted_value)
+            except AttributeError:
+                pass
+
+        return mesh_copy

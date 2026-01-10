@@ -93,11 +93,11 @@ class TestSnapshotIO(unittest.TestCase):
 
         # Save to BytesIO
         buffer = BytesIO()
-        snapshot.save_to_zip(buffer)
+        SnapshotUtils.save_to_zip(snapshot, buffer)
         buffer.seek(0)
 
         # Load back
-        loaded = Snapshot.load_from_zip(buffer)
+        loaded = SnapshotUtils.load_from_zip(buffer)
 
         self.assertEqual(loaded.time, snapshot.time)
         self.assertEqual(set(loaded.field_names), set(snapshot.field_names))
@@ -114,7 +114,7 @@ class TestSnapshotIO(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             filepath = Path(tmpdir) / "snapshot.zip"
-            snapshot.save_to_zip(filepath)
+            SnapshotUtils.save_to_zip(snapshot, filepath)
 
             # Verify file exists and is valid zip
             self.assertTrue(filepath.exists())
@@ -123,7 +123,7 @@ class TestSnapshotIO(unittest.TestCase):
                 self.assertIn("fields/temperature.bin", zf.namelist())
 
             # Load back
-            loaded = Snapshot.load_from_zip(filepath)
+            loaded = SnapshotUtils.load_from_zip(filepath)
 
             self.assertEqual(loaded.time, 1.5)
             self.assertIn("temperature", loaded.field_names)
@@ -138,7 +138,7 @@ class TestSnapshotIO(unittest.TestCase):
         snapshot.add_field("indices", data, "scalar")
 
         buffer = BytesIO()
-        snapshot.save_to_zip(buffer)
+        SnapshotUtils.save_to_zip(snapshot, buffer)
         buffer.seek(0)
 
         original_size = data.nbytes
@@ -157,10 +157,10 @@ class TestSnapshotIO(unittest.TestCase):
         date_time = (2024, 1, 1, 0, 0, 0)
 
         buffer1 = BytesIO()
-        snapshot.save_to_zip(buffer1, date_time=date_time)
+        SnapshotUtils.save_to_zip(snapshot, buffer1, date_time=date_time)
 
         buffer2 = BytesIO()
-        snapshot.save_to_zip(buffer2, date_time=date_time)
+        SnapshotUtils.save_to_zip(snapshot, buffer2, date_time=date_time)
 
         self.assertEqual(buffer1.getvalue(), buffer2.getvalue())
 
@@ -172,10 +172,10 @@ class TestSnapshotIO(unittest.TestCase):
         snapshot.add_field("stress", tensor, "tensor", "Pa")
 
         buffer = BytesIO()
-        snapshot.save_to_zip(buffer)
+        SnapshotUtils.save_to_zip(snapshot, buffer)
         buffer.seek(0)
 
-        loaded = Snapshot.load_from_zip(buffer)
+        loaded = SnapshotUtils.load_from_zip(buffer)
         self.assertEqual(loaded.fields["stress"].data.shape, (100, 3, 3))
         self.assertTrue(np.allclose(loaded.fields["stress"].data, tensor))
 
@@ -184,10 +184,10 @@ class TestSnapshotIO(unittest.TestCase):
         snapshot = Snapshot(time=42.0)
 
         buffer = BytesIO()
-        snapshot.save_to_zip(buffer)
+        SnapshotUtils.save_to_zip(snapshot, buffer)
         buffer.seek(0)
 
-        loaded = Snapshot.load_from_zip(buffer)
+        loaded = SnapshotUtils.load_from_zip(buffer)
         self.assertEqual(loaded.time, 42.0)
         self.assertEqual(loaded.fields, {})
 
@@ -215,7 +215,7 @@ class TestSnapshotUtils(unittest.TestCase):
             (50, 3), dtype=np.float32), "vector")
 
         buffer = BytesIO()
-        snapshot.save_to_zip(buffer)
+        SnapshotUtils.save_to_zip(snapshot, buffer)
         buffer.seek(0)
 
         loaded = SnapshotUtils.load_from_zip(buffer)

@@ -233,11 +233,11 @@ snapshot.add_field("velocity", velocity, "vector", "m/s")
 snapshot.add_field("pressure", pressure, "scalar", "Pa")
 snapshot.add_field("temperature", temperature, "scalar", "K")
 
-# Save to a compressed zip file
-snapshot.save_to_zip("simulation_t0.5.zip")
+# Save to a compressed zip file using SnapshotUtils
+SnapshotUtils.save_to_zip(snapshot, "simulation_t0.5.zip")
 
 # Load from zip file
-loaded = Snapshot.load_from_zip("simulation_t0.5.zip")
+loaded = SnapshotUtils.load_from_zip("simulation_t0.5.zip")
 print(f"Loaded snapshot at t={loaded.time}")
 print(f"Fields: {loaded.field_names}")
 
@@ -246,7 +246,7 @@ velocity_field = loaded.get_field("velocity")
 print(f"Velocity shape: {velocity_field.data.shape}")
 print(f"Velocity units: {velocity_field.units}")
 
-# Using SnapshotUtils for static access
+# Works with BytesIO for in-memory operations
 from io import BytesIO
 buffer = BytesIO()
 SnapshotUtils.save_to_zip(snapshot, buffer)

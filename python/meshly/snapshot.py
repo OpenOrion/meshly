@@ -7,7 +7,7 @@ containing multiple fields of data in a compressed zip format.
 
 import json
 import zipfile
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
 from io import BytesIO
 import numpy as np
 from pydantic import BaseModel, Field
@@ -110,7 +110,7 @@ class SnapshotUtils:
     @staticmethod
     def save_to_zip(
         snapshot: Snapshot,
-        destination: PathLike | BytesIO,
+        destination: Union[PathLike, BytesIO],
         date_time: Optional[tuple] = None
     ) -> None:
         """
@@ -173,7 +173,7 @@ class SnapshotUtils:
                 zipf.writestr(info, data)
 
     @staticmethod
-    def load_from_zip(source: PathLike | BytesIO) -> Snapshot:
+    def load_from_zip(source: Union[PathLike, BytesIO]) -> Snapshot:
         """
         Load a snapshot from a zip file.
 

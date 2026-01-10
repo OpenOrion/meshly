@@ -39,6 +39,14 @@ from .element_utils import (
     ElementUtils,
 )
 
+from .snapshot import (
+    FieldData,
+    FieldMetadata,
+    Snapshot,
+    SnapshotMetadata,
+    SnapshotUtils,
+)
+
 
 __all__ = [
     # Mesh classes
@@ -59,4 +67,10 @@ __all__ = [
     "CellTypeUtils",
     # Element utilities
     "ElementUtils",
+    # Snapshot utilities
+    "FieldData",
+    "FieldMetadata",
+    "Snapshot",
+    "SnapshotMetadata",
+    "SnapshotUtils",
 ]

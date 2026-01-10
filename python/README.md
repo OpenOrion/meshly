@@ -27,7 +27,8 @@ pip install meshly
   - `simplify`: Reduce mesh complexity
   - `encode`/`decode`: Mesh compression
   - `save_to_zip`/`load_from_zip`: File I/O
-- `ArrayUtils`: Static methods for array operations (encoding, decoding)
+- `ArrayUtils`: Static methods for array operations (encoding, decoding, zip I/O)
+- `SnapshotUtils`: Static methods for snapshot operations (save/load time-series data)
 ### Metadata Models
 
 - `ArrayMetadata`: Pydantic model for array metadata validation and serialization
@@ -36,9 +37,18 @@ pip install meshly
 - `EncodedArray`: Container for encoded array data with metadata
 - `EncodedArray`: Container for encoded array data with metadata
 
+### Snapshot Classes
+
+- `Snapshot`: A Pydantic-based class for storing simulation data at a specific time point
+- `FieldData`: Container for field data with name, type, units, and array data
+- `FieldMetadata`: Pydantic model for field metadata (name, type, units, shape, dtype)
+- `SnapshotMetadata`: Pydantic model for snapshot metadata (time and field info)
+
 ### File I/O
 
 - Save and load meshes to/from ZIP files with [`MeshUtils.save_to_zip()`](python/meshly/mesh.py:564) and [`MeshUtils.load_from_zip()`](python/meshly/mesh.py:677) methods
+- Save and load arrays to/from ZIP files with `ArrayUtils.save_to_zip()` and `ArrayUtils.load_from_zip()` methods
+- Save and load snapshots to/from ZIP files with `Snapshot.save_to_zip()` and `Snapshot.load_from_zip()` methods
 - Automatic preservation of custom attributes during serialization/deserialization
 - Support for storing and loading custom mesh subclasses
 - Nested directory structure for organized array storage in ZIP files
@@ -201,6 +211,62 @@ print(f"Decoded dtype: {decoded_array.dtype}")
 # Verify that the decoded array matches the original
 np.testing.assert_allclose(array, decoded_array)
 ```
+
+## Snapshot Utilities
+
+The package provides a `Snapshot` class for storing simulation data at different time points. This is useful for storing time-series data from simulations, CFD results, or any data that needs to be organized by fields with metadata.
+
+```python
+import numpy as np
+from meshly import Snapshot, SnapshotUtils
+
+# Create a snapshot at a specific time
+snapshot = Snapshot(time=0.5)
+
+# Add fields with metadata
+velocity = np.random.rand(1000, 3).astype(np.float32)
+pressure = np.random.rand(1000).astype(np.float32)
+temperature = np.linspace(300, 400, 1000).astype(np.float32)
+
+snapshot.add_field("velocity", velocity, "vector", "m/s")
+snapshot.add_field("pressure", pressure, "scalar", "Pa")
+snapshot.add_field("temperature", temperature, "scalar", "K")
+
+# Save to a compressed zip file
+snapshot.save_to_zip("simulation_t0.5.zip")
+
+# Load from zip file
+loaded = Snapshot.load_from_zip("simulation_t0.5.zip")
+print(f"Loaded snapshot at t={loaded.time}")
+print(f"Fields: {loaded.field_names}")
+
+# Access field data
+velocity_field = loaded.get_field("velocity")
+print(f"Velocity shape: {velocity_field.data.shape}")
+print(f"Velocity units: {velocity_field.units}")
+
+# Using SnapshotUtils for static access
+from io import BytesIO
+buffer = BytesIO()
+SnapshotUtils.save_to_zip(snapshot, buffer)
+buffer.seek(0)
+loaded = SnapshotUtils.load_from_zip(buffer)
+```
+
+### Snapshot Zip Structure
+
+The snapshot is stored as a single zip file with the following structure:
+
+```
+snapshot.zip
+├── metadata.json      # Contains time and field metadata
+└── fields/
+    ├── velocity.bin   # meshopt-encoded array
+    ├── pressure.bin   # meshopt-encoded array
+    └── temperature.bin
+```
+
+Each field array is compressed using meshoptimizer's vertex buffer encoding, achieving significant compression ratios especially for sequential or patterned data.
 
 For more detailed examples, see the Jupyter notebooks in the [examples](examples/) directory:
 - [array_example.ipynb](examples/array_example.ipynb): Working with arrays, compression, and file I/O

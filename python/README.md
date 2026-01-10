@@ -56,6 +56,7 @@ pip install meshly
 
 ### Advanced Features
 
+- **JAX Array Support**: Optional support for JAX arrays alongside NumPy arrays
 - **Nested Array Support**: Automatically encode/decode numpy arrays within nested dictionary structures
 - **Flexible Polygon Formats**: Support for triangles, quads, and mixed polygon meshes with automatic `index_sizes` inference
 - **Index Sizes Management**: Automatic calculation and validation of polygon vertex counts for complex mesh structures
@@ -267,6 +268,152 @@ snapshot.zip
 ```
 
 Each field array is compressed using meshoptimizer's vertex buffer encoding, achieving significant compression ratios especially for sequential or patterned data.
+## JAX Array Support
+
+Meshly provides optional support for [JAX](https://github.com/google/jax) arrays, enabling GPU-accelerated computing and automatic differentiation workflows. JAX arrays work seamlessly alongside NumPy arrays throughout the library.
+
+### Installation with JAX
+
+```bash
+# Install meshly with JAX support
+pip install meshly jax jaxlib
+```
+
+### Using JAX Arrays
+
+The `Mesh` class accepts both NumPy and JAX arrays transparently through the `Array` type:
+
+```python
+import numpy as np
+import jax.numpy as jnp
+from meshly import Mesh, MeshUtils, HAS_JAX
+
+# Check if JAX is available
+print(f"JAX available: {HAS_JAX}")
+
+# Create mesh with JAX arrays
+jax_vertices = jnp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=jnp.float32)
+jax_indices = jnp.array([0, 1, 2], dtype=jnp.uint32)
+
+mesh = Mesh(vertices=jax_vertices, indices=jax_indices)
+
+# The mesh preserves JAX array types
+print(f"Vertices are JAX arrays: {hasattr(mesh.vertices, 'device')}")
+```
+
+### Loading with JAX Arrays
+
+Use the `use_jax` parameter to automatically convert arrays to JAX when loading:
+
+```python
+# Save a mesh (works with both NumPy and JAX arrays)
+MeshUtils.save_to_zip(mesh, "mesh.zip")
+
+# Load with JAX arrays
+jax_mesh = MeshUtils.load_from_zip(Mesh, "mesh.zip", use_jax=True)
+
+# All arrays are now JAX arrays
+print(f"Loaded vertices type: {type(jax_mesh.vertices)}")
+print(f"Has JAX device: {hasattr(jax_mesh.vertices, 'device')}")
+```
+
+### Custom Mesh Classes with JAX
+
+Custom mesh classes work seamlessly with JAX arrays:
+
+```python
+from pydantic import Field
+from typing import Optional
+
+class PhysicsMesh(Mesh):
+    """A mesh with physics properties stored as JAX arrays."""
+    velocities: Optional[jnp.ndarray] = Field(None, description="Vertex velocities")
+    forces: Optional[jnp.ndarray] = Field(None, description="Applied forces")
+
+# Create with JAX arrays
+velocities = jnp.zeros((3, 3), dtype=jnp.float32)
+forces = jnp.array([[0, 0, -9.8], [0, 0, -9.8], [0, 0, -9.8]], dtype=jnp.float32)
+
+physics_mesh = PhysicsMesh(
+    vertices=jax_vertices,
+    indices=jax_indices,
+    velocities=velocities,
+    forces=forces
+)
+
+# Save and load with JAX
+MeshUtils.save_to_zip(physics_mesh, "physics_mesh.zip")
+loaded = MeshUtils.load_from_zip(PhysicsMesh, "physics_mesh.zip", use_jax=True)
+
+# All custom arrays are also converted to JAX
+print(f"Velocities are JAX: {hasattr(loaded.velocities, 'device')}")
+```
+
+### JAX and NumPy Interoperability
+
+The library handles conversions automatically:
+
+```python
+# Create with NumPy arrays
+numpy_mesh = Mesh(
+    vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
+    indices=np.array([0, 1, 2], dtype=np.uint32)
+)
+
+# Load as JAX arrays
+jax_mesh = MeshUtils.load_from_zip(Mesh, "mesh.zip", use_jax=True)
+
+# Convert back to NumPy if needed
+numpy_vertices = np.array(jax_mesh.vertices)
+```
+
+### Converting Between Array Types
+
+Use `to_numpy()` and `to_jax()` to create new meshes with converted array types:
+
+```python
+from meshly import MeshUtils
+
+# Create a mesh with NumPy arrays
+numpy_mesh = Mesh(vertices=np_vertices, indices=np_indices)
+
+# Convert to JAX - creates a new mesh with JAX arrays
+jax_mesh = MeshUtils.to_jax(numpy_mesh)
+print(f"JAX arrays: {hasattr(jax_mesh.vertices, 'device')}")
+
+# Convert back to NumPy - creates a new mesh with NumPy arrays
+numpy_mesh2 = MeshUtils.to_numpy(jax_mesh)
+print(f"NumPy arrays: {isinstance(numpy_mesh2.vertices, np.ndarray)}")
+
+# Original mesh is unchanged
+print(f"Original still NumPy: {isinstance(numpy_mesh.vertices, np.ndarray)}")
+```
+
+These methods work with:
+- All mesh fields (vertices, indices, index_sizes, cell_types, markers, etc.)
+- Custom mesh class fields
+- Nested arrays in dictionary structures
+- Preserves all non-array data
+
+### Key Features
+
+- **Transparent Support**: JAX arrays work everywhere NumPy arrays do
+- **Type Preservation**: `mesh.copy()` preserves array types (JAX stays JAX, NumPy stays NumPy)
+- **Custom Fields**: Custom mesh classes can use JAX arrays in any field
+- **Nested Structures**: JAX arrays in nested dictionaries are handled automatically
+- **Graceful Fallback**: Code works with or without JAX installed
+- **No Extra Code**: Use `use_jax=True` parameter when loading, that's it!
+
+### When to Use JAX
+
+JAX arrays are beneficial for:
+- GPU-accelerated mesh computations
+- Automatic differentiation workflows
+- Integration with JAX-based ML frameworks
+- Large-scale parallel processing
+- Gradient-based optimization of mesh properties
+
+For more details, see the [test_jax_support.py](tests/test_jax_support.py) test suite.
 
 For more detailed examples, see the Jupyter notebooks in the [examples](examples/) directory:
 - [array_example.ipynb](examples/array_example.ipynb): Working with arrays, compression, and file I/O

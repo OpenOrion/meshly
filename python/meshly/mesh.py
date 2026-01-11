@@ -12,6 +12,21 @@ The Mesh class inherits from Packable and adds:
 - Marker support for boundary conditions and regions
 """
 
+from .utils import ElementUtils, TriangulationUtils, MeshUtils, ZipUtils
+from .cell_types import CellTypeUtils, VTKCellType
+from .common import PathLike
+from .array import EncodedArray
+from .packable import Packable, PackableMetadata
+from meshoptimizer import (
+    encode_vertex_buffer,
+    encode_index_sequence,
+    decode_vertex_buffer,
+    decode_index_sequence,
+    optimize_vertex_cache as meshopt_optimize_vertex_cache,
+    optimize_overdraw as meshopt_optimize_overdraw,
+    optimize_vertex_fetch as meshopt_optimize_vertex_fetch,
+    simplify as meshopt_simplify,
+)
 import json
 import zipfile
 from io import BytesIO
@@ -38,27 +53,13 @@ except ImportError:
 
 # Array type union - supports both numpy and JAX arrays
 if HAS_JAX:
-    Array = Union[np.ndarray, jnp.ndarray]
+    JaxArray = Union[np.ndarray, jnp.ndarray]
 else:
-    Array = np.ndarray
+    JaxArray = np.ndarray
+Array = Union[np.ndarray, JaxArray]
 
 # Use meshoptimizer directly
-from meshoptimizer import (
-    encode_vertex_buffer,
-    encode_index_sequence,
-    decode_vertex_buffer,
-    decode_index_sequence,
-    optimize_vertex_cache as meshopt_optimize_vertex_cache,
-    optimize_overdraw as meshopt_optimize_overdraw,
-    optimize_vertex_fetch as meshopt_optimize_vertex_fetch,
-    simplify as meshopt_simplify,
-)
 
-from .packable import Packable, PackableMetadata
-from .array import ArrayMetadata, EncodedArray
-from .common import PathLike
-from .cell_types import CellTypeUtils, VTKCellType
-from .utils import ElementUtils, TriangulationUtils, MeshUtils, ZipUtils
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")

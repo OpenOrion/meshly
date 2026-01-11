@@ -402,9 +402,9 @@ class Packable(BaseModel):
             A new Packable with all arrays as NumPy arrays
         """
         if not HAS_JAX:
-            return self.copy()
+            return self.model_copy(deep=True)
 
-        data_copy = self.copy()
+        data_copy = self.model_copy(deep=True)
 
         def convert_to_numpy(obj: Any) -> Any:
             if isinstance(obj, jnp.ndarray):
@@ -443,7 +443,7 @@ class Packable(BaseModel):
             raise ValueError(
                 "JAX is not available. Install JAX to convert to JAX arrays.")
 
-        data_copy = self.copy()
+        data_copy = self.model_copy(deep=True)
 
         def convert_to_jax(obj: Any) -> Any:
             if isinstance(obj, np.ndarray):

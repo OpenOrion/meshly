@@ -128,7 +128,7 @@ class TestJAXSupport(unittest.TestCase):
         mesh = Mesh(vertices=jax_vertices, indices=self.indices)
 
         # Test copying
-        copied_mesh = mesh.copy()
+        copied_mesh = mesh.model_copy(deep=True)
 
         # Verify copy preserves array types and data
         self.assertTrue(hasattr(copied_mesh.vertices, 'device'),

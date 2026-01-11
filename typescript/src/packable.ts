@@ -8,11 +8,8 @@
 
 import JSZip from "jszip"
 import { ZipUtils } from "./utils/zipUtils"
+import { TypedArray } from "./array"
 
-/**
- * TypedArray union for decoded array data
- */
-export type TypedArray = Float32Array | Float64Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array
 
 /**
  * Recursive type for decoded array data from zip files.
@@ -134,7 +131,7 @@ export class Packable<TData> {
   static async loadArray(
     zipData: ArrayBuffer | Uint8Array,
     name: string
-  ): Promise<Float32Array | Float64Array | Int32Array | Uint32Array | Uint8Array> {
+  ): Promise<TypedArray> {
     const zip = await JSZip.loadAsync(zipData)
     return ZipUtils.loadArray(zip, name)
   }

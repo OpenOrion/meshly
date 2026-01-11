@@ -533,8 +533,7 @@ class Mesh(Packable):
 
         # Check for unsupported types
         skip_types = {VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE}
-        supported_types = {
-            VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
+        supported_types = {VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
         all_handled = supported_types | skip_types
 
         for i, ct in enumerate(effective_types):

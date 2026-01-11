@@ -3,7 +3,7 @@
  */
 
 import JSZip from "jszip"
-import { ArrayMetadata, ArrayUtils } from "../array"
+import { ArrayMetadata, ArrayUtils, TypedArray } from "../array"
 
 /**
  * Static utility methods for zip file operations.
@@ -20,7 +20,7 @@ export class ZipUtils {
   static async loadArray(
     zip: JSZip,
     name: string
-  ): Promise<Float32Array | Float64Array | Int32Array | Uint32Array | Uint8Array> {
+  ): Promise<TypedArray> {
     // Convert dotted name to path
     const arrayPath = name.replace(/\./g, "/")
     const arraysFolder = zip.folder("arrays")

@@ -1,6 +1,12 @@
 import { MeshoptDecoder } from "meshoptimizer"
 
 /**
+ * TypedArray union for decoded array data
+ */
+export type TypedArray = Float32Array | Float64Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array
+
+
+/**
  * Metadata for an array
  */
 export interface ArrayMetadata {
@@ -20,7 +26,7 @@ export class ArrayUtils {
    * @param metadata Array metadata
    * @returns Decoded array as a Float32Array or Uint32Array
    */
-  static decodeArray(data: Uint8Array, metadata: ArrayMetadata): Float32Array | Uint32Array {
+  static decodeArray(data: Uint8Array, metadata: ArrayMetadata): TypedArray {
     // Calculate the total number of items
     const totalItems = metadata.shape.reduce((acc, dim) => acc * dim, 1)
 

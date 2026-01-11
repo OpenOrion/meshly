@@ -13,7 +13,6 @@ import zipfile
 from io import BytesIO
 from typing import (
     Dict,
-    Generic,
     Optional,
     Set,
     Type,

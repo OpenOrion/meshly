@@ -177,6 +177,55 @@ const encodedMesh: EncodedMesh = {
 const mesh = Mesh.decode(encodedMesh)
 ```
 
+### Snapshot Utilities
+
+Load simulation snapshots saved from Python containing multiple fields of time-series data:
+
+```typescript
+import { SnapshotUtils } from 'meshly';
+
+// Load a snapshot from a zip file
+async function loadSnapshot(zipData: ArrayBuffer) {
+  // Get metadata without loading field data
+  const metadata = await SnapshotUtils.loadMetadata(zipData);
+  console.log(`Snapshot at t=${metadata.time}`);
+  console.log(`Available fields: ${Object.keys(metadata.fields)}`);
+  
+  // Load a specific field
+  const velocity = await SnapshotUtils.loadField(zipData, "velocity");
+  console.log(`Velocity shape: ${velocity.shape}`);
+  console.log(`Velocity units: ${velocity.units}`);
+  console.log(`Velocity data: ${velocity.data.length} elements`);
+  
+  // Load multiple fields
+  const fields = await SnapshotUtils.loadFields(zipData, ["velocity", "pressure"]);
+  
+  // Or load entire snapshot
+  const snapshot = await SnapshotUtils.loadFromZip(zipData);
+  console.log(`Time: ${snapshot.time}`);
+  console.log(`Fields loaded: ${Object.keys(snapshot.fields)}`);
+  
+  return snapshot;
+}
+
+// Quick helpers
+const time = await SnapshotUtils.getTime(zipData);
+const fieldNames = await SnapshotUtils.getFieldNames(zipData);
+```
+
+#### Snapshot Zip Structure
+
+Snapshots are stored as compressed zip files:
+
+```
+snapshot.zip
+├── metadata.json      # Contains time and field metadata
+└── fields/
+    ├── velocity.bin   # meshopt-encoded array
+    ├── pressure.bin   # meshopt-encoded array
+    └── temperature.bin
+```
+
 ## API Reference
 
 ### Packable (Base Class)

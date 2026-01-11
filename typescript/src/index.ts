@@ -7,10 +7,8 @@
 
 // Export from packable module
 export {
-    isTypedArray, Packable,
-    PackableData,
-    PackableMetadata, type PackableValue,
-    type TypedArray
+    Packable,
+    PackableMetadata
 } from './packable'
 
 // Export from array module

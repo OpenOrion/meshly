@@ -4,7 +4,7 @@ Tests for array type conversion functions (to_numpy, to_jax).
 
 import unittest
 import numpy as np
-from meshly import Mesh, MeshUtils, Array, HAS_JAX
+from meshly import Mesh, Array, HAS_JAX
 
 
 class TestConversion(unittest.TestCase):
@@ -21,7 +21,7 @@ class TestConversion(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
         
         # Convert to NumPy (should be no-op but create new instance)
-        numpy_mesh = MeshUtils.to_numpy(mesh)
+        numpy_mesh = mesh.to_numpy()
         
         self.assertIsInstance(numpy_mesh.vertices, np.ndarray)
         self.assertIsInstance(numpy_mesh.indices, np.ndarray)
@@ -40,7 +40,7 @@ class TestConversion(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
         
         # Convert to JAX
-        jax_mesh = MeshUtils.to_jax(mesh)
+        jax_mesh = mesh.to_jax()
         
         self.assertTrue(hasattr(jax_mesh.vertices, 'device'), "Vertices should be JAX arrays")
         self.assertTrue(hasattr(jax_mesh.indices, 'device'), "Indices should be JAX arrays")
@@ -62,11 +62,11 @@ class TestConversion(unittest.TestCase):
         numpy_mesh = Mesh(vertices=self.vertices, indices=self.indices)
         
         # Convert to JAX
-        jax_mesh = MeshUtils.to_jax(numpy_mesh)
+        jax_mesh = numpy_mesh.to_jax()
         self.assertTrue(hasattr(jax_mesh.vertices, 'device'))
         
         # Convert back to NumPy
-        numpy_mesh2 = MeshUtils.to_numpy(jax_mesh)
+        numpy_mesh2 = jax_mesh.to_numpy()
         self.assertIsInstance(numpy_mesh2.vertices, np.ndarray)
         self.assertIsInstance(numpy_mesh2.indices, np.ndarray)
         
@@ -88,7 +88,7 @@ class TestConversion(unittest.TestCase):
         mesh = CustomMesh(vertices=self.vertices, indices=self.indices, normals=normals)
         
         # Convert to JAX
-        jax_mesh = MeshUtils.to_jax(mesh)
+        jax_mesh = mesh.to_jax()
         
         # Verify all arrays are converted
         self.assertTrue(hasattr(jax_mesh.vertices, 'device'))
@@ -122,7 +122,7 @@ class TestConversion(unittest.TestCase):
         )
         
         # Convert to NumPy
-        numpy_mesh = MeshUtils.to_numpy(jax_mesh)
+        numpy_mesh = jax_mesh.to_numpy()
         
         # Verify nested arrays are converted
         self.assertIsInstance(numpy_mesh.materials['diffuse'], np.ndarray)
@@ -136,7 +136,7 @@ class TestConversion(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
         
         with self.assertRaises(ValueError) as context:
-            MeshUtils.to_jax(mesh)
+            mesh.to_jax()
         
         self.assertIn("JAX is not available", str(context.exception))
 

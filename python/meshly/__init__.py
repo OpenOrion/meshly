@@ -4,21 +4,25 @@ High-level export functionality for meshoptimizer.
 This package provides high-level abstractions and utilities for working with
 meshoptimizer, including:
 
-1. Mesh class as a Pydantic base class for representing 3D meshes
-2. MeshUtils class for mesh optimization and encoding/decoding operations
-3. ArrayUtils class for array encoding/decoding operations
-4. EncodedMesh class for storing encoded mesh data
-5. I/O utilities for storing and loading meshes and arrays
-6. Support for custom Mesh subclasses with automatic encoding/decoding of numpy arrays
-7. CellTypeUtils for VTK cell type conversions and edge topology extraction
+1. Packable base class for automatic array serialization
+2. Mesh class as a Pydantic base class for representing 3D meshes
+3. MeshUtils static class for mesh optimization operations
+4. ArrayUtils class for array encoding/decoding operations
+5. EncodedMesh class for storing encoded mesh data
+6. I/O utilities for storing and loading meshes and arrays
+7. Support for custom subclasses with automatic encoding/decoding of numpy arrays
+8. CellTypeUtils for VTK cell type conversions and edge topology extraction
 """
+
+from .packable import (
+    Packable,
+    PackableMetadata,
+    EncodedData,
+)
 
 from .mesh import (
     Mesh,
     EncodedMesh,
-    MeshSize,
-    MeshMetadata,
-    MeshUtils,
     Array,
     HAS_JAX,
 )
@@ -37,26 +41,20 @@ from .cell_types import (
     CellTypeUtils,
 )
 
-from .element_utils import (
+from .utils import (
     ElementUtils,
-)
-
-from .snapshot import (
-    FieldData,
-    FieldMetadata,
-    Snapshot,
-    SnapshotMetadata,
-    SnapshotUtils,
+    MeshUtils,
 )
 
 
 __all__ = [
+    # Packable base class
+    "Packable",
+    "PackableMetadata",
+    "EncodedData",
     # Mesh classes
     "Mesh",
     "EncodedMesh",
-    "MeshSize",
-    "MeshMetadata",
-    "MeshUtils",
     # Array types and utilities
     "Array",
     "HAS_JAX",
@@ -71,10 +69,6 @@ __all__ = [
     "CellTypeUtils",
     # Element utilities
     "ElementUtils",
-    # Snapshot utilities
-    "FieldData",
-    "FieldMetadata",
-    "Snapshot",
-    "SnapshotMetadata",
-    "SnapshotUtils",
+    # Mesh operations
+    "MeshUtils",
 ]

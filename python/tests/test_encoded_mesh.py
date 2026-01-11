@@ -11,11 +11,13 @@ import unittest
 from typing import Optional, List
 from pydantic import Field
 
-from meshly import Mesh, MeshUtils, EncodedMesh
+from meshly import Mesh, EncodedMesh
+from meshly.packable import EncodedData
+
 
 class TestEncodedMesh(unittest.TestCase):
     """Test EncodedMesh functionality."""
-    
+
     def setUp(self):
         """Set up test data."""
         # Create a simple mesh (a cube)
@@ -39,9 +41,9 @@ class TestEncodedMesh(unittest.TestCase):
             3, 2, 6, 6, 7, 3,  # top
             4, 5, 1, 1, 0, 4   # bottom
         ], dtype=np.uint32)
-        
+
         self.mesh = Mesh(vertices=self.vertices, indices=self.indices)
-    
+
     def get_triangles_set(self, vertices, indices):
         """
         Get a set of triangles from vertices and indices.
@@ -58,37 +60,48 @@ class TestEncodedMesh(unittest.TestCase):
             triangle = frozenset([v1, v2, v3])
             triangles.add(triangle)
         return triangles
-    
+
     def test_mesh_encode_decode(self):
-        """Test that the MeshUtils.encode and MeshUtils.decode methods work."""
-        # Encode the mesh using the MeshUtils.encode method
-        encoded_mesh = MeshUtils.encode(self.mesh)
-        
-        # Check that the encoded_mesh is an instance of EncodedMesh
-        self.assertIsInstance(encoded_mesh, EncodedMesh)
-        
-        # Decode the mesh using the MeshUtils.decode method
-        decoded_mesh = MeshUtils.decode(Mesh, encoded_mesh)
-        
+        """Test that the mesh.encode and Mesh.load_from_zip methods work."""
+        from io import BytesIO
+
+        # Encode the mesh using the instance method
+        encoded_data = self.mesh.encode()
+
+        # Check that the encoded_data is an instance of EncodedData
+        self.assertIsInstance(encoded_data, EncodedData)
+
+        # Decode the mesh via zip round-trip
+        buffer = BytesIO()
+        self.mesh.save_to_zip(buffer)
+        buffer.seek(0)
+        decoded_mesh = Mesh.load_from_zip(buffer)
+
         # Check that the decoded vertices match the original
-        np.testing.assert_array_almost_equal(self.mesh.vertices, decoded_mesh.vertices)
-        
+        np.testing.assert_array_almost_equal(
+            self.mesh.vertices, decoded_mesh.vertices)
+
         # Check that the triangles match
-        original_triangles = self.get_triangles_set(self.mesh.vertices, self.mesh.indices)
-        decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
-        
+        original_triangles = self.get_triangles_set(
+            self.mesh.vertices, self.mesh.indices)
+        decoded_triangles = self.get_triangles_set(
+            decoded_mesh.vertices, decoded_mesh.indices)
+
         self.assertEqual(original_triangles, decoded_triangles)
+
 
 class CustomMesh(Mesh):
     """A custom mesh class for testing."""
     normals: np.ndarray = Field(..., description="Vertex normals")
     colors: Optional[np.ndarray] = Field(None, description="Vertex colors")
     material_name: str = Field("default", description="Material name")
-    tags: List[str] = Field(default_factory=list, description="Tags for the mesh")
+    tags: List[str] = Field(default_factory=list,
+                            description="Tags for the mesh")
+
 
 class TestCustomMesh(unittest.TestCase):
     """Test custom Mesh subclass functionality."""
-    
+
     def setUp(self):
         """Set up test data."""
         # Create a simple mesh (a cube)
@@ -111,7 +124,7 @@ class TestCustomMesh(unittest.TestCase):
             3, 2, 6, 6, 7, 3,  # top
             4, 5, 1, 1, 0, 4   # bottom
         ], dtype=np.uint32)
-        
+
         self.normals = np.array([
             [0.0, 0.0, -1.0],
             [0.0, 0.0, -1.0],
@@ -122,7 +135,7 @@ class TestCustomMesh(unittest.TestCase):
             [0.0, 0.0, 1.0],
             [0.0, 0.0, 1.0]
         ], dtype=np.float32)
-        
+
         self.colors = np.array([
             [1.0, 0.0, 0.0, 1.0],
             [0.0, 1.0, 0.0, 1.0],
@@ -133,7 +146,7 @@ class TestCustomMesh(unittest.TestCase):
             [0.5, 0.5, 0.5, 1.0],
             [1.0, 1.0, 1.0, 1.0]
         ], dtype=np.float32)
-        
+
         self.mesh = CustomMesh(
             vertices=self.vertices,
             indices=self.indices,
@@ -142,7 +155,7 @@ class TestCustomMesh(unittest.TestCase):
             material_name="test_material",
             tags=["test", "cube"]
         )
-    
+
     def test_custom_mesh_attributes(self):
         """Test that the custom mesh attributes are set correctly."""
         self.assertEqual(self.mesh.vertex_count, len(self.vertices))
@@ -151,32 +164,37 @@ class TestCustomMesh(unittest.TestCase):
         np.testing.assert_array_equal(self.mesh.colors, self.colors)
         self.assertEqual(self.mesh.material_name, "test_material")
         self.assertEqual(self.mesh.tags, ["test", "cube"])
-    
+
     def test_custom_mesh_encode_decode(self):
         """Test that the custom mesh can be encoded and decoded."""
         # Create a temporary file for testing
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
             temp_path = temp_file.name
-        
+
         try:
             # Save the mesh to a zip file
-            MeshUtils.save_to_zip(self.mesh, temp_path)
-            
+            self.mesh.save_to_zip(temp_path)
+
             # Load the mesh from the zip file
-            loaded_mesh = MeshUtils.load_from_zip(CustomMesh, temp_path)
-            
+            loaded_mesh = CustomMesh.load_from_zip(temp_path)
+
             # Check that the loaded mesh has the correct attributes
             self.assertEqual(loaded_mesh.vertex_count, self.mesh.vertex_count)
             self.assertEqual(loaded_mesh.index_count, self.mesh.index_count)
-            np.testing.assert_array_almost_equal(loaded_mesh.vertices, self.mesh.vertices)
-            np.testing.assert_array_almost_equal(loaded_mesh.normals, self.mesh.normals)
-            np.testing.assert_array_almost_equal(loaded_mesh.colors, self.mesh.colors)
-            self.assertEqual(loaded_mesh.material_name, self.mesh.material_name)
+            np.testing.assert_array_almost_equal(
+                loaded_mesh.vertices, self.mesh.vertices)
+            np.testing.assert_array_almost_equal(
+                loaded_mesh.normals, self.mesh.normals)
+            np.testing.assert_array_almost_equal(
+                loaded_mesh.colors, self.mesh.colors)
+            self.assertEqual(loaded_mesh.material_name,
+                             self.mesh.material_name)
             self.assertEqual(loaded_mesh.tags, self.mesh.tags)
         finally:
             # Clean up
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
 
 if __name__ == '__main__':
     unittest.main()

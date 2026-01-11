@@ -11,7 +11,7 @@ import unittest
 from typing import Optional, List, Dict, Any
 from pydantic import Field, ValidationError
 
-from meshly import Mesh, MeshUtils
+from meshly import Mesh
 from meshly.cell_types import VTKCellType
 
 
@@ -82,24 +82,24 @@ class TestPydanticMesh(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
 
         # Test optimize_vertex_cache
-        optimized_mesh = MeshUtils.optimize_vertex_cache(mesh)
+        optimized_mesh = mesh.optimize_vertex_cache()
         self.assertEqual(optimized_mesh.vertex_count, len(self.vertices))
         self.assertEqual(optimized_mesh.index_count, len(self.indices))
 
         # Test optimize_overdraw
-        overdraw_mesh = MeshUtils.optimize_overdraw(mesh)
+        overdraw_mesh = mesh.optimize_overdraw()
         self.assertEqual(overdraw_mesh.vertex_count, len(self.vertices))
         self.assertEqual(overdraw_mesh.index_count, len(self.indices))
 
         # Test optimize_vertex_fetch
         original_vertex_count = mesh.vertex_count
-        fetch_mesh = MeshUtils.optimize_vertex_fetch(mesh)
+        fetch_mesh = mesh.optimize_vertex_fetch()
         self.assertLessEqual(fetch_mesh.vertex_count, original_vertex_count)
         self.assertEqual(fetch_mesh.index_count, len(self.indices))
 
         # Test simplify
         original_index_count = mesh.index_count
-        simplified_mesh = MeshUtils.simplify(mesh, target_ratio=0.5)
+        simplified_mesh = mesh.simplify(target_ratio=0.5)
         self.assertLessEqual(simplified_mesh.index_count, original_index_count)
 
     def test_mesh_polygon_support(self):
@@ -276,10 +276,10 @@ class TestCustomMesh(unittest.TestCase):
 
         try:
             # Save the mesh to a zip file
-            MeshUtils.save_to_zip(mesh, temp_path)
+            mesh.save_to_zip(temp_path)
 
             # Load the mesh from the zip file
-            loaded_mesh = MeshUtils.load_from_zip(CustomMesh, temp_path)
+            loaded_mesh = CustomMesh.load_from_zip(temp_path)
 
             # Check that the loaded mesh has the correct attributes
             self.assertEqual(loaded_mesh.vertex_count, mesh.vertex_count)
@@ -308,27 +308,27 @@ class TestCustomMesh(unittest.TestCase):
         )
 
         # Test optimize_vertex_cache
-        optimized_mesh = MeshUtils.optimize_vertex_cache(mesh)
+        optimized_mesh = mesh.optimize_vertex_cache()
         self.assertEqual(optimized_mesh.vertex_count, len(self.vertices))
         self.assertEqual(optimized_mesh.index_count, len(self.indices))
         self.assertIsInstance(optimized_mesh, CustomMesh)
 
         # Test optimize_overdraw
-        overdraw_mesh = MeshUtils.optimize_overdraw(mesh)
+        overdraw_mesh = mesh.optimize_overdraw()
         self.assertEqual(overdraw_mesh.vertex_count, len(self.vertices))
         self.assertEqual(overdraw_mesh.index_count, len(self.indices))
         self.assertIsInstance(overdraw_mesh, CustomMesh)
 
         # Test optimize_vertex_fetch
         original_vertex_count = mesh.vertex_count
-        fetch_mesh = MeshUtils.optimize_vertex_fetch(mesh)
+        fetch_mesh = mesh.optimize_vertex_fetch()
         self.assertLessEqual(fetch_mesh.vertex_count, original_vertex_count)
         self.assertEqual(fetch_mesh.index_count, len(self.indices))
         self.assertIsInstance(fetch_mesh, CustomMesh)
 
         # Test simplify
         original_index_count = mesh.index_count
-        simplified_mesh = MeshUtils.simplify(mesh, target_ratio=0.5)
+        simplified_mesh = mesh.simplify(target_ratio=0.5)
         self.assertLessEqual(simplified_mesh.index_count, original_index_count)
         self.assertIsInstance(simplified_mesh, CustomMesh)
 
@@ -557,10 +557,10 @@ class TestMeshMarkers(unittest.TestCase):
 
         try:
             # Save the mesh to a zip file
-            MeshUtils.save_to_zip(mesh, temp_path)
+            mesh.save_to_zip(temp_path)
 
             # Load the mesh from the zip file
-            loaded_mesh = MeshUtils.load_from_zip(Mesh, temp_path)
+            loaded_mesh = Mesh.load_from_zip(temp_path)
 
             # Check that marker data is preserved
             self.assertIn("boundary", loaded_mesh.markers)

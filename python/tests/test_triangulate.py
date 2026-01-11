@@ -6,7 +6,7 @@ This file tests the MeshUtils.triangulate method with various polygon types.
 import numpy as np
 import unittest
 
-from meshly import Mesh, MeshUtils
+from meshly import Mesh
 from meshly.cell_types import VTKCellType
 
 
@@ -30,7 +30,7 @@ class TestMeshTriangulation(unittest.TestCase):
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
         
         # Triangulate
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Should have same structure
         self.assertEqual(tri_mesh.polygon_count, 2)
@@ -54,7 +54,7 @@ class TestMeshTriangulation(unittest.TestCase):
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
         
         # Triangulate
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Should have 2 triangles (quad splits into 2 triangles)
         self.assertEqual(tri_mesh.polygon_count, 2)
@@ -83,7 +83,7 @@ class TestMeshTriangulation(unittest.TestCase):
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
         
         # Triangulate
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Pentagon should produce 3 triangles (n-2 = 5-2 = 3)
         self.assertEqual(tri_mesh.polygon_count, 3)
@@ -146,7 +146,7 @@ class TestMeshTriangulation(unittest.TestCase):
         self.assertEqual(mesh.index_count, 18)
         
         # Triangulate
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Calculate expected number of triangles:
         # Triangle: 1 triangle
@@ -186,7 +186,7 @@ class TestMeshTriangulation(unittest.TestCase):
         index_sizes = np.array([4], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Vertices should be identical
         np.testing.assert_array_equal(tri_mesh.vertices, vertices)
@@ -224,7 +224,7 @@ class TestMeshTriangulation(unittest.TestCase):
             marker_cell_types=marker_cell_types,
         )
         
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Markers should be preserved
         self.assertIn("boundary", tri_mesh.markers)
@@ -243,7 +243,7 @@ class TestMeshTriangulation(unittest.TestCase):
         mesh = Mesh(vertices=vertices)
         
         with self.assertRaises(ValueError) as context:
-            MeshUtils.triangulate(mesh)
+            mesh.triangulate()
         
         self.assertIn("indices", str(context.exception).lower())
 
@@ -279,7 +279,7 @@ class TestMeshTriangulation(unittest.TestCase):
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
         
         # Triangulate
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Expected triangles:
         # Triangle: 1 (3-2=1)
@@ -315,7 +315,7 @@ class TestMeshTriangulation(unittest.TestCase):
         index_sizes = np.array([5], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Expected fan triangulation from vertex 0:
         # Triangle 1: [0, 1, 2]
@@ -352,7 +352,7 @@ class TestVolumeTriangulation(unittest.TestCase):
         cell_types = np.array([VTKCellType.VTK_HEXAHEDRON], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes, cell_types=cell_types)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Hexahedron has 6 quad faces, each becomes 2 triangles = 12 triangles
         self.assertEqual(tri_mesh.polygon_count, 12)
@@ -374,7 +374,7 @@ class TestVolumeTriangulation(unittest.TestCase):
         cell_types = np.array([VTKCellType.VTK_TETRA], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes, cell_types=cell_types)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Tetrahedron has 4 triangle faces
         self.assertEqual(tri_mesh.polygon_count, 4)
@@ -397,7 +397,7 @@ class TestVolumeTriangulation(unittest.TestCase):
         cell_types = np.array([VTKCellType.VTK_WEDGE], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes, cell_types=cell_types)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Wedge has 2 triangle faces + 3 quad faces = 2 + 6 = 8 triangles
         self.assertEqual(tri_mesh.polygon_count, 8)
@@ -419,7 +419,7 @@ class TestVolumeTriangulation(unittest.TestCase):
         cell_types = np.array([VTKCellType.VTK_PYRAMID], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes, cell_types=cell_types)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Pyramid has 1 quad base (2 triangles) + 4 triangle faces = 6 triangles
         self.assertEqual(tri_mesh.polygon_count, 6)
@@ -443,7 +443,7 @@ class TestVolumeTriangulation(unittest.TestCase):
         cell_types = np.array([VTKCellType.VTK_PYRAMID], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes, cell_types=cell_types)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # Planar pentagon should be treated as polygon: 5-2 = 3 triangles
         self.assertEqual(tri_mesh.polygon_count, 3)
@@ -467,7 +467,7 @@ class TestVolumeTriangulation(unittest.TestCase):
         cell_types = np.array([VTKCellType.VTK_HEXAHEDRON, VTKCellType.VTK_HEXAHEDRON], dtype=np.uint32)
         
         mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes, cell_types=cell_types)
-        tri_mesh = MeshUtils.triangulate(mesh)
+        tri_mesh = mesh.triangulate()
         
         # 2 hexahedra × 12 triangles each = 24 triangles
         self.assertEqual(tri_mesh.polygon_count, 24)

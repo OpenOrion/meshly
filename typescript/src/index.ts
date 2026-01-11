@@ -1,15 +1,29 @@
 /**
- * Mesh Decoder Library
+ * Meshly Library
  * 
- * A TypeScript library for decoding Python meshoptimizer zip files into THREE.js geometries.
+ * A TypeScript library for mesh decoding with meshoptimizer decompression.
+ * Compatible with the Python meshly library for cross-platform mesh serialization.
  */
 
-// Export types
-export * from './mesh'
-export * from './snapshot'
+// Export from packable module
+export {
+    isTypedArray, Packable,
+    PackableData,
+    PackableMetadata, type PackableValue,
+    type TypedArray
+} from './packable'
 
-// Export utility classes
+// Export from array module
 export { ArrayMetadata, ArrayUtils, EncodedArray } from './array'
-export { Mesh, MeshMetadata, MeshSize, MeshUtils } from './mesh'
-export { FieldData, FieldMetadata, SnapshotMetadata, SnapshotResult, SnapshotUtils } from './snapshot'
+
+// Export from mesh module
+export {
+    EncodedMesh, Mesh,
+    MeshData,
+    MeshMetadata,
+    MeshSize
+} from './mesh'
+
+// Export from utils module
+export { ZipUtils } from './utils'
 

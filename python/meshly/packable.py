@@ -44,6 +44,10 @@ if HAS_JAX:
 else:
     Array = np.ndarray
 
+# Recursive type for decoded array data from zip files
+# Values are arrays or nested dicts containing arrays
+ArrayData = Dict[str, Union[Array, Dict[str, Any]]]
+
 
 class EncodedData(BaseModel):
     """Container for encoded array data from a Packable."""
@@ -89,40 +93,6 @@ class Packable(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
-
-    def copy(self: T) -> T:
-        """
-        Create a deep copy of this packable.
-
-        Returns:
-            A new Packable instance with copied data
-        """
-        copied_fields = {}
-
-        for field_name in self.__class__.model_fields:
-            value = getattr(self, field_name)
-
-            if value is None:
-                copied_fields[field_name] = None
-            elif isinstance(value, np.ndarray):
-                copied_fields[field_name] = value.copy()
-            elif HAS_JAX and isinstance(value, jnp.ndarray):
-                copied_fields[field_name] = value
-            elif isinstance(value, dict):
-                # Deep copy dict, including any nested arrays
-                copied_dict = {}
-                for key, v in value.items():
-                    if isinstance(v, np.ndarray):
-                        copied_dict[key] = v.copy()
-                    elif HAS_JAX and isinstance(v, jnp.ndarray):
-                        copied_dict[key] = v
-                    else:
-                        copied_dict[key] = v
-                copied_fields[field_name] = copied_dict
-            else:
-                copied_fields[field_name] = value
-
-        return self.__class__(**copied_fields)
 
     def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, Array]:
         """
@@ -376,6 +346,50 @@ class Packable(BaseModel):
         return metadata
 
     @classmethod
+    def from_zip_data(
+        cls: Type[T],
+        data: ArrayData,
+        field_data: Optional[Dict[str, Any]]
+    ) -> T:
+        """
+        Create instance from decoded arrays and field data.
+
+        Merges non-array field values from metadata into the data dict,
+        then creates the instance.
+
+        Args:
+            data: Decoded arrays from zip file
+            field_data: Non-array field values from metadata.field_data
+
+        Returns:
+            New instance of this class
+        """
+        if field_data:
+            cls._merge_field_data(data, field_data)
+        return cls(**data)
+
+    @staticmethod
+    def _merge_field_data(data: Dict[str, Any], field_data: Dict[str, Any]) -> None:
+        """
+        Merge non-array field values into data dict (in place).
+
+        Values like `dim: 2` from metadata.fieldData get merged in.
+        Existing dict structures are merged recursively.
+
+        Args:
+            data: Target dict to merge into (modified in place)
+            field_data: Field values from metadata
+        """
+        for key, value in field_data.items():
+            existing = data.get(key)
+
+            if isinstance(existing, dict) and isinstance(value, dict):
+                # Both are dicts - merge recursively
+                Packable._merge_field_data(existing, value)
+            else:
+                data[key] = value
+
+    @classmethod
     def load_from_zip(cls: Type[T], source: Union[PathLike, BytesIO], use_jax: bool = False) -> T:
         """
         Load a Packable from a zip file.
@@ -397,10 +411,7 @@ class Packable(BaseModel):
             # Load and decode all arrays (handles both flat and nested)
             data = ZipUtils.load_arrays(zipf, use_jax)
 
-            # Merge non-array field values from metadata
-            ZipUtils.merge_field_data(data, metadata.field_data)
-
-            return cls(**data)
+            return cls.from_zip_data(data, metadata.field_data)
 
     def to_numpy(self: T) -> T:
         """

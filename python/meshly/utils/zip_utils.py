@@ -130,27 +130,3 @@ class ZipUtils:
 
         # Decode all arrays
         return ZipUtils.decode_arrays(encoded_arrays, use_jax)
-
-    @staticmethod
-    def merge_field_data(data: Dict[str, Any], field_data: Optional[Dict[str, Any]]) -> None:
-        """
-        Merge non-array field values into data dict.
-
-        Values like `dim: 2` from metadata.fieldData get merged in.
-        Existing dict structures are merged recursively.
-
-        Args:
-            data: Target dict to merge into (modified in place)
-            field_data: Field values from metadata.json
-        """
-        if not field_data:
-            return
-
-        for key, value in field_data.items():
-            existing = data.get(key)
-
-            if isinstance(existing, dict) and isinstance(value, dict):
-                # Both are dicts - merge recursively
-                ZipUtils.merge_field_data(existing, value)
-            else:
-                data[key] = value

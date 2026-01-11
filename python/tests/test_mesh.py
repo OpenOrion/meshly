@@ -136,7 +136,7 @@ class TestPydanticMesh(unittest.TestCase):
     def test_mesh_copy(self):
         """Test mesh copying functionality."""
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
-        copied_mesh = mesh.copy()
+        copied_mesh = mesh.model_copy(deep=True)
 
         # Verify the copy has the same data
         self.assertEqual(copied_mesh.vertex_count, mesh.vertex_count)
@@ -381,7 +381,7 @@ class TestCustomMesh(unittest.TestCase):
         )
 
         # Copy the mesh
-        copied_mesh = mesh.copy()
+        copied_mesh = mesh.model_copy(deep=True)
 
         # Verify polygon data is preserved
         self.assertEqual(copied_mesh.polygon_count, mesh.polygon_count)

@@ -137,21 +137,6 @@ class TestPackable(unittest.TestCase):
             loaded.fields["density"], data.fields["density"]
         )
 
-    def test_copy(self):
-        """Test deep copy functionality."""
-        original = SimpleData(
-            name="original",
-            values=np.array([1.0, 2.0, 3.0])
-        )
-
-        copied = original.copy()
-
-        # Modify original
-        original.values[0] = 999.0
-
-        # Copy should be unchanged
-        self.assertEqual(copied.values[0], 1.0)
-
     def test_deterministic_zip(self):
         """Test deterministic zip output with date_time parameter."""
         data = SimpleData(

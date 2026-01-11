@@ -45,14 +45,6 @@ from .utils import (
     MeshUtils,
 )
 
-from .snapshot import (
-    FieldData,
-    FieldMetadata,
-    Snapshot,
-    SnapshotMetadata,
-    SnapshotUtils,
-)
-
 
 __all__ = [
     # Packable base class

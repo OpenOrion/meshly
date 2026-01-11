@@ -10,6 +10,17 @@ import JSZip from "jszip"
 import { ZipUtils } from "./utils/zipUtils"
 
 /**
+ * TypedArray union for decoded array data
+ */
+export type TypedArray = Float32Array | Float64Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array
+
+/**
+ * Recursive type for decoded array data from zip files.
+ * Values are typed arrays or nested objects containing arrays.
+ */
+export type ArrayData = Record<string, TypedArray | ArrayData>
+
+/**
  * Base metadata interface for Packable zip files.
  * Uses snake_case to match Python serialization format.
  */
@@ -51,6 +62,60 @@ export class Packable<TData> {
     return JSON.parse(metadataText) as T
   }
 
+  /**
+   * Create instance from decoded arrays and field data.
+   *
+   * Merges non-array field values from metadata into the data object,
+   * then creates the instance.
+   *
+   * @param data - Decoded arrays from zip file
+   * @param fieldData - Non-array field values from metadata.field_data
+   * @returns New instance of this class
+   */
+  protected static fromZipData<TData>(
+    data: ArrayData,
+    fieldData?: Record<string, unknown>
+  ): Packable<TData> {
+    if (fieldData) {
+      Packable._mergeFieldData(data as Record<string, unknown>, fieldData)
+    }
+    return new Packable<TData>(data as TData)
+  }
+
+  /**
+   * Merge non-array field values into data object (in place).
+   *
+   * Values like `dim: 2` from metadata.fieldData get merged in.
+   * Existing object structures are merged recursively.
+   *
+   * @param data - Target object to merge into (modified in place)
+   * @param fieldData - Field values from metadata
+   */
+  protected static _mergeFieldData(
+    data: Record<string, unknown>,
+    fieldData: Record<string, unknown>
+  ): void {
+    for (const [key, value] of Object.entries(fieldData)) {
+      const existing = data[key]
+
+      if (
+        existing &&
+        typeof existing === "object" &&
+        typeof value === "object" &&
+        !ArrayBuffer.isView(existing) &&
+        !ArrayBuffer.isView(value)
+      ) {
+        // Both are objects - merge recursively
+        Packable._mergeFieldData(
+          existing as Record<string, unknown>,
+          value as Record<string, unknown>
+        )
+      } else {
+        data[key] = value
+      }
+    }
+  }
+
 
   /**
    * Load a Packable from a zip file
@@ -65,9 +130,6 @@ export class Packable<TData> {
     // Load and decode all arrays (handles both flat and nested)
     const data = await ZipUtils.loadArrays(zip)
 
-    // Merge non-array field values from metadata
-    ZipUtils.mergeFieldData(data, metadata.field_data)
-
-    return new Packable<TData>(data as TData)
+    return Packable.fromZipData<TData>(data, metadata.field_data)
   }
 }

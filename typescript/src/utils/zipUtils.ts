@@ -74,40 +74,4 @@ export class ZipUtils {
 
     return result
   }
-
-  /**
-   * Merge non-array field values into data object.
-   * 
-   * Values like `dim: 2` from metadata.fieldData get merged in.
-   * Existing dict structures are merged recursively.
-   * 
-   * @param data - Target object to merge into (modified in place)
-   * @param fieldData - Field values from metadata.json
-   */
-  static mergeFieldData(
-    data: Record<string, unknown>,
-    fieldData?: Record<string, unknown>
-  ): void {
-    if (!fieldData) return
-
-    for (const [key, value] of Object.entries(fieldData)) {
-      const existing = data[key]
-
-      if (
-        existing &&
-        typeof existing === "object" &&
-        typeof value === "object" &&
-        !ArrayBuffer.isView(existing) &&
-        !ArrayBuffer.isView(value)
-      ) {
-        // Both are objects - merge recursively
-        ZipUtils.mergeFieldData(
-          existing as Record<string, unknown>,
-          value as Record<string, unknown>
-        )
-      } else {
-        data[key] = value
-      }
-    }
-  }
 }

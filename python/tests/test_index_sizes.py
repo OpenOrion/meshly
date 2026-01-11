@@ -297,7 +297,7 @@ class TestIndexSizesIntegrity(unittest.TestCase):
         ]
 
         mesh = Mesh(vertices=self.vertices, indices=indices)
-        copied_mesh = mesh.copy()
+        copied_mesh = mesh.model_copy(deep=True)
 
         # Check that index_sizes is preserved in the copy
         np.testing.assert_array_equal(
@@ -505,7 +505,7 @@ class TestCellTypes(unittest.TestCase):
         )
 
         # Copy the mesh
-        copied_mesh = mesh.copy()
+        copied_mesh = mesh.model_copy(deep=True)
 
         # Check that cell_types is preserved in the copy
         np.testing.assert_array_equal(copied_mesh.cell_types, mesh.cell_types)

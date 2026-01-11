@@ -98,12 +98,14 @@ class MeshSizeInfo(BaseModel):
     vertex_count: int = Field(..., description="Number of vertices")
     vertex_size: int = Field(..., description="Size of each vertex in bytes")
     index_count: Optional[int] = Field(None, description="Number of indices")
-    index_size: int = Field(default=4, description="Size of each index in bytes")
+    index_size: int = Field(
+        default=4, description="Size of each index in bytes")
 
 
 class MeshMetadata(PackableMetadata):
     """Metadata for a Mesh saved to zip, extending PackableMetadata with mesh-specific info."""
-    mesh_size: MeshSizeInfo = Field(..., description="Mesh size information for decoding")
+    mesh_size: MeshSizeInfo = Field(...,
+                                    description="Mesh size information for decoding")
 
 
 class Mesh(Packable):
@@ -499,7 +501,7 @@ class Mesh(Packable):
 
         # Check if already all triangles
         if np.all(self.index_sizes == 3) and np.all(self.cell_types == VTKCellType.VTK_TRIANGLE):
-            return self.copy()
+            return self.model_copy(deep=True)
 
         # Compute cell offsets once
         cell_offsets = np.concatenate(
@@ -593,7 +595,7 @@ class Mesh(Packable):
         if self.indices is None:
             raise ValueError("Mesh has no indices to optimize")
 
-        result_mesh = self.copy()
+        result_mesh = self.model_copy(deep=True)
         optimized_indices = np.zeros_like(result_mesh.indices)
         meshopt_optimize_vertex_cache(
             optimized_indices, result_mesh.indices, result_mesh.index_count, result_mesh.vertex_count
@@ -606,7 +608,7 @@ class Mesh(Packable):
         if self.indices is None:
             raise ValueError("Mesh has no indices to optimize")
 
-        result_mesh = self.copy()
+        result_mesh = self.model_copy(deep=True)
         optimized_indices = np.zeros_like(result_mesh.indices)
         meshopt_optimize_overdraw(
             optimized_indices,
@@ -625,7 +627,7 @@ class Mesh(Packable):
         if self.indices is None:
             raise ValueError("Mesh has no indices to optimize")
 
-        result_mesh = self.copy()
+        result_mesh = self.model_copy(deep=True)
         optimized_vertices = np.zeros_like(result_mesh.vertices)
         unique_vertex_count = meshopt_optimize_vertex_fetch(
             optimized_vertices,
@@ -647,7 +649,7 @@ class Mesh(Packable):
         if self.indices is None:
             raise ValueError("Mesh has no indices to simplify")
 
-        result_mesh = self.copy()
+        result_mesh = self.model_copy(deep=True)
         target_index_count = int(result_mesh.index_count * target_ratio)
         simplified_indices = np.zeros(result_mesh.index_count, dtype=np.uint32)
 
@@ -767,7 +769,4 @@ class Mesh(Packable):
             mesh_data = {"vertices": vertices, "indices": indices}
             mesh_data.update(data)
 
-            # Merge non-array field values from metadata
-            ZipUtils.merge_field_data(mesh_data, metadata.field_data)
-
-            return cls(**mesh_data)
+            return cls.from_zip_data(mesh_data, metadata.field_data)

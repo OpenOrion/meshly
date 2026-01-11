@@ -12,11 +12,11 @@ export {
 } from './packable'
 
 // Export from array module
-export { ArrayMetadata, ArrayUtils, EncodedArray } from './array'
+export { ArrayMetadata, ArrayUtils } from './array'
 
 // Export from mesh module
 export {
-    EncodedMesh, Mesh,
+    Mesh,
     MeshData,
     MeshMetadata,
     MeshSize

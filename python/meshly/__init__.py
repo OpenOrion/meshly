@@ -31,7 +31,6 @@ from .array import (
     EncodedArray,
     ArrayMetadata,
     EncodedArrayModel,
-    ArrayResult,
     ArrayUtils,
 )
 

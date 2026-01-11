@@ -1,7 +1,6 @@
 import JSZip from 'jszip'
 import { MeshoptDecoder } from "meshoptimizer"
 import * as THREE from 'three'
-import { EncodedArray } from './array'
 import { Packable, PackableMetadata } from './packable'
 import { ZipUtils } from './utils'
 
@@ -75,47 +74,6 @@ export interface MeshData {
    */
   markers?: Record<string, number[][]>
 }
-
-/**
- * Encoded mesh data with meshoptimizer compression for vertices/indices
- */
-export interface EncodedMesh {
-  /**
-   * Encoded vertex buffer
-   */
-  vertices: Uint8Array
-
-  /**
-   * Encoded index buffer (optional)
-   */
-  indices?: Uint8Array
-
-  /**
-   * Number of vertices
-   */
-  vertex_count: number
-
-  /**
-   * Size of each vertex in bytes
-   */
-  vertex_size: number
-
-  /**
-   * Number of indices (optional)
-   */
-  index_count?: number | null
-
-  /**
-   * Size of each index in bytes
-   */
-  index_size: number
-
-  /**
-   * Dictionary of additional encoded arrays
-   */
-  arrays?: Record<string, EncodedArray>
-}
-
 
 /**
  * Mesh class for loading and working with meshoptimizer-compressed meshes.

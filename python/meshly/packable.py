@@ -394,6 +394,34 @@ class Packable(BaseModel):
 
             return cls(**data)
 
+    @staticmethod
+    def load_array(
+        source: Union[PathLike, BytesIO],
+        name: str,
+        use_jax: bool = False
+    ) -> Array:
+        """
+        Load a single array from a zip file without loading the entire object.
+
+        Useful for large files where you only need one array.
+
+        Args:
+            source: Path to the zip file or BytesIO object
+            name: Array name (e.g., "normals" or "markerIndices.boundary")
+            use_jax: If True, decode as JAX array
+
+        Returns:
+            Decoded array (numpy or JAX)
+
+        Raises:
+            KeyError: If array not found in zip
+
+        Example:
+            normals = Mesh.load_array("mesh.zip", "normals")
+        """
+        with zipfile.ZipFile(source, "r") as zipf:
+            return ZipUtils.load_array(zipf, name, use_jax)
+
     def to_numpy(self: T) -> T:
         """
         Create a new Packable with all arrays converted to NumPy arrays.

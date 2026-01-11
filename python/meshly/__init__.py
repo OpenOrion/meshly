@@ -22,7 +22,6 @@ from .packable import (
 
 from .mesh import (
     Mesh,
-    EncodedMesh,
     Array,
     HAS_JAX,
 )
@@ -53,7 +52,6 @@ __all__ = [
     "EncodedData",
     # Mesh classes
     "Mesh",
-    "EncodedMesh",
     # Array types and utilities
     "Array",
     "HAS_JAX",

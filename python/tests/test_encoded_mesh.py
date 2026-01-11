@@ -11,7 +11,7 @@ import unittest
 from typing import Optional, List
 from pydantic import Field
 
-from meshly import Mesh, EncodedMesh
+from meshly import Mesh
 from meshly.packable import EncodedData
 
 

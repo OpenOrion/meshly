@@ -7,7 +7,7 @@ using sizes instead of offsets for element reconstruction.
 
 import numpy as np
 from typing import Union, List, Dict, Tuple, Any, Optional
-from .cell_types import CellTypeUtils, VTKCellType
+from ..cell_types import CellTypeUtils, VTKCellType
 
 
 class TriangulationUtils:

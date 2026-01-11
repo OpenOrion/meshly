@@ -3,12 +3,46 @@
  */
 
 import JSZip from "jszip"
-import { ArrayMetadata, ArrayUtils } from "../array"
+import { ArrayMetadata, ArrayUtils, TypedArray } from "../array"
 
 /**
  * Static utility methods for zip file operations.
  */
 export class ZipUtils {
+  /**
+   * Load and decode a single array from a zip file.
+   *
+   * @param zip - JSZip instance to read from
+   * @param name - Array name (e.g., "normals" or "markerIndices.boundary")
+   * @returns Decoded typed array
+   * @throws Error if array not found in zip
+   */
+  static async loadArray(
+    zip: JSZip,
+    name: string
+  ): Promise<TypedArray> {
+    // Convert dotted name to path
+    const arrayPath = name.replace(/\./g, "/")
+    const arraysFolder = zip.folder("arrays")
+
+    if (!arraysFolder) {
+      throw new Error(`Array '${name}' not found in zip file`)
+    }
+
+    const metadataFile = arraysFolder.file(`${arrayPath}/metadata.json`)
+    const arrayFile = arraysFolder.file(`${arrayPath}/array.bin`)
+
+    if (!metadataFile || !arrayFile) {
+      throw new Error(`Array '${name}' not found in zip file`)
+    }
+
+    const metadataText = await metadataFile.async("text")
+    const metadata: ArrayMetadata = JSON.parse(metadataText)
+    const data = await arrayFile.async("uint8array")
+
+    return ArrayUtils.decodeArray(data, metadata)
+  }
+
   /**
    * Load and decode all arrays from a zip file's arrays/ folder.
    * 
@@ -40,22 +74,14 @@ export class ZipUtils {
 
     // Load and decode each array
     for (const arrayPath of arrayPaths) {
-      const metadataFile = arraysFolder.file(`${arrayPath}/metadata.json`)
-      const arrayFile = arraysFolder.file(`${arrayPath}/array.bin`)
+      // Convert path to dotted name (e.g., "markerIndices/boundary" -> "markerIndices.boundary")
+      const name = arrayPath.replace(/\//g, ".")
 
-      if (!metadataFile || !arrayFile) continue
+      const decoded = await ZipUtils.loadArray(zip, name)
 
-      const metadataText = await metadataFile.async("text")
-      const metadata: ArrayMetadata = JSON.parse(metadataText)
-      const data = await arrayFile.async("uint8array")
-      const decoded = ArrayUtils.decodeArray(data, metadata)
-
-      // Convert path to key (e.g., "markerIndices/boundary" -> "markerIndices.boundary")
-      const key = arrayPath.replace(/\//g, ".")
-
-      if (key.includes(".")) {
+      if (name.includes(".")) {
         // Nested array - build nested structure
-        const parts = key.split(".")
+        const parts = name.split(".")
         let current = result
 
         for (let i = 0; i < parts.length - 1; i++) {
@@ -68,7 +94,7 @@ export class ZipUtils {
         current[parts[parts.length - 1]] = decoded
       } else {
         // Flat array
-        result[key] = decoded
+        result[name] = decoded
       }
     }
 

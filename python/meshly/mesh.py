@@ -64,36 +64,6 @@ Array = Union[np.ndarray, JaxArray]
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
 
-
-class EncodedMesh(Packable):
-    """
-    Pydantic model representing an encoded mesh with its vertices and indices.
-
-    This is a Pydantic version of the EncodedMesh class in mesh.py.
-    """
-
-    vertices: bytes = Field(..., description="Encoded vertex buffer")
-    indices: Optional[bytes] = Field(
-        None, description="Encoded index buffer (optional)"
-    )
-    vertex_count: int = Field(..., description="Number of vertices")
-    vertex_size: int = Field(..., description="Size of each vertex in bytes")
-    index_count: Optional[int] = Field(
-        None, description="Number of indices (optional)")
-    index_size: int = Field(..., description="Size of each index in bytes")
-    index_sizes: Optional[bytes] = Field(
-        None, description="Encoded polygon sizes (optional)"
-    )
-    arrays: Dict[str, EncodedArray] = Field(
-        default_factory=dict, description="Dictionary of additional encoded arrays"
-    )
-
-    class Config:
-        """Pydantic configuration."""
-
-        arbitrary_types_allowed = True
-
-
 class MeshSizeInfo(BaseModel):
     """Mesh size information for meshoptimizer encoding/decoding."""
     vertex_count: int = Field(..., description="Number of vertices")
@@ -563,8 +533,7 @@ class Mesh(Packable):
 
         # Check for unsupported types
         skip_types = {VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE}
-        supported_types = {
-            VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
+        supported_types = {VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
         all_handled = supported_types | skip_types
 
         for i, ct in enumerate(effective_types):

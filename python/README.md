@@ -217,6 +217,18 @@ combined = Mesh.combine([mesh1, mesh2], marker_names=["part1", "part2"])
 boundary_mesh = mesh.extract_by_marker("inlet")
 ```
 
+### Loading Individual Arrays
+
+Load a single array without loading the entire object (useful for large files):
+
+```python
+# Load just the normals array
+normals = Mesh.load_array("mesh.zip", "normals")
+
+# Load nested arrays using dotted notation
+inlet_indices = Mesh.load_array("mesh.zip", "markers.inlet")
+```
+
 ## JAX Support
 
 Optional GPU-accelerated arrays:
@@ -245,10 +257,10 @@ class Packable(BaseModel):
     @classmethod
     def load_from_zip(cls, source, use_jax=False) -> T
     
-    def encode(self) -> EncodedData
+    @staticmethod
+    def load_array(source, name, use_jax=False) -> Array
     
-    @classmethod
-    def from_zip_data(cls, data: ArrayData, field_data: Dict[str, Any]) -> T
+    def encode(self) -> EncodedData
     
     @classmethod
     def load_metadata(cls, zipf, metadata_cls=PackableMetadata) -> M

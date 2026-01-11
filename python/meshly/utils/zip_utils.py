@@ -48,44 +48,53 @@ class ZipUtils:
             zipf.writestr(info, data_bytes)
 
     @staticmethod
-    def decode_arrays(
-        encoded_arrays: Dict[str, EncodedArray],
+    def load_array(
+        zipf: zipfile.ZipFile,
+        name: str,
         use_jax: bool = False
-    ) -> Dict[str, Any]:
+    ) -> Any:
         """
-        Decode encoded arrays into proper structure.
-
-        Handles both flat arrays (e.g., "vertices") and nested arrays
-        (e.g., "markerIndices.boundary" becomes {"markerIndices": {"boundary": ...}})
+        Load and decode a single array from a zip file.
 
         Args:
-            encoded_arrays: Dict of encoded arrays keyed by dotted path
-            use_jax: If True, decode as JAX arrays
+            zipf: Open ZipFile object
+            name: Array name (e.g., "normals" or "markerIndices.boundary")
+            use_jax: If True, decode as JAX array
 
         Returns:
-            Decoded arrays organized into proper structure
+            Decoded array (numpy or JAX)
+
+        Raises:
+            KeyError: If array not found in zip
         """
-        result: Dict[str, Any] = {}
+        # Convert dotted name to path
+        array_path = name.replace(".", "/")
+        bin_path = f"arrays/{array_path}/array.bin"
+        meta_path = f"arrays/{array_path}/metadata.json"
 
-        for key, encoded in encoded_arrays.items():
-            decoded = ArrayUtils.decode_array(encoded)
-            if use_jax and HAS_JAX:
-                decoded = jnp.array(decoded)
+        if bin_path not in zipf.namelist():
+            raise KeyError(f"Array '{name}' not found in zip file")
 
-            if "." in key:
-                # Nested array - build nested structure
-                parts = key.split(".")
-                current = result
-                for part in parts[:-1]:
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-                current[parts[-1]] = decoded
-            else:
-                # Flat array
-                result[key] = decoded
+        # Load metadata and data
+        with zipf.open(meta_path) as f:
+            metadata_dict = json.loads(f.read().decode("utf-8"))
+            metadata = ArrayMetadata(**metadata_dict)
 
-        return result
+        with zipf.open(bin_path) as f:
+            encoded_bytes = f.read()
+
+        encoded = EncodedArray(
+            data=encoded_bytes,
+            shape=tuple(metadata.shape),
+            dtype=np.dtype(metadata.dtype),
+            itemsize=metadata.itemsize,
+        )
+
+        decoded = ArrayUtils.decode_array(encoded)
+        if use_jax and HAS_JAX:
+            decoded = jnp.array(decoded)
+
+        return decoded
 
     @staticmethod
     def load_arrays(zipf: zipfile.ZipFile, use_jax: bool = False) -> Dict[str, Any]:
@@ -102,31 +111,29 @@ class ZipUtils:
         Returns:
             Decoded arrays organized into proper structure
         """
-        # Load encoded arrays from zip
-        encoded_arrays: Dict[str, EncodedArray] = {}
+        result: Dict[str, Any] = {}
 
         for array_file in zipf.namelist():
             if not (array_file.startswith("arrays/") and array_file.endswith("/array.bin")):
                 continue
 
-            # Extract array path: "arrays/markerIndices/boundary/array.bin" -> "markerIndices.boundary"
+            # Extract array name: "arrays/markerIndices/boundary/array.bin" -> "markerIndices.boundary"
             array_path = array_file[7:-10]  # Remove "arrays/" and "/array.bin"
-            key = array_path.replace("/", ".")
+            name = array_path.replace("/", ".")
 
-            # Load metadata and data
-            with zipf.open(f"arrays/{array_path}/metadata.json") as f:
-                metadata_dict = json.loads(f.read().decode("utf-8"))
-                metadata = ArrayMetadata(**metadata_dict)
+            decoded = ZipUtils.load_array(zipf, name, use_jax)
 
-            with zipf.open(array_file) as f:
-                encoded_bytes = f.read()
+            if "." in name:
+                # Nested array - build nested structure
+                parts = name.split(".")
+                current = result
+                for part in parts[:-1]:
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+                current[parts[-1]] = decoded
+            else:
+                # Flat array
+                result[name] = decoded
 
-            encoded_arrays[key] = EncodedArray(
-                data=encoded_bytes,
-                shape=tuple(metadata.shape),
-                dtype=np.dtype(metadata.dtype),
-                itemsize=metadata.itemsize,
-            )
-
-        # Decode all arrays
-        return ZipUtils.decode_arrays(encoded_arrays, use_jax)
+        return result

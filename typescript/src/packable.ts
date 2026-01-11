@@ -8,11 +8,8 @@
 
 import JSZip from "jszip"
 import { ZipUtils } from "./utils/zipUtils"
+import { TypedArray } from "./array"
 
-/**
- * TypedArray union for decoded array data
- */
-export type TypedArray = Float32Array | Float64Array | Int8Array | Int16Array | Int32Array | Uint8Array | Uint16Array | Uint32Array
 
 /**
  * Recursive type for decoded array data from zip files.
@@ -116,5 +113,26 @@ export class Packable<TData> {
     }
 
     return new Packable<TData>(data as TData)
+  }
+
+  /**
+   * Load a single array from a zip file without loading the entire object.
+   *
+   * Useful for large files where you only need one array.
+   *
+   * @param zipData - Zip file as ArrayBuffer or Uint8Array
+   * @param name - Array name (e.g., "normals" or "markers.inlet")
+   * @returns Decoded typed array
+   * @throws Error if array not found in zip
+   *
+   * @example
+   * const normals = await Mesh.loadArray(zipData, "normals")
+   */
+  static async loadArray(
+    zipData: ArrayBuffer | Uint8Array,
+    name: string
+  ): Promise<TypedArray> {
+    const zip = await JSZip.loadAsync(zipData)
+    return ZipUtils.loadArray(zip, name)
   }
 }

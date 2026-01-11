@@ -156,6 +156,18 @@ console.log(`Boundary vertices: ${boundaryMesh.vertices.length / 3}`)
 const geometry = mesh.extractMarkerAsBufferGeometry('inlet')
 ```
 
+## Loading Individual Arrays
+
+Load a single array without loading the entire mesh (useful for large files):
+
+```typescript
+// Load just the normals array
+const normals = await Mesh.loadArray(zipData, 'normals')
+
+// Load nested arrays using dotted notation
+const inletIndices = await Mesh.loadArray(zipData, 'markerIndices.inlet')
+```
+
 ## Decoding Encoded Meshes
 
 Decode meshes from the EncodedMesh format:
@@ -187,6 +199,7 @@ class Packable<TData> {
   
   static async loadMetadata<T extends PackableMetadata>(zip: JSZip): Promise<T>
   static async loadFromZip<TData>(zipData: ArrayBuffer | Uint8Array): Promise<Packable<TData>>
+  static async loadArray(zipData: ArrayBuffer | Uint8Array, name: string): Promise<TypedArray>
 }
 ```
 

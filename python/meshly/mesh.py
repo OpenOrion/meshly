@@ -769,4 +769,8 @@ class Mesh(Packable):
             mesh_data = {"vertices": vertices, "indices": indices}
             mesh_data.update(data)
 
-            return cls.from_zip_data(mesh_data, metadata.field_data)
+            # Merge non-array fields from metadata
+            if metadata.field_data:
+                cls._merge_field_data(mesh_data, metadata.field_data)
+
+            return cls(**mesh_data)

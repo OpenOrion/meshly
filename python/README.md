@@ -14,7 +14,6 @@ pip install meshly
 
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
-- **`Snapshot`**: Time-series data container for simulation results
 
 ### Key Capabilities
 
@@ -91,7 +90,6 @@ loaded = TexturedMesh.load_from_zip("textured.zip")
 ```
 Packable (base class)
 ├── Mesh (3D mesh with meshoptimizer encoding)
-├── Snapshot (time-series simulation data)
 └── Your custom classes...
 ```
 
@@ -104,7 +102,7 @@ PackableMetadata (base metadata)
 
 The `Packable` base class provides:
 - `save_to_zip()` / `load_from_zip()` - File I/O with compression
-- `encode()` / `decode()` - In-memory serialization
+- `encode()` - In-memory serialization
 - `load_metadata()` - Generic metadata loading with type parameter
 - `_create_metadata()` - Override point for custom metadata
 
@@ -219,21 +217,6 @@ combined = Mesh.combine([mesh1, mesh2], marker_names=["part1", "part2"])
 boundary_mesh = mesh.extract_by_marker("inlet")
 ```
 
-## Snapshot Utilities
-
-Store simulation data at different time points:
-
-```python
-from meshly import Snapshot
-
-snapshot = Snapshot(time=0.5)
-snapshot.add_field("velocity", velocity_array, "vector", "m/s")
-snapshot.add_field("pressure", pressure_array, "scalar", "Pa")
-
-snapshot.save_to_zip("simulation_t0.5.zip")
-loaded = Snapshot.load_from_zip("simulation_t0.5.zip")
-```
-
 ## JAX Support
 
 Optional GPU-accelerated arrays:
@@ -263,8 +246,9 @@ class Packable(BaseModel):
     def load_from_zip(cls, source, use_jax=False) -> T
     
     def encode(self) -> EncodedData
-    @classmethod  
-    def decode(cls, encoded_data, use_jax=False) -> T
+    
+    @classmethod
+    def from_zip_data(cls, data: ArrayData, field_data: Dict[str, Any]) -> T
     
     @classmethod
     def load_metadata(cls, zipf, metadata_cls=PackableMetadata) -> M
@@ -297,7 +281,6 @@ class Mesh(Packable):
     def optimize_overdraw(self, threshold=1.05) -> Mesh
     def optimize_vertex_fetch(self) -> Mesh
     def simplify(self, target_ratio=0.25, target_error=0.01) -> Mesh
-    def copy(self) -> Mesh
     def get_polygon_indices(self) -> Array | list
     def get_reconstructed_markers(self) -> Dict[str, List[List[int]]]
     def extract_by_marker(self, marker_name) -> Mesh

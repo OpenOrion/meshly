@@ -63,26 +63,6 @@ export class Packable<TData> {
   }
 
   /**
-   * Create instance from decoded arrays and field data.
-   *
-   * Merges non-array field values from metadata into the data object,
-   * then creates the instance.
-   *
-   * @param data - Decoded arrays from zip file
-   * @param fieldData - Non-array field values from metadata.field_data
-   * @returns New instance of this class
-   */
-  protected static fromZipData<TData>(
-    data: ArrayData,
-    fieldData?: Record<string, unknown>
-  ): Packable<TData> {
-    if (fieldData) {
-      Packable._mergeFieldData(data as Record<string, unknown>, fieldData)
-    }
-    return new Packable<TData>(data as TData)
-  }
-
-  /**
    * Merge non-array field values into data object (in place).
    *
    * Values like `dim: 2` from metadata.fieldData get merged in.
@@ -130,6 +110,11 @@ export class Packable<TData> {
     // Load and decode all arrays (handles both flat and nested)
     const data = await ZipUtils.loadArrays(zip)
 
-    return Packable.fromZipData<TData>(data, metadata.field_data)
+    // Merge non-array fields from metadata
+    if (metadata.field_data) {
+      Packable._mergeFieldData(data as Record<string, unknown>, metadata.field_data)
+    }
+
+    return new Packable<TData>(data as TData)
   }
 }

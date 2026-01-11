@@ -345,29 +345,6 @@ class Packable(BaseModel):
 
         return metadata
 
-    @classmethod
-    def from_zip_data(
-        cls: Type[T],
-        data: ArrayData,
-        field_data: Optional[Dict[str, Any]]
-    ) -> T:
-        """
-        Create instance from decoded arrays and field data.
-
-        Merges non-array field values from metadata into the data dict,
-        then creates the instance.
-
-        Args:
-            data: Decoded arrays from zip file
-            field_data: Non-array field values from metadata.field_data
-
-        Returns:
-            New instance of this class
-        """
-        if field_data:
-            cls._merge_field_data(data, field_data)
-        return cls(**data)
-
     @staticmethod
     def _merge_field_data(data: Dict[str, Any], field_data: Dict[str, Any]) -> None:
         """
@@ -411,7 +388,11 @@ class Packable(BaseModel):
             # Load and decode all arrays (handles both flat and nested)
             data = ZipUtils.load_arrays(zipf, use_jax)
 
-            return cls.from_zip_data(data, metadata.field_data)
+            # Merge non-array fields from metadata
+            if metadata.field_data:
+                cls._merge_field_data(data, metadata.field_data)
+
+            return cls(**data)
 
     def to_numpy(self: T) -> T:
         """

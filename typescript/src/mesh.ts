@@ -165,20 +165,6 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   // ============================================================
 
   /**
-   * Create Mesh instance from decoded arrays and field data.
-   * Overrides Packable.fromZipData to return a Mesh instance.
-   */
-  protected static override fromZipData(
-    data: MeshData,
-    fieldData?: Record<string, unknown>
-  ): Mesh {
-    if (fieldData) {
-      Packable._mergeFieldData(data as any, fieldData)
-    }
-    return new Mesh(data as MeshData)
-  }
-
-  /**
    * Load a mesh from a zip file
    */
   static override async loadFromZip(zipData: ArrayBuffer | Uint8Array): Promise<Mesh> {
@@ -224,7 +210,12 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
     meshData.vertices = vertices
     if (indices) meshData.indices = indices
 
-    return Mesh.fromZipData(meshData, metadata.field_data)
+    // Merge non-array fields from metadata
+    if (metadata.field_data) {
+      Packable._mergeFieldData(meshData as Record<string, unknown>, metadata.field_data)
+    }
+
+    return new Mesh(meshData)
   }
 
   // ============================================================

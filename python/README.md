@@ -83,6 +83,50 @@ mesh.save_to_zip("textured.zip")
 loaded = TexturedMesh.load_from_zip("textured.zip")
 ```
 
+### Dict of Pydantic BaseModel Objects
+
+You can also use dictionaries containing Pydantic `BaseModel` instances with numpy arrays:
+
+```python
+from pydantic import BaseModel, ConfigDict, Field
+
+class MaterialProperties(BaseModel):
+    """Material with numpy arrays - automatically serialized."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    name: str
+    diffuse: np.ndarray
+    specular: np.ndarray
+    shininess: float = 32.0
+
+class SceneMesh(Mesh):
+    """Mesh with dict of BaseModel materials."""
+    materials: dict[str, MaterialProperties] = Field(default_factory=dict)
+
+# Create mesh with materials
+mesh = SceneMesh(
+    vertices=vertices,
+    indices=indices,
+    materials={
+        "wood": MaterialProperties(
+            name="wood",
+            diffuse=np.array([0.8, 0.6, 0.4], dtype=np.float32),
+            specular=np.array([0.2, 0.2, 0.2], dtype=np.float32),
+        ),
+        "metal": MaterialProperties(
+            name="metal", 
+            diffuse=np.array([0.7, 0.7, 0.8], dtype=np.float32),
+            specular=np.array([0.9, 0.9, 0.9], dtype=np.float32),
+            shininess=64.0
+        )
+    }
+)
+
+mesh.save_to_zip("scene.zip")
+loaded = SceneMesh.load_from_zip("scene.zip")
+# loaded.materials["wood"] is a MaterialProperties instance
+```
+
 ## Architecture
 
 ### Class Hierarchy

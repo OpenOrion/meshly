@@ -7,8 +7,9 @@
  */
 
 import JSZip from "jszip"
-import { ZipUtils } from "./utils/zipUtils"
 import { TypedArray } from "./array"
+import { PackableUtils } from "./utils/packableUtils"
+import { ZipUtils } from "./utils/zipUtils"
 
 
 /**
@@ -59,39 +60,7 @@ export class Packable<TData> {
     return JSON.parse(metadataText) as T
   }
 
-  /**
-   * Merge non-array field values into data object (in place).
-   *
-   * Values like `dim: 2` from metadata.fieldData get merged in.
-   * Existing object structures are merged recursively.
-   *
-   * @param data - Target object to merge into (modified in place)
-   * @param fieldData - Field values from metadata
-   */
-  protected static _mergeFieldData(
-    data: Record<string, unknown>,
-    fieldData: Record<string, unknown>
-  ): void {
-    for (const [key, value] of Object.entries(fieldData)) {
-      const existing = data[key]
 
-      if (
-        existing &&
-        typeof existing === "object" &&
-        typeof value === "object" &&
-        !ArrayBuffer.isView(existing) &&
-        !ArrayBuffer.isView(value)
-      ) {
-        // Both are objects - merge recursively
-        Packable._mergeFieldData(
-          existing as Record<string, unknown>,
-          value as Record<string, unknown>
-        )
-      } else {
-        data[key] = value
-      }
-    }
-  }
 
 
   /**
@@ -109,7 +78,7 @@ export class Packable<TData> {
 
     // Merge non-array fields from metadata
     if (metadata.field_data) {
-      Packable._mergeFieldData(data as Record<string, unknown>, metadata.field_data)
+      PackableUtils.mergeFieldData(data as Record<string, unknown>, metadata.field_data)
     }
 
     return new Packable<TData>(data as TData)

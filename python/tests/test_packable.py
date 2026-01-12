@@ -4,8 +4,9 @@ import unittest
 import tempfile
 import os
 from io import BytesIO
+from typing import Optional
 import numpy as np
-from pydantic import Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from meshly.packable import Packable, EncodedData
 
@@ -27,6 +28,23 @@ class NestedData(Packable):
     """Data container with nested dictionary arrays."""
     label: str = Field(..., description="Label")
     fields: dict = Field(default_factory=dict, description="Named fields")
+
+
+class FieldData(BaseModel):
+    """Generic field data container for testing dict[str, BaseModel] edge case."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    name: str = Field(..., description="Field name")
+    type: str = Field(..., description="Field type (scalar, vector, tensor)")
+    data: np.ndarray = Field(..., description="Field data array")
+    units: Optional[str] = Field(None, description="Field units")
+
+
+class Snapshot(Packable):
+    """Snapshot with dict of BaseModel containing arrays."""
+    time: float = Field(..., description="Time value")
+    fields: dict[str, FieldData] = Field(
+        default_factory=dict, description="Field data")
 
 
 class TestPackable(unittest.TestCase):
@@ -169,6 +187,88 @@ class TestPackable(unittest.TestCase):
             SimulationResult.load_from_zip(buffer)
 
         self.assertIn("Class mismatch", str(ctx.exception))
+
+    def test_dict_of_basemodel_with_arrays(self):
+        """Test containers with dict[str, BaseModel] where BaseModel contains arrays."""
+        snapshot = Snapshot(
+            time=0.5,
+            fields={
+                "temperature": FieldData(
+                    name="temperature",
+                    type="scalar",
+                    data=np.array([300.0, 301.0, 302.0], dtype=np.float32),
+                    units="K"
+                ),
+                "velocity": FieldData(
+                    name="velocity",
+                    type="vector",
+                    data=np.array(
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+                    units="m/s"
+                )
+            }
+        )
+
+        # Check nested array detection
+        array_fields = snapshot.array_fields
+        self.assertIn("fields.temperature.data", array_fields)
+        self.assertIn("fields.velocity.data", array_fields)
+
+        # Test round-trip
+        buffer = BytesIO()
+        snapshot.save_to_zip(buffer)
+
+        buffer.seek(0)
+        loaded = Snapshot.load_from_zip(buffer)
+
+        self.assertAlmostEqual(loaded.time, snapshot.time)
+
+        # Check that FieldData instances are reconstructed
+        self.assertIsInstance(loaded.fields["temperature"], FieldData)
+        self.assertIsInstance(loaded.fields["velocity"], FieldData)
+
+        # Check non-array fields
+        self.assertEqual(loaded.fields["temperature"].name, "temperature")
+        self.assertEqual(loaded.fields["temperature"].type, "scalar")
+        self.assertEqual(loaded.fields["temperature"].units, "K")
+
+        self.assertEqual(loaded.fields["velocity"].name, "velocity")
+        self.assertEqual(loaded.fields["velocity"].type, "vector")
+        self.assertEqual(loaded.fields["velocity"].units, "m/s")
+
+        # Check array data
+        np.testing.assert_array_almost_equal(
+            loaded.fields["temperature"].data, snapshot.fields["temperature"].data
+        )
+        np.testing.assert_array_almost_equal(
+            loaded.fields["velocity"].data, snapshot.fields["velocity"].data
+        )
+
+    def test_dict_of_basemodel_with_optional_none_field(self):
+        """Test that optional None fields in BaseModel are handled correctly."""
+        snapshot = Snapshot(
+            time=1.0,
+            fields={
+                "pressure": FieldData(
+                    name="pressure",
+                    type="scalar",
+                    data=np.array([100.0, 101.0], dtype=np.float32),
+                    units=None  # Optional field set to None
+                )
+            }
+        )
+
+        buffer = BytesIO()
+        snapshot.save_to_zip(buffer)
+
+        buffer.seek(0)
+        loaded = Snapshot.load_from_zip(buffer)
+
+        self.assertIsInstance(loaded.fields["pressure"], FieldData)
+        self.assertIsNone(loaded.fields["pressure"].units)
+        np.testing.assert_array_almost_equal(
+            loaded.fields["pressure"].data, snapshot.fields["pressure"].data
+        )
 
 
 if __name__ == "__main__":

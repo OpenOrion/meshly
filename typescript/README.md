@@ -285,6 +285,13 @@ class ArrayUtils {
 // Zip file utilities
 class ZipUtils {
   static async loadArrays(zip: JSZip): Promise<Record<string, unknown>>
+  static async loadArray(zip: JSZip, name: string): Promise<TypedArray>
+}
+
+// Packable field merging utilities  
+class PackableUtils {
+  static mergeFieldData(data: Record<string, unknown>, fieldData: Record<string, unknown>): void
+  static stripModelMetadata(obj: Record<string, unknown>): Record<string, unknown>
 }
 ```
 

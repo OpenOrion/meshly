@@ -12,7 +12,7 @@ The Mesh class inherits from Packable and adds:
 - Marker support for boundary conditions and regions
 """
 
-from .utils import ElementUtils, TriangulationUtils, MeshUtils, ZipUtils
+from .utils import ElementUtils, TriangulationUtils, MeshUtils, ZipUtils, PackableUtils
 from .cell_types import CellTypeUtils, VTKCellType
 from .common import PathLike
 from .array import EncodedArray
@@ -741,6 +741,6 @@ class Mesh(Packable):
 
             # Merge non-array fields from metadata
             if metadata.field_data:
-                cls._merge_field_data(mesh_data, metadata.field_data)
+                PackableUtils.merge_field_data(mesh_data, metadata.field_data)
 
             return cls(**mesh_data)

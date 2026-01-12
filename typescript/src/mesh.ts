@@ -2,7 +2,7 @@ import JSZip from 'jszip'
 import { MeshoptDecoder } from "meshoptimizer"
 import * as THREE from 'three'
 import { Packable, PackableMetadata } from './packable'
-import { ZipUtils } from './utils'
+import { PackableUtils, ZipUtils } from './utils'
 
 
 /**
@@ -212,7 +212,7 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
 
     // Merge non-array fields from metadata
     if (metadata.field_data) {
-      Packable._mergeFieldData(meshData as Record<string, unknown>, metadata.field_data)
+      PackableUtils.mergeFieldData(meshData as unknown as Record<string, unknown>, metadata.field_data)
     }
 
     return new Mesh(meshData)

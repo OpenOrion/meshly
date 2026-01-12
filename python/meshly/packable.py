@@ -20,7 +20,6 @@ from typing import (
     TypeVar,
     Union,
     List,
-    get_type_hints,
 )
 import numpy as np
 from pydantic import BaseModel, Field
@@ -28,6 +27,7 @@ from pydantic import BaseModel, Field
 from .array import ArrayUtils, ArrayMetadata, EncodedArray
 from .common import PathLike
 from .utils.zip_utils import ZipUtils
+from .utils.packable_utils import PackableUtils
 
 # Optional JAX support
 try:
@@ -93,58 +93,17 @@ class Packable(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
-    def _extract_nested_arrays(self, obj: Any, prefix: str = "") -> Dict[str, Array]:
-        """
-        Recursively extract numpy/JAX arrays from nested structures.
-
-        Args:
-            obj: The object to extract arrays from
-            prefix: The current path prefix for nested keys
-
-        Returns:
-            Dictionary mapping dotted paths to numpy/JAX arrays
-        """
-        arrays = {}
-
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                nested_key = f"{prefix}.{key}" if prefix else key
-                if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
-                    arrays[nested_key] = value
-                elif isinstance(value, dict):
-                    arrays.update(
-                        self._extract_nested_arrays(value, nested_key))
-        elif isinstance(obj, np.ndarray) or (HAS_JAX and isinstance(obj, jnp.ndarray)):
-            arrays[prefix] = obj
-
-        return arrays
-
     @property
     def array_fields(self) -> Set[str]:
-        """
-        Identify all numpy/JAX array fields in this class, including nested arrays in dictionaries.
-
-        Returns:
-            Set of field names (including dotted paths for nested arrays)
-        """
+        """Get all array field paths, including nested arrays in dicts/BaseModels."""
         result = set()
-        type_hints = get_type_hints(self.__class__)
-
-        for field_name, field_type in type_hints.items():
+        for field_name in type(self).model_fields:
             if field_name in self.__private_attributes__:
                 continue
-            try:
-                value = getattr(self, field_name, None)
-                if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
-                    result.add(field_name)
-                elif isinstance(value, dict):
-                    # Extract nested arrays and add them with dotted notation
-                    nested_arrays = self._extract_nested_arrays(
-                        value, field_name)
-                    result.update(nested_arrays.keys())
-            except AttributeError:
-                pass
-
+            value = getattr(self, field_name, None)
+            if value is not None:
+                result.update(PackableUtils.extract_nested_arrays(
+                    value, field_name).keys())
         return result
 
     def encode(self) -> EncodedData:
@@ -174,13 +133,13 @@ class Packable(BaseModel):
                 else:
                     array = getattr(obj, parts[-1])
 
-                if isinstance(array, np.ndarray) or (HAS_JAX and isinstance(array, jnp.ndarray)):
+                if PackableUtils.is_array(array):
                     encoded_arrays[field_name] = ArrayUtils.encode_array(array)
             else:
                 # Handle direct array fields
                 try:
                     array = getattr(self, field_name)
-                    if isinstance(array, np.ndarray) or (HAS_JAX and isinstance(array, jnp.ndarray)):
+                    if PackableUtils.is_array(array):
                         encoded_arrays[field_name] = ArrayUtils.encode_array(
                             array)
                 except AttributeError:
@@ -189,43 +148,17 @@ class Packable(BaseModel):
         return EncodedData(arrays=encoded_arrays)
 
     def _extract_non_array_fields(self) -> Dict[str, Any]:
-        """
-        Extract non-array field values for metadata storage.
-
-        Returns:
-            Dictionary of field names to non-array values
-        """
-        def extract_non_arrays(obj: Any) -> Any:
-            """Recursively extract non-array values from nested structures."""
-            if isinstance(obj, dict):
-                result = {}
-                for key, value in obj.items():
-                    if isinstance(value, np.ndarray) or (HAS_JAX and isinstance(value, jnp.ndarray)):
-                        continue
-                    elif isinstance(value, dict):
-                        nested_result = extract_non_arrays(value)
-                        if nested_result:
-                            result[key] = nested_result
-                    else:
-                        result[key] = value
-                return result if result else None
-            elif isinstance(obj, np.ndarray) or (HAS_JAX and isinstance(obj, jnp.ndarray)):
-                return None
-            else:
-                return obj
-
+        """Extract non-array field values for metadata, preserving BaseModel type info."""
         model_data = {}
-        for field_name, field_value in self.model_dump().items():
-            if field_name in self.array_fields:
+        direct_arrays = {f for f in self.array_fields if "." not in f}
+        for name in type(self).model_fields:
+            if name in self.__private_attributes__ or name in direct_arrays:
                 continue
-
-            if isinstance(field_value, dict):
-                non_array_content = extract_non_arrays(field_value)
-                if non_array_content:
-                    model_data[field_name] = non_array_content
-            else:
-                model_data[field_name] = field_value
-
+            value = getattr(self, name, None)
+            if value is not None and not PackableUtils.is_array(value):
+                extracted = PackableUtils.extract_non_arrays(value)
+                if extracted is not None:
+                    model_data[name] = extracted
         return model_data
 
     def _create_metadata(self, field_data: Dict[str, Any]) -> PackableMetadata:
@@ -344,27 +277,6 @@ class Packable(BaseModel):
 
         return metadata
 
-    @staticmethod
-    def _merge_field_data(data: Dict[str, Any], field_data: Dict[str, Any]) -> None:
-        """
-        Merge non-array field values into data dict (in place).
-
-        Values like `dim: 2` from metadata.fieldData get merged in.
-        Existing dict structures are merged recursively.
-
-        Args:
-            data: Target dict to merge into (modified in place)
-            field_data: Field values from metadata
-        """
-        for key, value in field_data.items():
-            existing = data.get(key)
-
-            if isinstance(existing, dict) and isinstance(value, dict):
-                # Both are dicts - merge recursively
-                Packable._merge_field_data(existing, value)
-            else:
-                data[key] = value
-
     @classmethod
     def load_from_zip(cls: Type[T], source: Union[PathLike, BytesIO], use_jax: bool = False) -> T:
         """
@@ -389,7 +301,7 @@ class Packable(BaseModel):
 
             # Merge non-array fields from metadata
             if metadata.field_data:
-                cls._merge_field_data(data, metadata.field_data)
+                PackableUtils.merge_field_data(data, metadata.field_data)
 
             return cls(**data)
 

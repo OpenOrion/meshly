@@ -21,7 +21,15 @@ export interface PackableMetadata {
   module_name: string
   /** Non-array field values */
   field_data?: Record<string, unknown>
+  /** SHA256 hash references for cached packable fields (field_name -> hash) */
+  packable_refs?: Record<string, string>
 }
+
+/**
+ * Cache loader function type.
+ * Given a SHA256 hash, returns the cached packable bytes (or undefined if not found).
+ */
+export type CacheLoader = (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
 
 /**
  * Custom decoder function type.
@@ -115,6 +123,85 @@ export class Packable<TData> {
   }
 
   // ============================================================
+  // Packable field handling
+  // ============================================================
+
+  /**
+   * Get packable field types for this class.
+   * Subclasses override this to declare nested Packable fields.
+   * Returns a map of field names to their Packable subclass constructors.
+   */
+  protected static getPackableFieldTypes(): Record<string, typeof Packable> {
+    return {}
+  }
+
+  /**
+   * Get the set of packable field names
+   */
+  protected static getPackableFieldNames(): Set<string> {
+    return new Set(Object.keys(this.getPackableFieldTypes()))
+  }
+
+  /**
+   * Decode packable fields from the zip or cache.
+   * 
+   * Supports both embedded packables (in packables/ folder) and cached
+   * packables (referenced by SHA256 hash in metadata.packable_refs).
+   */
+  protected static async decodePackableFields(
+    zip: JSZip,
+    metadata: PackableMetadata,
+    data: Record<string, unknown>,
+    cacheLoader?: CacheLoader
+  ): Promise<void> {
+    const packableFieldTypes = this.getPackableFieldTypes()
+    const loadedFields = new Set<string>()
+
+    // First, try to load from cache using hash refs
+    if (cacheLoader && metadata.packable_refs) {
+      for (const [fieldName, hash] of Object.entries(metadata.packable_refs)) {
+        const PackableClass = packableFieldTypes[fieldName]
+        if (!PackableClass) continue
+
+        const cachedData = await cacheLoader(hash)
+        if (cachedData) {
+          // Use the specific subclass's decode method with cache support
+          data[fieldName] = await PackableClass.decode(cachedData, cacheLoader)
+          loadedFields.add(fieldName)
+        }
+      }
+    }
+
+    // Then load any embedded packables (for backward compatibility or no-cache case)
+    const packablesFolder = zip.folder("packables")
+    if (!packablesFolder) return
+
+    const packableFiles: string[] = []
+    packablesFolder.forEach((relativePath, file) => {
+      if (relativePath.endsWith(".zip") && !file.dir) {
+        packableFiles.push(relativePath)
+      }
+    })
+
+    for (const relativePath of packableFiles) {
+      // Extract field name: "inner_mesh.zip" -> "inner_mesh"
+      const fieldName = relativePath.slice(0, -4)
+
+      // Skip if already loaded from cache
+      if (loadedFields.has(fieldName)) continue
+
+      const PackableClass = packableFieldTypes[fieldName]
+      if (!PackableClass) continue
+
+      const file = packablesFolder.file(relativePath)
+      if (file) {
+        const encodedBytes = await file.async('arraybuffer')
+        data[fieldName] = await PackableClass.decode(encodedBytes, cacheLoader)
+      }
+    }
+  }
+
+  // ============================================================
   // Standard array loading
   // ============================================================
 
@@ -173,14 +260,22 @@ export class Packable<TData> {
   /**
    * Decode a Packable from zip data.
    * 
+   * @param zipData - Zip file bytes
+   * @param cacheLoader - Optional function to load cached packables by SHA256 hash.
+   *                      When provided and metadata contains packable_refs,
+   *                      nested packables are loaded from cache.
+   * 
    * Subclasses can override this to handle custom field decoding.
    */
   static async decode<TData>(
-    zipData: ArrayBuffer | Uint8Array
+    zipData: ArrayBuffer | Uint8Array,
+    cacheLoader?: CacheLoader
   ): Promise<Packable<TData>> {
     const zip = await JSZip.loadAsync(zipData)
     const metadata = await Packable.loadMetadata(zip)
     const customFieldNames = this.getCustomFieldNames()
+    const packableFieldNames = this.getPackableFieldNames()
+    const skipFields = new Set([...customFieldNames, ...packableFieldNames])
 
     const data: Record<string, unknown> = {}
 
@@ -188,7 +283,10 @@ export class Packable<TData> {
     await this.decodeCustomFields(zip, metadata, data)
 
     // Load standard arrays
-    await this.loadStandardArrays(zip, data, customFieldNames)
+    await this.loadStandardArrays(zip, data, skipFields)
+
+    // Decode packable fields
+    await this.decodePackableFields(zip, metadata, data, cacheLoader)
 
     // Merge non-array fields from metadata
     if (metadata.field_data) {

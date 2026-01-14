@@ -134,11 +134,18 @@ class ArrayUtils:
 
     @staticmethod
     def extract_nested_arrays(obj, prefix: str = "") -> Dict[str, Array]:
-        """Recursively extract arrays from nested dicts and BaseModel instances."""
+        """Recursively extract arrays from nested dicts and BaseModel instances.
+
+        Note: Packable instances are skipped - they handle their own encoding.
+        """
         from pydantic import BaseModel
+        from .packable import Packable
         arrays = {}
         if ArrayUtils.is_array(obj):
             arrays[prefix] = obj
+        elif isinstance(obj, Packable):
+            # Skip Packable instances - they encode themselves
+            pass
         elif isinstance(obj, BaseModel):
             for name in type(obj).model_fields:
                 value = getattr(obj, name, None)
@@ -153,23 +160,30 @@ class ArrayUtils:
 
     @staticmethod
     def extract_non_arrays(obj):
-        """Extract non-array values, preserving BaseModel type info for reconstruction."""
+        """Extract non-array values, preserving BaseModel type info for reconstruction.
+
+        Note: Packable instances are skipped - they handle their own encoding.
+        """
         from pydantic import BaseModel
+        from .packable import Packable
         if ArrayUtils.is_array(obj):
+            return None
+        if isinstance(obj, Packable):
+            # Skip Packable instances - they encode themselves
             return None
         if isinstance(obj, BaseModel):
             result = {"__model_class__": obj.__class__.__name__,
                       "__model_module__": obj.__class__.__module__}
             for name in type(obj).model_fields:
                 val = getattr(obj, name, None)
-                if not ArrayUtils.is_array(val):
+                if not ArrayUtils.is_array(val) and not isinstance(val, Packable):
                     extracted = ArrayUtils.extract_non_arrays(val)
                     if extracted is not None:
                         result[name] = extracted
             return result if len(result) > 2 else None
         if isinstance(obj, dict):
             result = {k: ArrayUtils.extract_non_arrays(v) for k, v in obj.items()
-                      if not ArrayUtils.is_array(v)}
+                      if not ArrayUtils.is_array(v) and not isinstance(v, Packable)}
             result = {k: v for k, v in result.items() if v is not None}
             return result or None
         return obj

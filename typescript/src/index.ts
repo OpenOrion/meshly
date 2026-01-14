@@ -7,6 +7,9 @@
 
 // Export from packable module
 export {
+    CacheLoader,
+    CustomDecoder,
+    CustomFieldConfig,
     Packable,
     PackableMetadata
 } from './packable'

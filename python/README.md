@@ -186,6 +186,87 @@ loaded = SceneMesh.load_from_zip("scene.zip")
 # loaded.materials["wood"] is a MaterialProperties instance
 ```
 
+### Nested Packables
+
+Fields that are themselves `Packable` subclasses are automatically handled:
+
+```python
+class PhysicsProperties(Packable):
+    """Physics data as a nested Packable."""
+    mass: float = 1.0
+    inertia_tensor: np.ndarray  # 3x3 matrix
+
+class PhysicsMesh(Mesh):
+    """Mesh with nested Packable field."""
+    physics: Optional[PhysicsProperties] = None
+
+# Nested Packables use their own encode/decode methods
+mesh = PhysicsMesh(
+    vertices=vertices,
+    indices=indices,
+    physics=PhysicsProperties(
+        mass=2.5,
+        inertia_tensor=np.eye(3, dtype=np.float32)
+    )
+)
+
+mesh.save_to_zip("physics_mesh.zip")
+loaded = PhysicsMesh.load_from_zip("physics_mesh.zip")
+print(loaded.physics.mass)  # 2.5
+```
+
+### Caching Nested Packables
+
+For large projects with shared nested Packables, use caching to deduplicate data using SHA256 content-addressable storage:
+
+```python
+from meshly import ReadHandler, WriteHandler
+
+# Create cache functions from a directory path
+cache_saver = WriteHandler.create_cache_saver("/path/to/cache")
+cache_loader = ReadHandler.create_cache_loader("/path/to/cache")
+
+# Save with caching - nested Packables stored separately by hash
+mesh.save_to_zip("mesh.zip", cache_saver=cache_saver)
+
+# Load with caching - nested Packables loaded from cache
+loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_loader=cache_loader)
+```
+
+**Deduplication example:**
+
+```python
+# Two meshes sharing identical physics properties
+shared_physics = PhysicsProperties(mass=1.0, inertia_tensor=np.eye(3))
+
+mesh1 = PhysicsMesh(vertices=v1, indices=i1, physics=shared_physics)
+mesh2 = PhysicsMesh(vertices=v2, indices=i2, physics=shared_physics)
+
+# Save both with the same cache - physics stored only once!
+mesh1.save_to_zip("mesh1.zip", cache_saver=cache_saver)
+mesh2.save_to_zip("mesh2.zip", cache_saver=cache_saver)
+```
+
+**Custom cache functions:**
+
+```python
+from meshly import CacheLoader, CacheSaver
+
+# Type signatures:
+# CacheLoader = Callable[[str], Optional[bytes]]  # hash -> bytes or None
+# CacheSaver = Callable[[str, bytes], None]       # hash, bytes -> None
+
+# Example: Redis-backed cache
+def redis_loader(hash: str) -> Optional[bytes]:
+    return redis_client.get(f"packable:{hash}")
+
+def redis_saver(hash: str, data: bytes) -> None:
+    redis_client.set(f"packable:{hash}", data)
+
+mesh.save_to_zip("mesh.zip", cache_saver=redis_saver)
+loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_loader=redis_loader)
+```
+
 ## Architecture
 
 ### Class Hierarchy
@@ -397,14 +478,14 @@ class CustomFieldConfig(Generic[V, M]):
 ```python
 class Packable(BaseModel):
     # File I/O
-    def save_to_zip(self, destination) -> None
+    def save_to_zip(self, destination, cache_saver=None) -> None
     @classmethod
-    def load_from_zip(cls, source, array_type=None) -> T
+    def load_from_zip(cls, source, array_type=None, cache_loader=None) -> T
     
     # In-memory serialization
-    def encode(self) -> bytes
+    def encode(self, cache_saver=None) -> bytes
     @classmethod
-    def decode(cls, buf: bytes, array_type=None) -> T
+    def decode(cls, buf: bytes, array_type=None, cache_loader=None) -> T
     
     # Array conversion
     def convert_to(self, array_type: ArrayType) -> T
@@ -467,6 +548,7 @@ class PackableMetadata(BaseModel):
     class_name: str
     module_name: str
     field_data: Dict[str, Any]
+    packable_refs: Dict[str, str]  # SHA256 hash refs for cached packables
 
 class MeshSizeInfo(BaseModel):
     vertex_count: int
@@ -477,6 +559,18 @@ class MeshSizeInfo(BaseModel):
 class MeshMetadata(PackableMetadata):
     mesh_size: MeshSizeInfo
     array_type: ArrayType = "numpy"  # "numpy" or "jax"
+```
+
+### Cache Types
+
+```python
+# Type aliases for cache callbacks
+CacheLoader = Callable[[str], Optional[bytes]]  # hash -> bytes or None
+CacheSaver = Callable[[str, bytes], None]       # hash, bytes -> None
+
+# Factory methods to create cache functions from paths
+ReadHandler.create_cache_loader(source: PathLike) -> CacheLoader
+WriteHandler.create_cache_saver(destination: PathLike) -> CacheSaver
 ```
 
 ## Examples

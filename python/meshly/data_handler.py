@@ -1,6 +1,6 @@
 import gzip
 import stat
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -10,6 +10,13 @@ from .common import PathLike
 
 
 ZipBuffer = BytesIO
+
+# Type aliases for cache callbacks
+CacheLoader = Callable[[str], Optional[bytes]]
+"""Load cached packable by SHA256 hash. Returns bytes or None if not found."""
+
+CacheSaver = Callable[[str, bytes], None]
+"""Save packable bytes to cache with SHA256 hash as key."""
 
 ReadHandlerSource = Union[PathLike, ZipBuffer]
 WriteHandlerDestination = Union[PathLike, ZipBuffer]
@@ -74,6 +81,31 @@ class ReadHandler(DataHandler):
         else:
             return FileReadHandler(source, rel_path)
 
+    @staticmethod
+    def create_cache_loader(source: ReadHandlerSource):
+        """
+        Create a CacheLoader function that reads from a handler source.
+
+        Args:
+            source: Path to cache directory or ZipBuffer containing cached packables
+
+        Returns:
+            CacheLoader function: (hash: str) -> Optional[bytes]
+
+        Example:
+            cache_loader = ReadHandler.create_cache_loader("/path/to/cache")
+            mesh = Mesh.load_from_zip("mesh.zip", cache_loader=cache_loader)
+        """
+        handler = ReadHandler.create_handler(source)
+
+        def loader(hash_digest: str) -> Optional[bytes]:
+            try:
+                return handler.read_binary(f"{hash_digest}.zip")
+            except (FileNotFoundError, KeyError):
+                return None
+
+        return loader
+
 
 class WriteHandler(DataHandler):
     """Protocol for writing files to various destinations."""
@@ -117,6 +149,31 @@ class WriteHandler(DataHandler):
             )
         else:
             return FileWriteHandler(destination, rel_path)
+
+    @staticmethod
+    def create_cache_saver(destination: WriteHandlerDestination):
+        """
+        Create a CacheSaver function that writes to a handler destination.
+
+        Args:
+            destination: Path to cache directory or ZipBuffer for cached packables
+
+        Returns:
+            CacheSaver function: (hash: str, data: bytes) -> None
+
+        Example:
+            cache_saver = WriteHandler.create_cache_saver("/path/to/cache")
+            mesh.save_to_zip("mesh.zip", cache_saver=cache_saver)
+        """
+        handler = WriteHandler.create_handler(destination)
+        written_hashes: set = set()
+
+        def saver(hash_digest: str, data: bytes) -> None:
+            if hash_digest not in written_hashes:
+                handler.write_binary(f"{hash_digest}.zip", data)
+                written_hashes.add(hash_digest)
+
+        return saver
 
     def finalize(self):
         """Close any resources if needed."""
@@ -250,5 +307,3 @@ class ZipWriteHandler(WriteHandler):
         """Close the zip file."""
         if hasattr(self, 'zip_file') and self.zip_file:
             self.zip_file.close()
-
-

@@ -194,6 +194,9 @@ const inletIndices = await Mesh.loadArray(zipData, 'markerIndices.inlet')
 ### CustomFieldConfig
 
 ```typescript
+// Cache loader function type for nested packables
+type CacheLoader = (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
+
 // Custom decoder function type
 type CustomDecoder<T, M extends PackableMetadata> = (data: Uint8Array, metadata: M) => T
 
@@ -211,8 +214,11 @@ interface CustomFieldConfig<T = unknown, M extends PackableMetadata = PackableMe
 class Packable<TData> {
   constructor(data: TData)
   
-  // Decode from zip data
-  static async decode<TData>(zipData: ArrayBuffer | Uint8Array): Promise<Packable<TData>>
+  // Decode from zip data (with optional cache loader for nested packables)
+  static async decode<TData>(
+    zipData: ArrayBuffer | Uint8Array,
+    cacheLoader?: CacheLoader
+  ): Promise<Packable<TData>>
   
   // Load single array
   static async loadArray(zipData: ArrayBuffer | Uint8Array, name: string): Promise<TypedArray>
@@ -222,6 +228,9 @@ class Packable<TData> {
   
   // Custom field configuration (override in subclasses)
   protected static getCustomFields(): Record<string, CustomFieldConfig>
+  
+  // Packable field types for nested packable decoding (override in subclasses)
+  protected static getPackableFieldTypes(): Record<string, typeof Packable>
 }
 ```
 
@@ -244,8 +253,8 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   isUniformPolygons(): boolean
   getPolygonIndices(): Uint32Array[] | Uint32Array
   
-  // Decoding
-  static async decode(zipData: ArrayBuffer | Uint8Array): Promise<Mesh>
+  // Decoding (with optional cache loader for nested packables)
+  static async decode(zipData: ArrayBuffer | Uint8Array, cacheLoader?: CacheLoader): Promise<Mesh>
   
   // Marker extraction
   extractByMarker(markerName: string): Mesh
@@ -283,6 +292,7 @@ interface PackableMetadata {
   class_name: string
   module_name: string
   field_data?: Record<string, unknown>
+  packable_refs?: Record<string, string>  // SHA256 hash refs for cached packables
 }
 
 // Mesh-specific metadata extending base
@@ -297,6 +307,40 @@ interface MeshSize {
   index_count: number | null
   index_size: number
 }
+```
+
+### Cache Support
+
+When loading meshes with nested Packables that were saved with caching (using Python's `cache_saver`), provide a `CacheLoader` function:
+
+```typescript
+import { Mesh, CacheLoader } from 'meshly'
+
+// CacheLoader type: (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
+
+// Example: Fetch from server cache
+const cacheLoader: CacheLoader = async (hash) => {
+  const response = await fetch(`/cache/${hash}.zip`)
+  return response.ok ? response.arrayBuffer() : undefined
+}
+
+// Decode with cache support
+const mesh = await Mesh.decode(zipData, cacheLoader)
+```
+
+**Cache loader examples:**
+
+```typescript
+// From IndexedDB
+const idbLoader: CacheLoader = async (hash) => {
+  const db = await openDB('meshly-cache')
+  return db.get('packables', hash)
+}
+
+// From Map (in-memory)
+const memoryCache = new Map<string, ArrayBuffer>()
+const memoryLoader: CacheLoader = async (hash) => memoryCache.get(hash)
+```
 ```
 
 ### Utility Classes

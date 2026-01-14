@@ -1,11 +1,9 @@
-import gzip
 import stat
 from typing import Callable, List, Optional, Union
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from abc import abstractmethod
-
 from .common import PathLike
 
 

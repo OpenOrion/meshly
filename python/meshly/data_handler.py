@@ -9,18 +9,10 @@ from .common import PathLike
 
 ZipBuffer = BytesIO
 
-# Type aliases for cache callbacks
-CacheLoader = Callable[[str], Optional[bytes]]
-"""Load cached packable by SHA256 hash. Returns bytes or None if not found."""
-
-CacheSaver = Callable[[str, bytes], None]
-"""Save packable bytes to cache with SHA256 hash as key."""
-
-ReadHandlerSource = Union[PathLike, ZipBuffer]
-WriteHandlerDestination = Union[PathLike, ZipBuffer]
+HandlerSource = Union[PathLike, ZipBuffer]
 
 
-class DataHandler:
+class BaseDataHandler:
     rel_path: str
 
     def resolved_path(self, subpath: PathLike) -> Path:
@@ -30,10 +22,10 @@ class DataHandler:
         return Path(f"{self.rel_path}/{subpath}")
 
 
-class ReadHandler(DataHandler):
-    """Protocol for reading files from various sources."""
+class DataHandler(BaseDataHandler):
+    """Protocol for reading and writing files to various sources."""
 
-    def __init__(self, source: ReadHandlerSource, rel_path=""):
+    def __init__(self, source: HandlerSource, rel_path=""):
         self.source = source
         self.rel_path = rel_path
 
@@ -48,71 +40,6 @@ class ReadHandler(DataHandler):
         ...
 
     @abstractmethod
-    def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]:
-        """List files in the given subpath."""
-        ...
-
-    def to_path(self, rel_path: str):
-        """Get the original source as a PathLike if applicable."""
-        return ReadHandler.create_handler(self.source, f"{self.rel_path}/{rel_path}" if self.rel_path != "" else rel_path, self)
-
-    @staticmethod
-    def create_handler(source: ReadHandlerSource, rel_path="", existing_handler: Optional["ReadHandler"] = None):
-        """
-        Create an appropriate read handler based on the source type.
-
-        Args:
-            source: Path to file/directory or BytesIO object
-            rel_path: Relative path prefix for file operations
-            existing_handler: Optional existing handler to reuse resources from
-
-        Returns:
-            ReadHandler implementation
-        """
-        if isinstance(source, ZipBuffer):
-            return ZipReadHandler(
-                source,
-                rel_path,
-                zip_file=existing_handler.zip_file if existing_handler and isinstance(
-                    existing_handler, ZipReadHandler) else None
-            )
-        else:
-            return FileReadHandler(source, rel_path)
-
-    @staticmethod
-    def create_cache_loader(source: ReadHandlerSource):
-        """
-        Create a CacheLoader function that reads from a handler source.
-
-        Args:
-            source: Path to cache directory or ZipBuffer containing cached packables
-
-        Returns:
-            CacheLoader function: (hash: str) -> Optional[bytes]
-
-        Example:
-            cache_loader = ReadHandler.create_cache_loader("/path/to/cache")
-            mesh = Mesh.load_from_zip("mesh.zip", cache_loader=cache_loader)
-        """
-        handler = ReadHandler.create_handler(source)
-
-        def loader(hash_digest: str) -> Optional[bytes]:
-            try:
-                return handler.read_binary(f"{hash_digest}.zip")
-            except (FileNotFoundError, KeyError):
-                return None
-
-        return loader
-
-
-class WriteHandler(DataHandler):
-    """Protocol for writing files to various destinations."""
-
-    def __init__(self, destination: WriteHandlerDestination, rel_path=""):
-        self.destination = destination
-        self.rel_path = rel_path
-
-    @abstractmethod
     def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None:
         """Write text content to a file."""
         ...
@@ -122,64 +49,49 @@ class WriteHandler(DataHandler):
         """Write binary content to a file."""
         ...
 
+    @abstractmethod
+    def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]:
+        """List files in the given subpath."""
+        ...
+
+    @abstractmethod
+    def exists(self, subpath: PathLike) -> bool:
+        """Check if a file exists."""
+        ...
+
     def to_path(self, rel_path: str):
-        """Get the original source as a PathLike if applicable."""
-        return WriteHandler.create_handler(self.destination, f"{self.rel_path}/{rel_path}" if self.rel_path != "" else rel_path, self)
+        """Get a handler with a nested relative path."""
+        return DataHandler.create(self.source, f"{self.rel_path}/{rel_path}" if self.rel_path != "" else rel_path, self)
 
     @staticmethod
-    def create_handler(destination: WriteHandlerDestination, rel_path: str = "", existing_handler: Optional["WriteHandler"] = None):
-        """
-        Create an appropriate write handler based on the destination type.
+    def create(source: HandlerSource, rel_path="", existing_handler: Optional["DataHandler"] = None):
+        """Create an appropriate handler based on the source type.
 
         Args:
-            destination: Path to file/directory or BytesIO object
-            is_zip: Whether to create a zip file
+            source: Path to file/directory or BytesIO object
+            rel_path: Relative path prefix for file operations
+            existing_handler: Optional existing handler to reuse resources from
 
         Returns:
-            WriteFileHandlerProtocol implementation
+            Handler implementation
         """
-        if isinstance(destination, ZipBuffer):
-            return ZipWriteHandler(
-                destination,
+        if isinstance(source, ZipBuffer):
+            return ZipHandler(
+                source,
                 rel_path,
                 zip_file=existing_handler.zip_file if existing_handler and isinstance(
-                    existing_handler, ZipWriteHandler) else None
+                    existing_handler, ZipHandler) else None
             )
         else:
-            return FileWriteHandler(destination, rel_path)
-
-    @staticmethod
-    def create_cache_saver(destination: WriteHandlerDestination):
-        """
-        Create a CacheSaver function that writes to a handler destination.
-
-        Args:
-            destination: Path to cache directory or ZipBuffer for cached packables
-
-        Returns:
-            CacheSaver function: (hash: str, data: bytes) -> None
-
-        Example:
-            cache_saver = WriteHandler.create_cache_saver("/path/to/cache")
-            mesh.save_to_zip("mesh.zip", cache_saver=cache_saver)
-        """
-        handler = WriteHandler.create_handler(destination)
-        written_hashes: set = set()
-
-        def saver(hash_digest: str, data: bytes) -> None:
-            if hash_digest not in written_hashes:
-                handler.write_binary(f"{hash_digest}.zip", data)
-                written_hashes.add(hash_digest)
-
-        return saver
+            return FileHandler(source, rel_path)
 
     def finalize(self):
         """Close any resources if needed."""
         pass
 
 
-class FileReadHandler(ReadHandler):
-    """Handler for reading files from the regular file system."""
+class FileHandler(DataHandler):
+    """Handler for reading and writing files on the regular file system."""
 
     source: Path
 
@@ -194,6 +106,30 @@ class FileReadHandler(ReadHandler):
         full_path = self.source / self.resolved_path(subpath)
         return full_path.read_bytes()
 
+    def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None:
+        full_path = self.source / self.resolved_path(subpath)
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content)
+
+        if executable:
+            current_permissions = full_path.stat().st_mode
+            full_path.chmod(current_permissions | stat.S_IXUSR |
+                            stat.S_IXGRP | stat.S_IXOTH)
+
+    def write_binary(self, subpath: PathLike, content: Union[bytes, BytesIO], executable: bool = False) -> None:
+        if isinstance(content, BytesIO):
+            content.seek(0)
+            content = content.read()
+
+        full_path = self.source / self.resolved_path(subpath)
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(content)
+
+        if executable:
+            current_permissions = full_path.stat().st_mode
+            full_path.chmod(current_permissions | stat.S_IXUSR |
+                            stat.S_IXGRP | stat.S_IXOTH)
+
     def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]:
         full_path = Path(self.source) / subpath
         if recursive:
@@ -201,20 +137,65 @@ class FileReadHandler(ReadHandler):
         else:
             return [p.relative_to(self.source) for p in full_path.glob("*")]
 
+    def exists(self, subpath: PathLike) -> bool:
+        full_path = self.source / self.resolved_path(subpath)
+        return full_path.exists()
 
-class ZipReadHandler(ReadHandler):
-    """Handler for reading files from zip archives."""
+
+class ZipHandler(DataHandler):
+    """Handler for reading and writing files in zip archives."""
+
+    # Fixed date_time for deterministic zip output (2020-01-01 00:00:00)
+    DETERMINISTIC_DATE_TIME = (2020, 1, 1, 0, 0, 0)
 
     def __init__(self, source: Union[PathLike, BytesIO], rel_path: str = "", zip_file: Optional[zipfile.ZipFile] = None):
         super().__init__(source, rel_path)
-        self.zip_file: zipfile.ZipFile = zip_file or zipfile.ZipFile(
-            source, "r")
+        if zip_file is not None:
+            self.zip_file: zipfile.ZipFile = zip_file
+            self._mode = zip_file.mode
+        else:
+            # Try to open for reading first, fall back to writing if it's empty or doesn't exist
+            try:
+                self.zip_file = zipfile.ZipFile(source, "r")
+                self._mode = "r"
+            except (zipfile.BadZipFile, FileNotFoundError):
+                self.zip_file = zipfile.ZipFile(source, "w")
+                self._mode = "w"
+
+    def _ensure_mode(self, required_mode: str):
+        """Switch zip file mode if needed."""
+        if self._mode != required_mode:
+            self.zip_file.close()
+            self.zip_file = zipfile.ZipFile(self.source, required_mode)
+            self._mode = required_mode
 
     def read_text(self, subpath: PathLike, encoding: str = "utf-8") -> str:
+        self._ensure_mode("r")
         return self.zip_file.read(str(self.resolved_path(subpath))).decode(encoding)
 
     def read_binary(self, subpath: PathLike) -> bytes:
+        self._ensure_mode("r")
         return self.zip_file.read(str(self.resolved_path(subpath)))
+
+    def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None:
+        self._ensure_mode("w")
+        zip_info = zipfile.ZipInfo(str(self.resolved_path(
+            subpath)), date_time=self.DETERMINISTIC_DATE_TIME)
+        if executable:
+            zip_info.external_attr = 0o755 << 16
+        self.zip_file.writestr(zip_info, content)
+
+    def write_binary(self, subpath: PathLike, content: Union[bytes, BytesIO], executable: bool = False) -> None:
+        self._ensure_mode("w")
+        if isinstance(content, BytesIO):
+            content.seek(0)
+            content = content.read()
+
+        zip_info = zipfile.ZipInfo(str(self.resolved_path(
+            subpath)), date_time=self.DETERMINISTIC_DATE_TIME)
+        if executable:
+            zip_info.external_attr = 0o755 << 16
+        self.zip_file.writestr(zip_info, content)
 
     def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]:
         if subpath == "" or recursive:
@@ -230,78 +211,17 @@ class ZipReadHandler(ReadHandler):
                 if str(Path(p.filename).parent) == self.resolved_path(subpath)
             ]
 
-    def finalize(self):
-        """Close the zip file."""
-        if self.zip_file:
-            self.zip_file.close()
-
-
-class FileWriteHandler(WriteHandler):
-    """Handler for writing files to the regular file system."""
-
-    destination: Path
-
-    def __init__(self, destination: PathLike, rel_path: str = ""):
-        super().__init__(Path(destination), rel_path)
-
-    def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None:
-        full_path = self.destination / self.resolved_path(subpath)
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content)
-
-        if executable:
-            # Make file executable by owner, group, and others
-            current_permissions = full_path.stat().st_mode
-            full_path.chmod(current_permissions | stat.S_IXUSR |
-                            stat.S_IXGRP | stat.S_IXOTH)
-
-    def write_binary(self, subpath: PathLike, content: Union[bytes, BytesIO], executable: bool = False) -> None:
-        if isinstance(content, BytesIO):
-            content.seek(0)
-            content = content.read()
-
-        full_path = self.destination / self.resolved_path(subpath)
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_bytes(content)
-
-        if executable:
-            # Make file executable by owner, group, and others
-            current_permissions = full_path.stat().st_mode
-            full_path.chmod(current_permissions | stat.S_IXUSR |
-                            stat.S_IXGRP | stat.S_IXOTH)
-
-
-class ZipWriteHandler(WriteHandler):
-    """Handler for writing files to zip archives."""
-
-    # Fixed date_time for deterministic zip output (2020-01-01 00:00:00)
-    DETERMINISTIC_DATE_TIME = (2020, 1, 1, 0, 0, 0)
-
-    def __init__(self, destination: Union[PathLike, BytesIO], rel_path: str = "", zip_file: Optional[zipfile.ZipFile] = None):
-        super().__init__(destination, rel_path)
-        self.zip_file = zip_file or zipfile.ZipFile(destination, "w")
-
-    def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None:
-        zip_info = zipfile.ZipInfo(str(self.resolved_path(
-            subpath)), date_time=self.DETERMINISTIC_DATE_TIME)
-        if executable:
-            # Set Unix file permissions for executable files (0o755)
-            zip_info.external_attr = 0o755 << 16
-        self.zip_file.writestr(zip_info, content)
-
-    def write_binary(self, subpath: PathLike, content: Union[bytes, BytesIO], executable: bool = False) -> None:
-        if isinstance(content, BytesIO):
-            content.seek(0)
-            content = content.read()
-
-        zip_info = zipfile.ZipInfo(str(self.resolved_path(
-            subpath)), date_time=self.DETERMINISTIC_DATE_TIME)
-        if executable:
-            # Set Unix file permissions for executable files (0o755)
-            zip_info.external_attr = 0o755 << 16
-        self.zip_file.writestr(zip_info, content)
+    def exists(self, subpath: PathLike) -> bool:
+        try:
+            self.zip_file.getinfo(str(self.resolved_path(subpath)))
+            return True
+        except KeyError:
+            return False
 
     def finalize(self):
         """Close the zip file."""
         if hasattr(self, 'zip_file') and self.zip_file:
             self.zip_file.close()
+
+
+ZipBuffer = BytesIO

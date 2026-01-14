@@ -12,7 +12,7 @@ import numpy as np
 from pydantic import BaseModel, Field
 from meshoptimizer._loader import lib
 
-from .data_handler import WriteHandler, ReadHandler, ZipBuffer
+from .data_handler import DataHandler, ZipBuffer
 from .common import PathLike
 
 # Optional JAX support
@@ -297,7 +297,7 @@ class ArrayUtils:
 
     @staticmethod
     def save_array(
-        handler: WriteHandler,
+        handler: DataHandler,
         name: str,
         encoded_array: EncodedArray,
     ) -> None:
@@ -305,7 +305,7 @@ class ArrayUtils:
         Save a single encoded array using a write handler.
 
         Args:
-            handler: WriteHandler for writing files
+            handler: DataHandler for writing files
             name: Array name (e.g., "normals" or "markerIndices.boundary")
             encoded_array: EncodedArray to save
         """
@@ -320,7 +320,7 @@ class ArrayUtils:
 
     @staticmethod
     def load_array(
-        handler: ReadHandler,
+        handler: DataHandler,
         name: str,
         array_type: Optional[ArrayType] = None
     ) -> Any:
@@ -328,7 +328,7 @@ class ArrayUtils:
         Load and decode a single array using a read handler.
 
         Args:
-            handler: ReadHandler for reading files
+            handler: DataHandler for reading files
             name: Array name (e.g., "normals" or "markerIndices.boundary")
             array_type: Target array backend type ("numpy" or "jax"). If None (default), uses
                     the array_type stored in the array's metadata.
@@ -403,9 +403,9 @@ class ArrayUtils:
         """
         if isinstance(source, BytesIO):
             source.seek(0)
-            handler = ReadHandler.create_handler(ZipBuffer(source.read()))
+            handler = DataHandler.create(ZipBuffer(source.read()))
         else:
             with open(source, "rb") as f:
-                handler = ReadHandler.create_handler(ZipBuffer(f.read()))
+                handler = DataHandler.create(ZipBuffer(f.read()))
 
         return ArrayUtils.load_array(handler, "array", array_type)

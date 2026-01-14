@@ -26,7 +26,7 @@ from typing import (
 from pydantic import BaseModel, Field
 from .array import ArrayUtils, ArrayType, Array
 from .common import PathLike
-from .data_handler import WriteHandler, ReadHandler, ZipBuffer, CacheLoader, CacheSaver
+from .data_handler import DataHandler, ZipBuffer
 
 
 class PackableMetadata(BaseModel):
@@ -135,7 +135,7 @@ class Packable(BaseModel):
     @classmethod
     def load_metadata(
         cls,
-        handler: ReadHandler,
+        handler: DataHandler,
         metadata_cls: Type[TPackableMetadata] = PackableMetadata
     ) -> TPackableMetadata:
         """
@@ -165,20 +165,20 @@ class Packable(BaseModel):
     def save_to_zip(
         self,
         destination: Union[PathLike, BytesIO],
-        cache_saver: Optional[CacheSaver] = None,
+        cache_handler: Optional[DataHandler] = None,
     ) -> None:
         """
         Save this container to a zip file.
 
         Args:
             destination: Path to the output zip file or BytesIO buffer
-            cache_saver: Optional callback to save nested Packables to cache.
-                        When provided, nested Packable fields are saved via
-                        cache_saver(hash, bytes) and only hash references are
-                        stored in the parent zip. This enables deduplication
-                        and smaller parent files.
+            cache_handler: Optional DataHandler for caching nested Packables.
+                          When provided, nested Packable fields are saved via
+                          cache_handler.write_binary() and only hash
+                          references are stored in the parent zip. This enables
+                          deduplication and smaller parent files.
         """
-        encoded = self.encode(cache_saver=cache_saver)
+        encoded = self.encode(cache_handler=cache_handler)
         if isinstance(destination, BytesIO):
             destination.write(encoded)
         else:
@@ -190,7 +190,7 @@ class Packable(BaseModel):
         cls: Type[TPackable],
         source: Union[PathLike, BytesIO],
         array_type: Optional[ArrayType] = None,
-        cache_loader: Optional[CacheLoader] = None,
+        cache_handler: Optional[DataHandler] = None,
     ) -> TPackable:
         """
         Load a Packable from a zip file.
@@ -200,19 +200,20 @@ class Packable(BaseModel):
             array_type: Array backend to use ("numpy" or "jax"). If None (default),
                        uses the array_type stored in each array's metadata,
                        preserving the original array types that were saved.
-            cache_loader: Optional callback to load nested Packables from cache.
-                         When the zip contains hash references (packable_refs),
-                         cache_loader(hash) is called to retrieve cached bytes.
+            cache_handler: Optional Handler to load nested Packables from cache.
+                          When the zip contains hash references (packable_refs),
+                          cache_handler.read_binary() is called to retrieve
+                          cached bytes.
 
         Returns:
             Loaded Packable instance
         """
         if isinstance(source, BytesIO):
             source.seek(0)
-            return cls.decode(source.read(), array_type, cache_loader)
+            return cls.decode(source.read(), array_type, cache_handler)
         else:
             with open(source, "rb") as f:
-                return cls.decode(f.read(), array_type, cache_loader)
+                return cls.decode(f.read(), array_type, cache_handler)
 
     @classmethod
     def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
@@ -270,7 +271,7 @@ class Packable(BaseModel):
     @classmethod
     def _decode_custom_fields(
         cls,
-        handler: ReadHandler,
+        handler: DataHandler,
         metadata: PackableMetadata,
         data: Dict[str, Any],
         array_type: Optional[ArrayType] = None
@@ -289,7 +290,7 @@ class Packable(BaseModel):
     @classmethod
     def _load_standard_arrays(
         cls,
-        handler: ReadHandler,
+        handler: DataHandler,
         data: Dict[str, Any],
         skip_fields: Set[str],
         array_type: Optional[ArrayType] = None
@@ -367,7 +368,7 @@ class Packable(BaseModel):
 
         return encoded_arrays
 
-    def _encode_custom_fields(self, handler: WriteHandler) -> None:
+    def _encode_custom_fields(self, handler: DataHandler) -> None:
         """Encode fields with custom encoders."""
         for field_name, config in self._get_custom_fields().items():
             value = getattr(self, field_name)
@@ -377,47 +378,50 @@ class Packable(BaseModel):
 
     def _encode_packable_fields(
         self,
-        handler: WriteHandler,
-        cache_saver: Optional[CacheSaver] = None
+        handler: DataHandler,
+        cache_handler: Optional[DataHandler] = None
     ) -> Dict[str, str]:
         """Encode fields that are Packable instances.
 
         Args:
-            handler: WriteHandler for the parent zip (used when no cache)
-            cache_saver: Optional callback to save to cache. When provided,
-                        packables are saved via cache_saver(hash, bytes) and
-                        only hash refs are returned.
+            handler: DataHandler for the parent zip (used when no cache)
+            cache_handler: Optional DataHandler to save to cache. When provided,
+                          packables are saved via cache_handler.write_binary() and
+                          only hash refs are returned.
 
         Returns:
-            Dict mapping field names to SHA256 hashes (only when cache_saver provided)
+            Dict mapping field names to SHA256 hashes (only when cache_handler provided)
         """
         packable_refs: Dict[str, str] = {}
 
         for field_name, packable in self._get_packable_fields().items():
             # Recursively use cache for nested packables too
-            encoded_bytes = packable.encode(cache_saver=cache_saver)
+            encoded_bytes = packable.encode(cache_handler=cache_handler)
 
-            if cache_saver is not None:
+            if cache_handler is not None:
                 # Compute SHA256 hash of the encoded bytes
-                hash_digest = hashlib.sha256(encoded_bytes).hexdigest()
+                hash_digest = hashlib.sha256(encoded_bytes).hexdigest()[:16]
                 packable_refs[field_name] = hash_digest
 
-                # Save to cache
-                cache_saver(hash_digest, encoded_bytes)
+                # Save to cache with deduplication via exists check
+                hash_path = f"{hash_digest}.zip"
+                if not cache_handler.exists(hash_path):
+                    cache_handler.write_binary(hash_path, encoded_bytes)
             else:
                 # Embed in parent zip as before
                 handler.write_binary(f"packables/{field_name}.zip", encoded_bytes)
 
         return packable_refs
 
-    def encode(self, cache_saver: Optional[CacheSaver] = None) -> bytes:
+    def encode(self, cache_handler: Optional[DataHandler] = None) -> bytes:
         """
         Serialize this Packable to bytes.
 
         Args:
-            cache_saver: Optional callback to save nested Packables to cache.
-                        When provided, nested Packable fields are saved via
-                        cache_saver(hash, bytes) instead of embedding in the zip.
+            cache_handler: Optional DataHandler to save nested Packables to cache.
+                          When provided, nested Packable fields are saved via
+                          cache_handler.write_binary() instead of
+                          embedding in the zip.
 
         Returns:
             Bytes containing the zip-encoded data
@@ -435,7 +439,7 @@ class Packable(BaseModel):
 
         # Write to zip
         destination = ZipBuffer()
-        handler = WriteHandler.create_handler(destination)
+        handler = DataHandler.create(destination)
 
         # Save standard arrays
         for name in sorted(encoded_arrays.keys()):
@@ -445,7 +449,7 @@ class Packable(BaseModel):
         self._encode_custom_fields(handler)
 
         # Save packable fields (with optional caching)
-        packable_refs = self._encode_packable_fields(handler, cache_saver)
+        packable_refs = self._encode_packable_fields(handler, cache_handler)
 
         # Store packable refs in metadata if using cache
         if packable_refs:
@@ -463,11 +467,11 @@ class Packable(BaseModel):
     @classmethod
     def _decode_packable_fields(
         cls,
-        handler: ReadHandler,
+        handler: DataHandler,
         metadata: PackableMetadata,
         data: Dict[str, Any],
         array_type: Optional[ArrayType] = None,
-        cache_loader: Optional[CacheLoader] = None
+        cache_handler: Optional[DataHandler] = None
     ) -> None:
         """Decode fields that are Packable instances.
 
@@ -475,11 +479,11 @@ class Packable(BaseModel):
         packables (referenced by SHA256 hash in metadata.packable_refs).
 
         Args:
-            handler: ReadHandler for the parent zip
+            handler: DataHandler for the parent zip
             metadata: Loaded metadata containing packable_refs
             data: Dict to populate with decoded packables
             array_type: Optional array backend to use
-            cache_loader: Optional callback to load cached packables by hash
+            cache_handler: Optional DataHandler to load cached packables by hash
         """
         # Get field type hints to know the Packable subclass for each field
         import typing
@@ -503,14 +507,16 @@ class Packable(BaseModel):
             if not isinstance(field_type, type) or not issubclass(field_type, Packable):
                 return
 
-            data[field_name] = field_type.decode(encoded_bytes, array_type, cache_loader)
+            data[field_name] = field_type.decode(encoded_bytes, array_type, cache_handler)
 
         # First, try to load from cache using hash refs
-        if cache_loader and metadata.packable_refs:
+        if cache_handler and metadata.packable_refs:
             for field_name, hash_digest in metadata.packable_refs.items():
-                cached_bytes = cache_loader(hash_digest)
-                if cached_bytes is not None:
+                try:
+                    cached_bytes = cache_handler.read_binary(f"{hash_digest}.zip")
                     decode_field(field_name, cached_bytes)
+                except (FileNotFoundError, KeyError):
+                    pass  # Not in cache, will try embedded
 
         # Then load any embedded packables (for backward compatibility or no-cache case)
         try:
@@ -538,7 +544,7 @@ class Packable(BaseModel):
         cls: Type[TPackable],
         buf: bytes,
         array_type: Optional[ArrayType] = None,
-        cache_loader: Optional[CacheLoader] = None
+        cache_handler: Optional[DataHandler] = None
     ) -> TPackable:
         """
         Deserialize a Packable from bytes.
@@ -547,14 +553,15 @@ class Packable(BaseModel):
             buf: Bytes containing the zip-encoded data
             array_type: Array backend to use. If None (default), uses the
                        array_type stored in each array's metadata.
-            cache_loader: Optional callback to load nested Packables from cache.
-                         When metadata contains hash references, cache_loader(hash)
-                         is called to retrieve cached bytes.
+            cache_handler: Optional DataHandler to load nested Packables from cache.
+                          When metadata contains hash references,
+                          cache_handler.read_binary() is called to retrieve
+                          cached bytes.
 
         Returns:
             Loaded Packable instance
         """
-        handler = ReadHandler.create_handler(ZipBuffer(buf))
+        handler = DataHandler.create(ZipBuffer(buf))
         metadata = cls.load_metadata(handler)
 
         # Fields to skip when loading standard arrays
@@ -569,7 +576,7 @@ class Packable(BaseModel):
         cls._load_standard_arrays(handler, data, skip_fields, array_type)
 
         # Decode packable fields
-        cls._decode_packable_fields(handler, metadata, data, array_type, cache_loader)
+        cls._decode_packable_fields(handler, metadata, data, array_type, cache_handler)
 
         # Merge non-array fields from metadata
         if metadata.field_data:
@@ -616,10 +623,10 @@ class Packable(BaseModel):
         """
         if isinstance(source, BytesIO):
             source.seek(0)
-            handler = ReadHandler.create_handler(ZipBuffer(source.read()))
+            handler = DataHandler.create(ZipBuffer(source.read()))
         else:
             with open(source, "rb") as f:
-                handler = ReadHandler.create_handler(ZipBuffer(f.read()))
+                handler = DataHandler.create(ZipBuffer(f.read()))
         return ArrayUtils.load_array(handler, name, array_type)
 
     def convert_to(self: TPackable, array_type: ArrayType) -> TPackable:

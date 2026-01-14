@@ -191,12 +191,26 @@ const inletIndices = await Mesh.loadArray(zipData, 'markerIndices.inlet')
 
 ## API Reference
 
+### DataHandler
+
+```typescript
+// DataHandler interface for loading and saving data from various sources
+interface DataHandler {
+  // Read binary content from a file
+  readBinary(path: string): Promise<ArrayBuffer | Uint8Array | undefined>
+  // Check if a file exists (optional)
+  exists?(path: string): Promise<boolean>
+}
+
+// Create a DataHandler from a hash loader function
+function createDataHandler(
+  loader: (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
+): DataHandler
+```
+
 ### CustomFieldConfig
 
 ```typescript
-// Cache loader function type for nested packables
-type CacheLoader = (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
-
 // Custom decoder function type
 type CustomDecoder<T, M extends PackableMetadata> = (data: Uint8Array, metadata: M) => T
 
@@ -214,10 +228,10 @@ interface CustomFieldConfig<T = unknown, M extends PackableMetadata = PackableMe
 class Packable<TData> {
   constructor(data: TData)
   
-  // Decode from zip data (with optional cache loader for nested packables)
+  // Decode from zip data (with optional cache handler for nested packables)
   static async decode<TData>(
     zipData: ArrayBuffer | Uint8Array,
-    cacheLoader?: CacheLoader
+    cacheHandler?: DataHandler
   ): Promise<Packable<TData>>
   
   // Load single array
@@ -253,8 +267,8 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   isUniformPolygons(): boolean
   getPolygonIndices(): Uint32Array[] | Uint32Array
   
-  // Decoding (with optional cache loader for nested packables)
-  static async decode(zipData: ArrayBuffer | Uint8Array, cacheLoader?: CacheLoader): Promise<Mesh>
+  // Decoding (with optional cache handler for nested packables)
+  static async decode(zipData: ArrayBuffer | Uint8Array, cacheHandler?: DataHandler): Promise<Mesh>
   
   // Marker extraction
   extractByMarker(markerName: string): Mesh
@@ -311,35 +325,46 @@ interface MeshSize {
 
 ### Cache Support
 
-When loading meshes with nested Packables that were saved with caching (using Python's `cache_saver`), provide a `CacheLoader` function:
+When loading meshes with nested Packables that were saved with caching (using Python's `cache_handler`), provide a `DataHandler`:
 
 ```typescript
-import { Mesh, CacheLoader } from 'meshly'
+import { Mesh, DataHandler, createDataHandler } from 'meshly'
 
-// CacheLoader type: (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
-
-// Example: Fetch from server cache
-const cacheLoader: CacheLoader = async (hash) => {
+// Example: Fetch from server cache using createDataHandler helper
+const cacheHandler = createDataHandler(async (hash) => {
   const response = await fetch(`/cache/${hash}.zip`)
   return response.ok ? response.arrayBuffer() : undefined
-}
+})
 
 // Decode with cache support
-const mesh = await Mesh.decode(zipData, cacheLoader)
+const mesh = await Mesh.decode(zipData, cacheHandler)
 ```
 
-**Cache loader examples:**
+**DataHandler examples:**
 
 ```typescript
-// From IndexedDB
-const idbLoader: CacheLoader = async (hash) => {
+// From IndexedDB using createDataHandler
+const idbHandler = createDataHandler(async (hash) => {
   const db = await openDB('meshly-cache')
   return db.get('packables', hash)
-}
+})
 
 // From Map (in-memory)
 const memoryCache = new Map<string, ArrayBuffer>()
-const memoryLoader: CacheLoader = async (hash) => memoryCache.get(hash)
+const memoryHandler = createDataHandler(async (hash) => memoryCache.get(hash))
+
+// Custom class implementing DataHandler interface
+class ServerCacheHandler implements DataHandler {
+  constructor(private baseUrl: string) {}
+  
+  async readBinary(path: string): Promise<ArrayBuffer | undefined> {
+    const response = await fetch(`${this.baseUrl}/${path}`)
+    return response.ok ? response.arrayBuffer() : undefined
+  }
+}
+
+const serverHandler = new ServerCacheHandler('/api/cache')
+const mesh = await Mesh.decode(zipData, serverHandler)
 ```
 ```
 

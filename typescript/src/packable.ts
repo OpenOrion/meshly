@@ -8,6 +8,7 @@
 
 import JSZip from "jszip"
 import { ArrayUtils, TypedArray } from "./array"
+import { DataHandler } from "./data-handler"
 
 
 /**
@@ -24,12 +25,6 @@ export interface PackableMetadata {
   /** SHA256 hash references for cached packable fields (field_name -> hash) */
   packable_refs?: Record<string, string>
 }
-
-/**
- * Cache loader function type.
- * Given a SHA256 hash, returns the cached packable bytes (or undefined if not found).
- */
-export type CacheLoader = (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
 
 /**
  * Custom decoder function type.
@@ -152,22 +147,26 @@ export class Packable<TData> {
     zip: JSZip,
     metadata: PackableMetadata,
     data: Record<string, unknown>,
-    cacheLoader?: CacheLoader
+    cacheHandler?: DataHandler
   ): Promise<void> {
     const packableFieldTypes = this.getPackableFieldTypes()
     const loadedFields = new Set<string>()
 
     // First, try to load from cache using hash refs
-    if (cacheLoader && metadata.packable_refs) {
+    if (cacheHandler && metadata.packable_refs) {
       for (const [fieldName, hash] of Object.entries(metadata.packable_refs)) {
         const PackableClass = packableFieldTypes[fieldName]
         if (!PackableClass) continue
 
-        const cachedData = await cacheLoader(hash)
-        if (cachedData) {
-          // Use the specific subclass's decode method with cache support
-          data[fieldName] = await PackableClass.decode(cachedData, cacheLoader)
-          loadedFields.add(fieldName)
+        try {
+          const cachedData = await cacheHandler.readBinary(`${hash}.zip`)
+          if (cachedData) {
+            // Use the specific subclass's decode method with cache support
+            data[fieldName] = await PackableClass.decode(cachedData, cacheHandler)
+            loadedFields.add(fieldName)
+          }
+        } catch {
+          // Not in cache, will try embedded
         }
       }
     }
@@ -196,7 +195,7 @@ export class Packable<TData> {
       const file = packablesFolder.file(relativePath)
       if (file) {
         const encodedBytes = await file.async('arraybuffer')
-        data[fieldName] = await PackableClass.decode(encodedBytes, cacheLoader)
+        data[fieldName] = await PackableClass.decode(encodedBytes, cacheHandler)
       }
     }
   }
@@ -261,15 +260,15 @@ export class Packable<TData> {
    * Decode a Packable from zip data.
    * 
    * @param zipData - Zip file bytes
-   * @param cacheLoader - Optional function to load cached packables by SHA256 hash.
-   *                      When provided and metadata contains packable_refs,
-   *                      nested packables are loaded from cache.
+   * @param cacheHandler - Optional DataHandler to load cached packables by SHA256 hash.
+   *                       When provided and metadata contains packable_refs,
+   *                       nested packables are loaded from cache.
    * 
    * Subclasses can override this to handle custom field decoding.
    */
   static async decode<TData>(
     zipData: ArrayBuffer | Uint8Array,
-    cacheLoader?: CacheLoader
+    cacheHandler?: DataHandler
   ): Promise<Packable<TData>> {
     const zip = await JSZip.loadAsync(zipData)
     const metadata = await Packable.loadMetadata(zip)
@@ -286,7 +285,7 @@ export class Packable<TData> {
     await this.loadStandardArrays(zip, data, skipFields)
 
     // Decode packable fields
-    await this.decodePackableFields(zip, metadata, data, cacheLoader)
+    await this.decodePackableFields(zip, metadata, data, cacheHandler)
 
     // Merge non-array fields from metadata
     if (metadata.field_data) {

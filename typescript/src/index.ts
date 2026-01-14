@@ -7,12 +7,14 @@
 
 // Export from packable module
 export {
-    CacheLoader,
     CustomDecoder,
     CustomFieldConfig,
     Packable,
     PackableMetadata
 } from './packable'
+
+// Export from data-handler module
+export { DataHandler, createDataHandler } from './data-handler'
 
 // Export from array module
 export { ArrayMetadata, ArrayType, ArrayUtils, EncodedArray } from './array'

@@ -279,7 +279,7 @@ class TestNestedPackableCache:
 
     def test_nested_packable_with_cache(self):
         """Test nested packable save/load with cache."""
-        from meshly.data_handler import ReadHandler, WriteHandler
+        from meshly.data_handler import DataHandler
 
         inner = InnerPackable(
             label="cached_inner",
@@ -291,15 +291,15 @@ class TestNestedPackableCache:
             cache_path = os.path.join(tmpdir, "cache")
             zip_path = os.path.join(tmpdir, "outer.zip")
 
-            cache_saver = WriteHandler.create_cache_saver(cache_path)
-            outer.save_to_zip(zip_path, cache_saver=cache_saver)
+            cache_handler = DataHandler.create(cache_path)
+            outer.save_to_zip(zip_path, cache_handler=cache_handler)
 
             cache_files = os.listdir(cache_path)
             assert len(cache_files) == 1
             assert cache_files[0].endswith(".zip")
 
-            cache_loader = ReadHandler.create_cache_loader(cache_path)
-            loaded = OuterPackable.load_from_zip(zip_path, cache_loader=cache_loader)
+            read_cache_handler = DataHandler.create(cache_path)
+            loaded = OuterPackable.load_from_zip(zip_path, cache_handler=read_cache_handler)
 
             assert loaded.name == "cached_outer"
             assert loaded.inner is not None
@@ -308,7 +308,7 @@ class TestNestedPackableCache:
 
     def test_cache_deduplication(self):
         """Test that identical nested packables share the same cache file."""
-        from meshly.data_handler import ReadHandler, WriteHandler
+        from meshly.data_handler import DataHandler
 
         inner1 = InnerPackable(
             label="same",
@@ -326,23 +326,23 @@ class TestNestedPackableCache:
             zip1_path = os.path.join(tmpdir, "outer1.zip")
             zip2_path = os.path.join(tmpdir, "outer2.zip")
 
-            cache_saver = WriteHandler.create_cache_saver(cache_path)
-            outer1.save_to_zip(zip1_path, cache_saver=cache_saver)
-            outer2.save_to_zip(zip2_path, cache_saver=cache_saver)
+            cache_handler = DataHandler.create(cache_path)
+            outer1.save_to_zip(zip1_path, cache_handler=cache_handler)
+            outer2.save_to_zip(zip2_path, cache_handler=cache_handler)
 
             cache_files = os.listdir(cache_path)
             assert len(cache_files) == 1
 
-            cache_loader = ReadHandler.create_cache_loader(cache_path)
-            loaded1 = OuterPackable.load_from_zip(zip1_path, cache_loader=cache_loader)
-            loaded2 = OuterPackable.load_from_zip(zip2_path, cache_loader=cache_loader)
+            read_cache_handler = DataHandler.create(cache_path)
+            loaded1 = OuterPackable.load_from_zip(zip1_path, cache_handler=read_cache_handler)
+            loaded2 = OuterPackable.load_from_zip(zip2_path, cache_handler=read_cache_handler)
 
             assert loaded1.inner.label == "same"
             assert loaded2.inner.label == "same"
 
     def test_cache_missing_falls_back_to_embedded(self):
         """Test loading works when cache file is missing but data is embedded."""
-        from meshly.data_handler import ReadHandler
+        from meshly.data_handler import DataHandler
 
         inner = InnerPackable(
             label="fallback",
@@ -356,9 +356,9 @@ class TestNestedPackableCache:
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = os.path.join(tmpdir, "cache")
             os.makedirs(cache_path)
-            cache_loader = ReadHandler.create_cache_loader(cache_path)
+            read_cache_handler = DataHandler.create(cache_path)
             buffer.seek(0)
-            loaded = OuterPackable.load_from_zip(buffer, cache_loader=cache_loader)
+            loaded = OuterPackable.load_from_zip(buffer, cache_handler=read_cache_handler)
 
             assert loaded.name == "fallback_outer"
             assert loaded.inner.label == "fallback"

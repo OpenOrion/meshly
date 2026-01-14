@@ -13,7 +13,7 @@ The Mesh class inherits from Packable and adds:
 """
 
 from .utils import ElementUtils, TriangulationUtils, MeshUtils
-from .data_handler import WriteHandler, ReadHandler
+from .data_handler import DataHandler
 from .cell_types import CellTypeUtils, VTKCellType
 from .array import ArrayUtils, ArrayType, Array
 from .packable import Packable, PackableMetadata, CustomFieldConfig
@@ -658,6 +658,6 @@ class Mesh(Packable):
         )
 
     @classmethod
-    def load_metadata(cls, handler: ReadHandler, metadata_cls: Type[PackableMetadata] = None) -> MeshMetadata:
+    def load_metadata(cls, handler: DataHandler, metadata_cls: Type[PackableMetadata] = None) -> MeshMetadata:
         """Load MeshMetadata from handler."""
         return super().load_metadata(handler, MeshMetadata)

@@ -16,6 +16,7 @@ pip install meshly
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
 - **`CustomFieldConfig`**: Configuration for custom field encoding/decoding
 - **`ArrayUtils`**: Utility class for encoding/decoding individual arrays
+- **`DataHandler`**: Unified interface for reading and writing files or zip archives
 
 ### Key Capabilities
 
@@ -220,17 +221,16 @@ print(loaded.physics.mass)  # 2.5
 For large projects with shared nested Packables, use caching to deduplicate data using SHA256 content-addressable storage:
 
 ```python
-from meshly import ReadHandler, WriteHandler
+from meshly import DataHandler
 
-# Create cache functions from a directory path
-cache_saver = WriteHandler.create_cache_saver("/path/to/cache")
-cache_loader = ReadHandler.create_cache_loader("/path/to/cache")
+# Create cache handlers from a directory path
+cache_handler = DataHandler.create("/path/to/cache")
 
 # Save with caching - nested Packables stored separately by hash
-mesh.save_to_zip("mesh.zip", cache_saver=cache_saver)
+mesh.save_to_zip("mesh.zip", cache_handler=cache_handler)
 
 # Load with caching - nested Packables loaded from cache
-loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_loader=cache_loader)
+loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_handler=cache_handler)
 ```
 
 **Deduplication example:**
@@ -242,29 +242,61 @@ shared_physics = PhysicsProperties(mass=1.0, inertia_tensor=np.eye(3))
 mesh1 = PhysicsMesh(vertices=v1, indices=i1, physics=shared_physics)
 mesh2 = PhysicsMesh(vertices=v2, indices=i2, physics=shared_physics)
 
-# Save both with the same cache - physics stored only once!
-mesh1.save_to_zip("mesh1.zip", cache_saver=cache_saver)
-mesh2.save_to_zip("mesh2.zip", cache_saver=cache_saver)
+# Save both with the same cache handler - physics stored only once!
+mesh1.save_to_zip("mesh1.zip", cache_handler=cache_handler)
+mesh2.save_to_zip("mesh2.zip", cache_handler=cache_handler)
 ```
 
-**Custom cache functions:**
+**Custom cache handlers:**
+
+You can implement custom `DataHandler` subclasses for different storage backends:
 
 ```python
-from meshly import CacheLoader, CacheSaver
+from meshly.data_handler import DataHandler
+from typing import Optional, List
+from pathlib import Path
 
-# Type signatures:
-# CacheLoader = Callable[[str], Optional[bytes]]  # hash -> bytes or None
-# CacheSaver = Callable[[str, bytes], None]       # hash, bytes -> None
+class RedisDataHandler(DataHandler):
+    """Data handler backed by Redis."""
+    def __init__(self, redis_client, prefix="packable:"):
+        super().__init__(source="", rel_path="")
+        self.redis = redis_client
+        self.prefix = prefix
+    
+    def read_binary(self, subpath) -> bytes:
+        data = self.redis.get(f"{self.prefix}{subpath}")
+        if data is None:
+            raise FileNotFoundError(f"Key not found: {self.prefix}{subpath}")
+        return data
+    
+    def read_text(self, subpath, encoding="utf-8") -> str:
+        return self.read_binary(subpath).decode(encoding)
+    
+    def list_files(self, subpath="", recursive=False) -> List[Path]:
+        raise NotImplementedError("File listing not supported")
 
-# Example: Redis-backed cache
-def redis_loader(hash: str) -> Optional[bytes]:
-    return redis_client.get(f"packable:{hash}")
 
-def redis_saver(hash: str, data: bytes) -> None:
-    redis_client.set(f"packable:{hash}", data)
+class RedisWriteHandler(WriteHandler):
+    """Write handler backed by Redis."""
+    def __init__(self, redis_client, prefix="packable:"):
+        super().__init__(destination="", rel_path="")
+        self.redis = redis_client
+        self.prefix = prefix
+    
+    def write_binary(self, subpath, content, executable=False) -> None:
+        data = content if isinstance(content, bytes) else content.read()
+        self.redis.set(f"{self.prefix}{subpath}", data)
+    
+    def write_text(self, subpath, content, executable=False) -> None:
+        self.redis.set(f"{self.prefix}{subpath}", content.encode('utf-8'))
 
-mesh.save_to_zip("mesh.zip", cache_saver=redis_saver)
-loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_loader=redis_loader)
+
+# Usage with Redis
+cache_writer = RedisWriteHandler(redis_client)
+cache_reader = RedisReadHandler(redis_client)
+
+mesh.save_to_zip("mesh.zip", cache_handler=cache_writer)
+loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_handler=cache_reader)
 ```
 
 ## Architecture
@@ -573,6 +605,106 @@ ReadHandler.create_cache_loader(source: PathLike) -> CacheLoader
 WriteHandler.create_cache_saver(destination: PathLike) -> CacheSaver
 ```
 
+### Data Handlers
+
+The `data_handler` module provides abstract interfaces for reading and writing data, supporting both regular files and zip archives.
+
+```python
+from meshly import ReadHandler, WriteHandler
+
+# ReadHandler - Abstract base for reading files
+class ReadHandler:
+    def __init__(self, source: PathLike | BytesIO, rel_path: str = "")
+    
+    # Abstract methods (implemented by FileReadHandler, ZipReadHandler)
+    def read_text(self, subpath: PathLike, encoding: str = "utf-8") -> str
+    def read_binary(self, subpath: PathLike) -> bytes
+    def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]
+    
+    # Navigate to subdirectory
+    def to_path(self, rel_path: str) -> ReadHandler
+    
+    # Factory method - automatically creates FileReadHandler or ZipReadHandler
+    @staticmethod
+    def create_handler(source: PathLike | BytesIO, rel_path: str = "") -> ReadHandler
+    
+    # Create cache loader for nested Packables
+    @staticmethod
+    def create_cache_loader(source: PathLike | BytesIO) -> CacheLoader
+
+# WriteHandler - Abstract base for writing files
+class WriteHandler:
+    def __init__(self, destination: PathLike | BytesIO, rel_path: str = "")
+    
+    # Abstract methods (implemented by FileWriteHandler, ZipWriteHandler)
+    def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None
+    def write_binary(self, subpath: PathLike, content: bytes | BytesIO, executable: bool = False) -> None
+    
+    # Navigate to subdirectory
+    def to_path(self, rel_path: str) -> WriteHandler
+    
+    # Factory method - automatically creates FileWriteHandler or ZipWriteHandler
+    @staticmethod
+    def create_handler(destination: PathLike | BytesIO, rel_path: str = "") -> WriteHandler
+    
+    # Create cache saver for nested Packables
+    @staticmethod
+    def create_cache_saver(destination: PathLike | BytesIO) -> CacheSaver
+    
+    # Close resources (important for ZipWriteHandler)
+    def finalize(self) -> None
+```
+
+#### Concrete Implementations
+
+```python
+# FileReadHandler - Read from filesystem
+handler = FileReadHandler("/path/to/directory")
+data = handler.read_binary("subdir/file.bin")
+files = handler.list_files("subdir", recursive=True)
+
+# ZipReadHandler - Read from zip archives
+with open("archive.zip", "rb") as f:
+    handler = ZipReadHandler(BytesIO(f.read()))
+    metadata = handler.read_text("metadata.json")
+    array_data = handler.read_binary("arrays/vertices/array.bin")
+
+# FileWriteHandler - Write to filesystem
+handler = FileWriteHandler("/path/to/output")
+handler.write_text("config.json", '{"version": 1}')
+handler.write_binary("data.bin", compressed_bytes)
+
+# ZipWriteHandler - Write to zip archives
+buf = BytesIO()
+handler = ZipWriteHandler(buf)
+handler.write_text("metadata.json", json_string)
+handler.write_binary("data.bin", array_bytes)
+handler.finalize()  # Important: closes the zip file
+zip_bytes = buf.getvalue()
+```
+
+#### Advanced Usage
+
+```python
+# Use handlers for custom storage backends
+class S3ReadHandler(ReadHandler):
+    """Custom handler for reading from S3."""
+    def __init__(self, bucket: str, prefix: str = ""):
+        self.bucket = bucket
+        self.prefix = prefix
+    
+    def read_binary(self, subpath: PathLike) -> bytes:
+        key = f"{self.prefix}/{subpath}" if self.prefix else str(subpath)
+        return s3_client.get_object(Bucket=self.bucket, Key=key)['Body'].read()
+    
+    # ... implement other methods
+
+# Deterministic zip output (ZipWriteHandler uses fixed timestamps)
+# This ensures identical content produces identical zip files
+handler = ZipWriteHandler(buf)
+# All files get timestamp (2020, 1, 1, 0, 0, 0) for reproducibility
+```
+
 ## Examples
 
 See the [examples/](examples/) directory:
@@ -583,11 +715,20 @@ See the [examples/](examples/) directory:
 ## Development
 
 ```bash
-# Run tests
-python -m unittest discover tests -v
+# Install dev dependencies
+pip install -e ".[dev]"
 
-# Run specific test
-python -m unittest tests.test_mesh -v
+# Run tests
+pytest
+
+# Run tests with verbose output
+pytest -v
+
+# Run specific test file
+pytest tests/test_mesh.py -v
+
+# Run tests with coverage
+pytest --cov=meshly --cov-report=html
 ```
 
 ## License

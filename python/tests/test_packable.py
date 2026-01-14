@@ -8,7 +8,7 @@ from typing import Optional
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
 
-from meshly.packable import Packable, EncodedData
+from meshly.packable import Packable
 
 
 class SimpleData(Packable):
@@ -75,9 +75,10 @@ class TestPackable(unittest.TestCase):
             values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
         )
 
-        # Test that encode produces arrays
+        # Test that encode produces bytes
         encoded = original.encode()
-        self.assertIn("values", encoded.arrays)
+        self.assertIsInstance(encoded, bytes)
+        self.assertGreater(len(encoded), 0)
 
         # Test full round-trip via zip
         buffer = BytesIO()
@@ -155,22 +156,18 @@ class TestPackable(unittest.TestCase):
             loaded.fields["density"], data.fields["density"]
         )
 
-    def test_deterministic_zip(self):
-        """Test deterministic zip output with date_time parameter."""
+    def test_deterministic_encode(self):
+        """Test that encode produces consistent output."""
         data = SimpleData(
             name="deterministic",
             values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
         )
 
-        date_time = (2020, 1, 1, 0, 0, 0)
+        # Multiple encodes should produce the same bytes
+        encoded1 = data.encode()
+        encoded2 = data.encode()
 
-        buffer1 = BytesIO()
-        data.save_to_zip(buffer1, date_time=date_time)
-
-        buffer2 = BytesIO()
-        data.save_to_zip(buffer2, date_time=date_time)
-
-        self.assertEqual(buffer1.getvalue(), buffer2.getvalue())
+        self.assertEqual(encoded1, encoded2)
 
     def test_class_mismatch_error(self):
         """Test error when loading with wrong class."""

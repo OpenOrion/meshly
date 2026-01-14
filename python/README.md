@@ -14,17 +14,38 @@ pip install meshly
 
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
+- **`CustomFieldConfig`**: Configuration for custom field encoding/decoding
+- **`ArrayUtils`**: Utility class for encoding/decoding individual arrays
 
 ### Key Capabilities
 
 - Automatic encoding/decoding of numpy array attributes, including nested dictionaries
 - Custom subclasses with additional array fields are automatically serialized
+- Custom field encoding via `_get_custom_fields()` override
 - Enhanced polygon support with `index_sizes` and VTK-compatible `cell_types`
 - Mesh markers for boundary conditions, material regions, and geometric features
 - Mesh operations: triangulate, optimize, simplify, combine, extract
 - Optional JAX array support for GPU-accelerated workflows
 
 ## Quick Start
+
+### Standalone Array Compression
+
+Compress individual arrays without creating a Packable:
+
+```python
+import numpy as np
+from meshly import ArrayUtils
+
+# Create an array
+data = np.random.randn(1000, 3).astype(np.float32)
+
+# Save to zip
+ArrayUtils.save_to_zip(data, "array.zip")
+
+# Load from zip
+loaded = ArrayUtils.load_from_zip("array.zip")
+```
 
 ### Basic Mesh Usage
 
@@ -47,6 +68,10 @@ mesh.save_to_zip("mesh.zip")
 # Load from zip
 loaded = Mesh.load_from_zip("mesh.zip")
 print(f"Loaded {loaded.vertex_count} vertices")
+
+# Or use encode/decode for in-memory operations
+encoded = mesh.encode()  # Returns bytes
+decoded = Mesh.decode(encoded)
 ```
 
 ### Custom Mesh Subclasses
@@ -81,6 +106,40 @@ mesh = TexturedMesh(
 
 mesh.save_to_zip("textured.zip")
 loaded = TexturedMesh.load_from_zip("textured.zip")
+```
+
+### Custom Field Encoding
+
+For fields that need special encoding (like meshoptimizer for vertices/indices), override `_get_custom_fields()`:
+
+```python
+from meshly import Packable, CustomFieldConfig
+from typing import Dict
+
+class CompressedData(Packable):
+    """Example with custom field encoding."""
+    data: np.ndarray
+    
+    @staticmethod
+    def _encode_data(data: np.ndarray, instance: "CompressedData") -> bytes:
+        # Custom encoding logic
+        return custom_compress(data)
+    
+    @staticmethod
+    def _decode_data(encoded: bytes, metadata, array_type) -> np.ndarray:
+        # Custom decoding logic
+        return custom_decompress(encoded)
+    
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
+        return {
+            'data': CustomFieldConfig(
+                file_name='data',
+                encode=cls._encode_data,
+                decode=cls._decode_data,
+                optional=False
+            ),
+        }
 ```
 
 ### Dict of Pydantic BaseModel Objects
@@ -146,19 +205,19 @@ PackableMetadata (base metadata)
 
 The `Packable` base class provides:
 - `save_to_zip()` / `load_from_zip()` - File I/O with compression
-- `encode()` - In-memory serialization
+- `encode()` / `decode()` - In-memory serialization to/from bytes
+- `convert_to()` - Convert arrays between numpy and JAX
+- `_get_custom_fields()` - Override point for custom field encoding
 - `load_metadata()` - Generic metadata loading with type parameter
-- `_create_metadata()` - Override point for custom metadata
 
 ### Zip File Structure
 
 ```
 mesh.zip
 ├── metadata.json           # PackableMetadata or MeshMetadata
-├── mesh/                   # Mesh-specific (meshoptimizer encoded)
-│   ├── vertices.bin
-│   └── indices.bin
-└── arrays/                 # Additional arrays
+├── vertices.bin            # Meshoptimizer-encoded (custom field)
+├── indices.bin             # Meshoptimizer-encoded (custom field, optional)
+└── arrays/                 # Standard arrays (auto-compressed)
     ├── texture_coords/
     │   ├── array.bin
     │   └── metadata.json
@@ -288,36 +347,88 @@ mesh = Mesh(
 )
 
 # Load with JAX arrays
-mesh = Mesh.load_from_zip("mesh.zip", use_jax=True)
+mesh = Mesh.load_from_zip("mesh.zip", array_type="jax")
+
+# Convert between array types
+numpy_mesh = mesh.convert_to("numpy")
+jax_mesh = mesh.convert_to("jax")
 ```
 
 ## API Reference
+
+### ArrayUtils
+
+```python
+class ArrayUtils:
+    # Encode/decode arrays
+    @staticmethod
+    def encode_array(array: Array) -> EncodedArray
+    @staticmethod
+    def decode_array(encoded: EncodedArray) -> np.ndarray
+    
+    # File I/O for single arrays
+    @staticmethod
+    def save_to_zip(array: Array, destination: PathLike | BytesIO) -> None
+    @staticmethod
+    def load_from_zip(source: PathLike | BytesIO, array_type=None) -> Array
+    
+    # Array type utilities
+    @staticmethod
+    def is_array(obj) -> bool
+    @staticmethod
+    def detect_array_type(array: Array) -> ArrayType
+    @staticmethod
+    def convert_array(array: Array, array_type: ArrayType) -> Array
+```
+
+### CustomFieldConfig
+
+```python
+@dataclass
+class CustomFieldConfig(Generic[V, M]):
+    file_name: str                                    # File name in zip (without .bin)
+    encode: Callable[[V, Any], bytes]                 # (value, instance) -> bytes
+    decode: Callable[[bytes, M, Optional[ArrayType]], V]  # (bytes, metadata, array_type) -> value
+    optional: bool = False                            # Won't throw if missing
+```
 
 ### Packable (Base Class)
 
 ```python
 class Packable(BaseModel):
-    def save_to_zip(self, destination, date_time=None) -> None
+    # File I/O
+    def save_to_zip(self, destination) -> None
     @classmethod
-    def load_from_zip(cls, source, use_jax=False) -> T
+    def load_from_zip(cls, source, array_type=None) -> T
     
+    # In-memory serialization
+    def encode(self) -> bytes
+    @classmethod
+    def decode(cls, buf: bytes, array_type=None) -> T
+    
+    # Array conversion
+    def convert_to(self, array_type: ArrayType) -> T
+    
+    # Single array loading
     @staticmethod
-    def load_array(source, name, use_jax=False) -> Array
+    def load_array(source, name, array_type=None) -> Array
     
-    def encode(self) -> EncodedData
-    
+    # Metadata
     @classmethod
-    def load_metadata(cls, zipf, metadata_cls=PackableMetadata) -> M
+    def load_metadata(cls, handler, metadata_cls=PackableMetadata) -> M
     
-    def _create_metadata(self, field_data) -> PackableMetadata  # Override point
+    # Custom field encoding (override in subclasses)
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]
 ```
 
 ### Mesh
 
 ```python
 class Mesh(Packable):
-    vertices: Array           # Required
-    indices: Optional[Array]  # Optional
+    # Fields
+    vertices: Array           # Required (meshoptimizer encoded)
+    indices: Optional[Array]  # Optional (meshoptimizer encoded)
     index_sizes: Optional[Array]  # Auto-inferred
     cell_types: Optional[Array]   # Auto-inferred
     dim: Optional[int]        # Auto-computed
@@ -344,7 +455,9 @@ class Mesh(Packable):
     @staticmethod
     def combine(meshes, marker_names=None, preserve_markers=True) -> Mesh
     
-    def _create_metadata(self, field_data) -> MeshMetadata  # Returns MeshMetadata
+    # Custom field encoding for meshoptimizer
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]
 ```
 
 ### Metadata Classes
@@ -363,6 +476,7 @@ class MeshSizeInfo(BaseModel):
 
 class MeshMetadata(PackableMetadata):
     mesh_size: MeshSizeInfo
+    array_type: ArrayType = "numpy"  # "numpy" or "jax"
 ```
 
 ## Examples

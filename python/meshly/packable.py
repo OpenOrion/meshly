@@ -9,49 +9,23 @@ results, time-series data, or any structured data with numpy arrays.
 """
 
 import json
-import zipfile
+from dataclasses import dataclass
 from io import BytesIO
 from typing import (
+    Callable,
     Dict,
+    Generic,
     Optional,
     Set,
     Type,
     Any,
     TypeVar,
     Union,
-    List,
 )
-import numpy as np
 from pydantic import BaseModel, Field
-
-from .array import ArrayUtils, ArrayMetadata, EncodedArray
+from .array import ArrayUtils, ArrayType, Array
 from .common import PathLike
-from .utils.zip_utils import ZipUtils
-from .utils.packable_utils import PackableUtils
-
-# Optional JAX support
-try:
-    import jax.numpy as jnp
-    HAS_JAX = True
-except ImportError:
-    jnp = None
-    HAS_JAX = False
-
-# Array type union - supports both numpy and JAX arrays
-if HAS_JAX:
-    Array = Union[np.ndarray, jnp.ndarray]
-else:
-    Array = np.ndarray
-
-# Recursive type for decoded array data from zip files
-# Values are arrays or nested dicts containing arrays
-ArrayData = Dict[str, Union[Array, Dict[str, Any]]]
-
-
-class EncodedData(BaseModel):
-    """Container for encoded array data from a Packable."""
-    arrays: Dict[str, EncodedArray] = Field(
-        default_factory=dict, description="Encoded arrays")
+from .data_handler import WriteHandler, ReadHandler, ZipBuffer
 
 
 class PackableMetadata(BaseModel):
@@ -63,8 +37,22 @@ class PackableMetadata(BaseModel):
         default_factory=dict, description="Non-array field values")
 
 
-T = TypeVar("T", bound="Packable")
-M = TypeVar("M", bound=PackableMetadata)
+TPackableMetadata = TypeVar("TPackableMetadata", bound=PackableMetadata)
+TPackable = TypeVar("TPackable", bound="Packable")
+FieldValue = TypeVar("FieldValue")  # Value type for custom fields
+
+
+@dataclass
+class CustomFieldConfig(Generic[FieldValue, TPackableMetadata]):
+    """Configuration for custom field encoding/decoding."""
+    file_name: str
+    """File name in zip (without .bin extension)"""
+    encode: Callable[[FieldValue, Any], bytes]
+    """Encoder function: (value, instance) -> bytes"""
+    decode: Callable[[bytes, TPackableMetadata, Optional[ArrayType]], FieldValue]
+    """Decoder function: (bytes, metadata, array_type) -> value"""
+    optional: bool = False
+    """Whether the field is optional (won't throw if missing)"""
 
 
 class Packable(BaseModel):
@@ -102,50 +90,11 @@ class Packable(BaseModel):
                 continue
             value = getattr(self, field_name, None)
             if value is not None:
-                result.update(PackableUtils.extract_nested_arrays(
+                result.update(ArrayUtils.extract_nested_arrays(
                     value, field_name).keys())
         return result
 
-    def encode(self) -> EncodedData:
-        """
-        Encode this container's arrays for serialization.
 
-        Returns:
-            EncodedData with all arrays encoded
-        """
-        encoded_arrays = {}
-
-        for field_name in self.array_fields:
-            # Handle nested array paths (e.g., "textures.diffuse")
-            if "." in field_name:
-                # Extract the nested array
-                parts = field_name.split(".")
-                obj = self
-                for part in parts[:-1]:
-                    if isinstance(obj, dict):
-                        obj = obj[part]
-                    else:
-                        obj = getattr(obj, part)
-
-                # Get the final array
-                if isinstance(obj, dict):
-                    array = obj[parts[-1]]
-                else:
-                    array = getattr(obj, parts[-1])
-
-                if PackableUtils.is_array(array):
-                    encoded_arrays[field_name] = ArrayUtils.encode_array(array)
-            else:
-                # Handle direct array fields
-                try:
-                    array = getattr(self, field_name)
-                    if PackableUtils.is_array(array):
-                        encoded_arrays[field_name] = ArrayUtils.encode_array(
-                            array)
-                except AttributeError:
-                    pass
-
-        return EncodedData(arrays=encoded_arrays)
 
     def _extract_non_array_fields(self) -> Dict[str, Any]:
         """Extract non-array field values for metadata, preserving BaseModel type info."""
@@ -155,8 +104,8 @@ class Packable(BaseModel):
             if name in self.__private_attributes__ or name in direct_arrays:
                 continue
             value = getattr(self, name, None)
-            if value is not None and not PackableUtils.is_array(value):
-                extracted = PackableUtils.extract_non_arrays(value)
+            if value is not None and not ArrayUtils.is_array(value):
+                extracted = ArrayUtils.extract_non_arrays(value)
                 if extracted is not None:
                     model_data[name] = extracted
         return model_data
@@ -179,85 +128,18 @@ class Packable(BaseModel):
             field_data=field_data,
         )
 
-    def _prepare_zip_files(
-        self,
-        encoded_data: EncodedData,
-        field_data: Dict[str, Any],
-        exclude_arrays: Optional[set] = None
-    ) -> List[tuple]:
-        """
-        Prepare list of files to write to zip.
-
-        Args:
-            encoded_data: Encoded array data
-            field_data: Non-array field data for metadata
-            exclude_arrays: Set of array names to exclude (handled separately)
-
-        Returns:
-            List of (filename, data) tuples
-        """
-        exclude_arrays = exclude_arrays or set()
-        files_to_write = []
-
-        # Add array data
-        for name in sorted(encoded_data.arrays.keys()):
-            if name in exclude_arrays:
-                continue
-            encoded_array = encoded_data.arrays[name]
-            array_path = name.replace(".", "/")
-            files_to_write.append(
-                (f"arrays/{array_path}/array.bin", encoded_array.data))
-
-            array_metadata = ArrayMetadata(
-                shape=list(encoded_array.shape),
-                dtype=str(encoded_array.dtype),
-                itemsize=encoded_array.itemsize,
-            )
-            files_to_write.append((
-                f"arrays/{array_path}/metadata.json",
-                json.dumps(array_metadata.model_dump(),
-                           indent=2, sort_keys=True)
-            ))
-
-        # Create metadata using overridable method
-        metadata = self._create_metadata(field_data)
-        files_to_write.append(("metadata.json", json.dumps(
-            metadata.model_dump(), indent=2, sort_keys=True)))
-
-        return files_to_write
-
-        return files_to_write
-
-    def save_to_zip(
-        self,
-        destination: Union[PathLike, BytesIO],
-        date_time: Optional[tuple] = None
-    ) -> None:
-        """
-        Save this container to a zip file.
-
-        Args:
-            destination: Path to the output zip file or BytesIO object
-            date_time: Optional date_time tuple for deterministic zip files
-        """
-        encoded_data = self.encode()
-        field_data = self._extract_non_array_fields()
-        files_to_write = self._prepare_zip_files(encoded_data, field_data)
-
-        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
-            ZipUtils.write_files(zipf, files_to_write, date_time)
 
     @classmethod
     def load_metadata(
         cls,
-        zipf: zipfile.ZipFile,
-        metadata_cls: Type[M] = PackableMetadata
-    ) -> M:
+        handler: ReadHandler,
+        metadata_cls: Type[TPackableMetadata] = PackableMetadata
+    ) -> TPackableMetadata:
         """
-        Load and validate metadata from an open zip file.
+        Load and validate metadata using a read handler.
 
         Args:
-            zipf: Open ZipFile object
+            handler: ReadHandler for reading files
             metadata_cls: The metadata class to use for parsing (default: PackableMetadata)
 
         Returns:
@@ -266,9 +148,9 @@ class Packable(BaseModel):
         Raises:
             ValueError: If class name doesn't match
         """
-        with zipf.open("metadata.json") as f:
-            metadata_dict = json.loads(f.read().decode("utf-8"))
-            metadata = metadata_cls(**metadata_dict)
+        metadata_text = handler.read_text("metadata.json")
+        metadata_dict = json.loads(metadata_text)
+        metadata = metadata_cls(**metadata_dict)
 
         if metadata.class_name != cls.__name__ or metadata.module_name != cls.__module__:
             raise ValueError(
@@ -277,39 +159,253 @@ class Packable(BaseModel):
 
         return metadata
 
+    def save_to_zip(
+        self,
+        destination: Union[PathLike, BytesIO],
+    ) -> None:
+        """
+        Save this container to a zip file.
+
+        Args:
+            destination: Path to the output zip file or BytesIO buffer
+        """
+        encoded = self.encode()
+        if isinstance(destination, BytesIO):
+            destination.write(encoded)
+        else:
+            with open(destination, "wb") as f:
+                f.write(encoded)
+
     @classmethod
-    def load_from_zip(cls: Type[T], source: Union[PathLike, BytesIO], use_jax: bool = False) -> T:
+    def load_from_zip(
+        cls: Type[TPackable],
+        source: Union[PathLike, BytesIO],
+        array_type: Optional[ArrayType] = None
+    ) -> TPackable:
         """
         Load a Packable from a zip file.
 
         Args:
             source: Path to the input zip file or BytesIO object
-            use_jax: If True and JAX is available, decode arrays as JAX arrays
+            array_type: Array backend to use ("numpy" or "jax"). If None (default),
+                       uses the array_type stored in each array's metadata,
+                       preserving the original array types that were saved.
 
         Returns:
             Loaded Packable instance
         """
-        if use_jax and not HAS_JAX:
-            raise ValueError(
-                "JAX is not available. Install JAX to use JAX arrays.")
+        if isinstance(source, BytesIO):
+            source.seek(0)
+            return cls.decode(source.read(), array_type)
+        else:
+            with open(source, "rb") as f:
+                return cls.decode(f.read(), array_type)
 
-        with zipfile.ZipFile(source, "r") as zipf:
-            metadata = cls.load_metadata(zipf)
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
+        """
+        Get custom field configurations for this class.
+        
+        Subclasses override this to define custom encoders/decoders.
+        
+        Returns:
+            Dict mapping field names to CustomFieldConfig objects
+        """
+        return {}
 
-            # Load and decode all arrays (handles both flat and nested)
-            data = ZipUtils.load_arrays(zipf, use_jax)
+    @classmethod
+    def _get_custom_field_names(cls) -> Set[str]:
+        """Get set of field names that have custom encoding/decoding."""
+        return set(cls._get_custom_fields().keys())
 
-            # Merge non-array fields from metadata
-            if metadata.field_data:
-                PackableUtils.merge_field_data(data, metadata.field_data)
+    @classmethod
+    def _decode_custom_fields(
+        cls,
+        handler: ReadHandler,
+        metadata: PackableMetadata,
+        data: Dict[str, Any],
+        array_type: Optional[ArrayType] = None
+    ) -> None:
+        """Decode fields with custom decoders."""
+        for field_name, config in cls._get_custom_fields().items():
+            try:
+                encoded_bytes = handler.read_binary(f"{config.file_name}.bin")
+                data[field_name] = config.decode(encoded_bytes, metadata, array_type)
+            except (KeyError, FileNotFoundError):
+                if not config.optional:
+                    raise ValueError(f"Required custom field '{field_name}' ({config.file_name}.bin) not found in zip")
 
-            return cls(**data)
+    @classmethod
+    def _load_standard_arrays(
+        cls,
+        handler: ReadHandler,
+        data: Dict[str, Any],
+        skip_fields: Set[str],
+        array_type: Optional[ArrayType] = None
+    ) -> None:
+        """Load standard arrays from arrays/ folder, skipping custom fields."""
+        try:
+            all_files = handler.list_files("arrays", recursive=True)
+        except (KeyError, FileNotFoundError):
+            return
+
+        for file_path in all_files:
+            file_str = str(file_path)
+            if not file_str.endswith("/array.bin"):
+                continue
+
+            # Extract array name: "arrays/markerIndices/boundary/array.bin" -> "markerIndices.boundary"
+            array_path = file_str[7:-10]  # Remove "arrays/" and "/array.bin"
+            name = array_path.replace("/", ".")
+
+            # Skip custom fields
+            base_field = name.split(".")[0]
+            if base_field in skip_fields:
+                continue
+
+            decoded = ArrayUtils.load_array(handler, name, array_type)
+
+            if "." in name:
+                # Nested array - build nested structure
+                parts = name.split(".")
+                current = data
+                for part in parts[:-1]:
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+                current[parts[-1]] = decoded
+            else:
+                # Flat array
+                data[name] = decoded
+
+    def _encode_standard_arrays(self, skip_fields: Set[str]) -> Dict[str, bytes]:
+        """Encode standard arrays, skipping custom fields."""
+        encoded_arrays = {}
+
+        for field_name in self.array_fields:
+            # Skip fields with custom encoding
+            if field_name in skip_fields:
+                continue
+
+            # Handle nested array paths (e.g., "textures.diffuse")
+            if "." in field_name:
+                parts = field_name.split(".")
+                obj = self
+                for part in parts[:-1]:
+                    if isinstance(obj, dict):
+                        obj = obj[part]
+                    else:
+                        obj = getattr(obj, part)
+
+                if isinstance(obj, dict):
+                    array = obj[parts[-1]]
+                else:
+                    array = getattr(obj, parts[-1])
+
+                if ArrayUtils.is_array(array):
+                    encoded_arrays[field_name] = ArrayUtils.encode_array(array)
+            else:
+                # Handle direct array fields
+                try:
+                    array = getattr(self, field_name)
+                    if ArrayUtils.is_array(array):
+                        encoded_arrays[field_name] = ArrayUtils.encode_array(array)
+                except AttributeError:
+                    pass
+
+        return encoded_arrays
+
+    def _encode_custom_fields(self, handler: WriteHandler) -> None:
+        """Encode fields with custom encoders."""
+        for field_name, config in self._get_custom_fields().items():
+            value = getattr(self, field_name)
+            if value is not None:
+                encoded_bytes = config.encode(value, self)
+                handler.write_binary(f"{config.file_name}.bin", encoded_bytes)
+
+    def encode(self) -> bytes:
+        """
+        Serialize this Packable to bytes.
+
+        Returns:
+            Bytes containing the zip-encoded data
+        """
+        custom_field_names = self._get_custom_field_names()
+
+        # Encode standard arrays
+        encoded_arrays = self._encode_standard_arrays(custom_field_names)
+
+        # Create metadata
+        field_data = self._extract_non_array_fields()
+        metadata = self._create_metadata(field_data)
+
+        # Write to zip
+        destination = ZipBuffer()
+        handler = WriteHandler.create_handler(destination)
+
+        # Save standard arrays
+        for name in sorted(encoded_arrays.keys()):
+            ArrayUtils.save_array(handler, name, encoded_arrays[name])
+
+        # Save custom encoded fields
+        self._encode_custom_fields(handler)
+
+        # Save metadata
+        handler.write_text(
+            "metadata.json",
+            json.dumps(metadata.model_dump(), indent=2, sort_keys=True),
+        )
+
+        handler.finalize()
+        return destination.getvalue()
+
+    @classmethod
+    def decode(cls: Type[TPackable], buf: bytes, array_type: Optional[ArrayType] = None) -> TPackable:
+        """
+        Deserialize a Packable from bytes.
+
+        Args:
+            buf: Bytes containing the zip-encoded data
+            array_type: Array backend to use. If None (default), uses the
+                       array_type stored in each array's metadata.
+
+        Returns:
+            Loaded Packable instance
+        """
+        handler = ReadHandler.create_handler(ZipBuffer(buf))
+        metadata = cls.load_metadata(handler)
+        custom_field_names = cls._get_custom_field_names()
+
+        data: Dict[str, Any] = {}
+
+        # Decode custom fields first
+        cls._decode_custom_fields(handler, metadata, data, array_type)
+
+        # Load standard arrays
+        cls._load_standard_arrays(handler, data, custom_field_names, array_type)
+
+        # Merge non-array fields from metadata
+        if metadata.field_data:
+            Packable._merge_field_data(data, metadata.field_data)
+
+        return cls(**data)
+
+    def __reduce__(self):
+        """
+        Support for pickle serialization.
+
+        Array types are preserved automatically via the per-array metadata.
+        """
+        return (
+            self.__class__.decode,
+            (self.encode(),),
+        )
 
     @staticmethod
     def load_array(
         source: Union[PathLike, BytesIO],
         name: str,
-        use_jax: bool = False
+        array_type: Optional[ArrayType] = None
     ) -> Array:
         """
         Load a single array from a zip file without loading the entire object.
@@ -317,9 +413,10 @@ class Packable(BaseModel):
         Useful for large files where you only need one array.
 
         Args:
-            source: Path to the zip file or BytesIO object
+            source: Path to the zip file or BytesIO buffer
             name: Array name (e.g., "normals" or "markerIndices.boundary")
-            use_jax: If True, decode as JAX array
+            array_type: Array backend to use ("numpy" or "jax"). If None (default),
+                       uses the array_type stored in the array's metadata.
 
         Returns:
             Decoded array (numpy or JAX)
@@ -330,79 +427,82 @@ class Packable(BaseModel):
         Example:
             normals = Mesh.load_array("mesh.zip", "normals")
         """
-        with zipfile.ZipFile(source, "r") as zipf:
-            return ZipUtils.load_array(zipf, name, use_jax)
+        if isinstance(source, BytesIO):
+            source.seek(0)
+            handler = ReadHandler.create_handler(ZipBuffer(source.read()))
+        else:
+            with open(source, "rb") as f:
+                handler = ReadHandler.create_handler(ZipBuffer(f.read()))
+        return ArrayUtils.load_array(handler, name, array_type)
 
-    def to_numpy(self: T) -> T:
+    def convert_to(self: TPackable, array_type: ArrayType) -> TPackable:
         """
-        Create a new Packable with all arrays converted to NumPy arrays.
+        Create a new Packable with all arrays converted to the specified type.
+
+        Args:
+            array_type: Target array backend ("numpy" or "jax")
 
         Returns:
-            A new Packable with all arrays as NumPy arrays
-        """
-        if not HAS_JAX:
-            return self.model_copy(deep=True)
-
-        data_copy = self.model_copy(deep=True)
-
-        def convert_to_numpy(obj: Any) -> Any:
-            if isinstance(obj, jnp.ndarray):
-                return np.array(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj
-            elif isinstance(obj, dict):
-                return {key: convert_to_numpy(value) for key, value in obj.items()}
-            elif isinstance(obj, (list, tuple)):
-                return type(obj)(convert_to_numpy(item) for item in obj)
-            else:
-                return obj
-
-        for field_name in data_copy.model_fields_set:
-            try:
-                value = getattr(data_copy, field_name)
-                if value is not None:
-                    converted = convert_to_numpy(value)
-                    setattr(data_copy, field_name, converted)
-            except AttributeError:
-                pass
-
-        return data_copy
-
-    def to_jax(self: T) -> T:
-        """
-        Create a new Packable with all arrays converted to JAX arrays.
-
-        Returns:
-            A new Packable with all arrays as JAX arrays
+            A new Packable with all arrays converted
 
         Raises:
-            ValueError: If JAX is not available
+            AssertionError: If JAX is requested but not available
         """
-        if not HAS_JAX:
-            raise ValueError(
-                "JAX is not available. Install JAX to convert to JAX arrays.")
-
         data_copy = self.model_copy(deep=True)
-
-        def convert_to_jax(obj: Any) -> Any:
-            if isinstance(obj, np.ndarray):
-                return jnp.array(obj)
-            elif HAS_JAX and isinstance(obj, jnp.ndarray):
-                return obj
-            elif isinstance(obj, dict):
-                return {key: convert_to_jax(value) for key, value in obj.items()}
-            elif isinstance(obj, (list, tuple)):
-                return type(obj)(convert_to_jax(item) for item in obj)
-            else:
-                return obj
 
         for field_name in data_copy.model_fields_set:
             try:
                 value = getattr(data_copy, field_name)
                 if value is not None:
-                    converted = convert_to_jax(value)
+                    converted = ArrayUtils.convert_recursive(value, array_type)
                     setattr(data_copy, field_name, converted)
             except AttributeError:
                 pass
 
         return data_copy
+
+    @staticmethod
+    def _reconstruct_model(data: Dict[str, Any]) -> Any:
+        """Reconstruct BaseModel from serialized dict with __model_class__/__model_module__."""
+        if not isinstance(data, dict):
+            return data
+
+        # Recursively process nested dicts first
+        processed = {k: Packable._reconstruct_model(v) if isinstance(v, dict) else v
+                     for k, v in data.items() if k not in ("__model_class__", "__model_module__")}
+
+        if "__model_class__" not in data:
+            return processed
+
+        try:
+            import importlib
+            module = importlib.import_module(data["__model_module__"])
+            model_class = getattr(module, data["__model_class__"])
+            return model_class(**processed)
+        except (ImportError, AttributeError):
+            return processed
+
+    @staticmethod
+    def _merge_field_data(data: Dict[str, Any], field_data: Dict[str, Any]) -> None:
+        """Merge metadata fields into data, reconstructing BaseModel instances."""
+        for key, value in field_data.items():
+            existing = data.get(key)
+            if not isinstance(value, dict):
+                data[key] = value
+            elif "__model_class__" in value:
+                # Single BaseModel: merge arrays then reconstruct
+                merged = {**value, **
+                          (existing if isinstance(existing, dict) else {})}
+                data[key] = Packable._reconstruct_model(merged)
+            elif isinstance(existing, dict):
+                # Check if dict of BaseModels
+                for subkey, subval in value.items():
+                    if isinstance(subval, dict) and "__model_class__" in subval:
+                        merged = {**subval, **existing.get(subkey, {})}
+                        existing[subkey] = Packable._reconstruct_model(merged)
+                    elif isinstance(subval, dict) and isinstance(existing.get(subkey), dict):
+                        Packable._merge_field_data(existing[subkey], subval)
+                    else:
+                        existing[subkey] = subval
+            else:
+                data[key] = Packable._reconstruct_model(value)

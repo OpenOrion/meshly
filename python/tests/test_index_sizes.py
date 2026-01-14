@@ -151,11 +151,10 @@ class TestIndexSizes(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=indices)
         original_index_sizes = mesh.index_sizes.copy()
 
-        # Encode the mesh
+        # Encode the mesh - returns bytes
         encoded_mesh = mesh.encode()
-
-        # Verify index_sizes is in the encoded arrays
-        self.assertIn("index_sizes", encoded_mesh.arrays)
+        self.assertIsInstance(encoded_mesh, bytes)
+        self.assertGreater(len(encoded_mesh), 0)
 
         # Decode via zip round-trip
         buffer = BytesIO()
@@ -433,11 +432,10 @@ class TestCellTypes(unittest.TestCase):
             cell_types=explicit_cell_types
         )
 
-        # Encode the mesh
+        # Encode the mesh - returns bytes
         encoded_mesh = mesh.encode()
-
-        # Verify cell_types is in the encoded arrays
-        self.assertIn("cell_types", encoded_mesh.arrays)
+        self.assertIsInstance(encoded_mesh, bytes)
+        self.assertGreater(len(encoded_mesh), 0)
 
         # Decode via zip round-trip
         from io import BytesIO

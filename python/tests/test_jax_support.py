@@ -2,17 +2,18 @@
 Tests for JAX array support in meshly.
 """
 
-import unittest
+import pytest
 import numpy as np
 from io import BytesIO
 from meshly import Mesh, Array
 from meshly.array import HAS_JAX
 
 
-class TestJAXSupport(unittest.TestCase):
+class TestJAXSupport:
     """Test JAX array support functionality."""
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def setup(self):
         """Set up test data."""
         self.vertices = np.array(
             [[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
@@ -20,15 +21,15 @@ class TestJAXSupport(unittest.TestCase):
 
     def test_array_type_definition(self):
         """Test that Array type is properly defined."""
-        self.assertIsNotNone(Array)
+        assert Array is not None
 
         # Test that numpy arrays are compatible with Array type
         np_array = np.array([1, 2, 3])
-        self.assertIsInstance(np_array, np.ndarray)
+        assert isinstance(np_array, np.ndarray)
 
     def test_has_jax_flag(self):
         """Test that HAS_JAX flag is properly set."""
-        self.assertIsInstance(HAS_JAX, bool)
+        assert isinstance(HAS_JAX, bool)
 
     def test_numpy_functionality_preserved(self):
         """Test that existing numpy functionality still works."""
@@ -36,12 +37,12 @@ class TestJAXSupport(unittest.TestCase):
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
 
         # Verify arrays are numpy arrays
-        self.assertIsInstance(mesh.vertices, np.ndarray)
-        self.assertIsInstance(mesh.indices, np.ndarray)
+        assert isinstance(mesh.vertices, np.ndarray)
+        assert isinstance(mesh.indices, np.ndarray)
 
         # Test basic properties
-        self.assertEqual(mesh.vertex_count, 3)
-        self.assertEqual(mesh.index_count, 3)
+        assert mesh.vertex_count == 3
+        assert mesh.index_count == 3
 
         # Test encoding/decoding via zip round-trip
         buffer = BytesIO()
@@ -49,12 +50,12 @@ class TestJAXSupport(unittest.TestCase):
         buffer.seek(0)
         decoded = Mesh.load_from_zip(buffer, array_type="numpy")
 
-        self.assertIsInstance(decoded.vertices, np.ndarray)
-        self.assertIsInstance(decoded.indices, np.ndarray)
+        assert isinstance(decoded.vertices, np.ndarray)
+        assert isinstance(decoded.indices, np.ndarray)
         np.testing.assert_array_equal(decoded.vertices, self.vertices)
         np.testing.assert_array_equal(decoded.indices, self.indices)
 
-    @unittest.skipUnless(HAS_JAX, "JAX not available")
+    @pytest.mark.skipif(not HAS_JAX, reason="JAX not available")
     def test_jax_functionality(self):
         """Test JAX functionality when available."""
         import jax.numpy as jnp
@@ -69,18 +70,14 @@ class TestJAXSupport(unittest.TestCase):
         decoded_jax = Mesh.load_from_zip(buffer, array_type="jax")
 
         # Verify arrays are JAX arrays
-        self.assertTrue(hasattr(decoded_jax.vertices, 'device'),
-                        "Vertices should be JAX arrays")
-        self.assertTrue(hasattr(decoded_jax.indices, 'device'),
-                        "Indices should be JAX arrays")
+        assert hasattr(decoded_jax.vertices, 'device'), "Vertices should be JAX arrays"
+        assert hasattr(decoded_jax.indices, 'device'), "Indices should be JAX arrays"
 
         # Verify data is preserved
-        np.testing.assert_array_equal(
-            np.array(decoded_jax.vertices), self.vertices)
-        np.testing.assert_array_equal(
-            np.array(decoded_jax.indices), self.indices)
+        np.testing.assert_array_equal(np.array(decoded_jax.vertices), self.vertices)
+        np.testing.assert_array_equal(np.array(decoded_jax.indices), self.indices)
 
-    @unittest.skipUnless(HAS_JAX, "JAX not available")
+    @pytest.mark.skipif(not HAS_JAX, reason="JAX not available")
     def test_jax_input_arrays(self):
         """Test using JAX arrays as input."""
         import jax.numpy as jnp
@@ -93,83 +90,54 @@ class TestJAXSupport(unittest.TestCase):
         mesh = Mesh(vertices=jax_vertices, indices=jax_indices)
 
         # Vertices should remain JAX, indices converted to numpy for meshoptimizer
-        self.assertTrue(hasattr(mesh.vertices, 'device'),
-                        "Vertices should remain JAX arrays")
+        assert hasattr(mesh.vertices, 'device'), "Vertices should remain JAX arrays"
         # Converted for meshoptimizer compatibility
-        self.assertIsInstance(mesh.indices, np.ndarray)
+        assert isinstance(mesh.indices, np.ndarray)
 
+    @pytest.mark.skipif(HAS_JAX, reason="JAX is available, cannot test unavailable scenario")
     def test_jax_unavailable_error(self):
         """Test error handling when JAX is requested but unavailable."""
-        if HAS_JAX:
-            self.skipTest("JAX is available, cannot test unavailable scenario")
-
-        # Create mesh
         mesh = Mesh(vertices=self.vertices, indices=self.indices)
 
-        # Save to buffer
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
 
-        # Should raise error when JAX is requested but not available
-        with self.assertRaises(AssertionError) as context:
+        with pytest.raises(AssertionError, match="JAX is not available"):
             Mesh.load_from_zip(buffer, array_type="jax")
 
-        self.assertIn("JAX is not available", str(context.exception))
-
+    @pytest.mark.skipif(not HAS_JAX, reason="JAX not available")
     def test_mesh_copy_with_jax_arrays(self):
         """Test mesh copying with JAX arrays."""
-        if not HAS_JAX:
-            self.skipTest("JAX not available")
-
         import jax.numpy as jnp
 
-        # Create mesh with JAX vertices
         jax_vertices = jnp.array(self.vertices)
         mesh = Mesh(vertices=jax_vertices, indices=self.indices)
 
-        # Test copying
         copied_mesh = mesh.model_copy(deep=True)
 
-        # Verify copy preserves array types and data
-        self.assertTrue(hasattr(copied_mesh.vertices, 'device'),
-                        "Copied vertices should be JAX arrays")
-        np.testing.assert_array_equal(
-            np.array(copied_mesh.vertices), self.vertices)
+        assert hasattr(copied_mesh.vertices, 'device'), "Copied vertices should be JAX arrays"
+        np.testing.assert_array_equal(np.array(copied_mesh.vertices), self.vertices)
 
+    @pytest.mark.skipif(not HAS_JAX, reason="JAX not available")
     def test_additional_arrays_jax_support(self):
         """Test that additional arrays also support JAX conversion."""
-        if not HAS_JAX:
-            self.skipTest("JAX not available")
-
         import jax.numpy as jnp
         from pydantic import Field
         from typing import Optional
 
-        # Create a custom mesh class with additional arrays
         class CustomMesh(Mesh):
-            normals: Optional[Array] = Field(
-                None, description="Normal vectors")
+            normals: Optional[Array] = Field(None, description="Normal vectors")
 
         normals = np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1]], dtype=np.float32)
-        mesh = CustomMesh(vertices=self.vertices,
-                          indices=self.indices, normals=normals)
+        mesh = CustomMesh(vertices=self.vertices, indices=self.indices, normals=normals)
 
-        # Test encoding/decoding with JAX via zip round-trip
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_jax = CustomMesh.load_from_zip(buffer, array_type="jax")
 
-        # Verify all arrays are JAX arrays
-        self.assertTrue(hasattr(decoded_jax.vertices, 'device'),
-                        "Vertices should be JAX arrays")
-        self.assertTrue(hasattr(decoded_jax.normals, 'device'),
-                        "Normals should be JAX arrays")
+        assert hasattr(decoded_jax.vertices, 'device'), "Vertices should be JAX arrays"
+        assert hasattr(decoded_jax.normals, 'device'), "Normals should be JAX arrays"
 
-        # Verify data is preserved
         np.testing.assert_array_equal(np.array(decoded_jax.normals), normals)
-
-
-if __name__ == '__main__':
-    unittest.main()

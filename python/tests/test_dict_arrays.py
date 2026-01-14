@@ -8,7 +8,7 @@ the dictionary structure for reconstruction.
 import os
 import tempfile
 import numpy as np
-import unittest
+import pytest
 from io import BytesIO
 from typing import Dict, Any
 from pydantic import Field
@@ -19,28 +19,25 @@ from meshly import Mesh
 class TexturedMesh(Mesh):
     """A custom mesh class with dictionary fields containing numpy arrays."""
 
-    # Dictionary containing multiple texture arrays
     textures: Dict[str, np.ndarray] = Field(
         default_factory=dict,
         description="Dictionary of texture arrays"
     )
 
-    # Dictionary containing nested dictionaries with mixed content (arrays and other types)
     material_data: Dict[str, Dict[str, Any]] = Field(
         default_factory=dict,
         description="Nested dictionary structure with arrays and other values"
     )
 
-    # Regular non-array field
     material_name: str = Field("default", description="Material name")
 
 
-class TestDictArrays(unittest.TestCase):
+class TestDictArrays:
     """Test dictionary fields containing numpy arrays."""
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def setup(self):
         """Set up test data."""
-        # Create a simple mesh (a triangle)
         self.vertices = np.array([
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -49,13 +46,10 @@ class TestDictArrays(unittest.TestCase):
 
         self.indices = np.array([0, 1, 2], dtype=np.uint32)
 
-        # Create texture arrays
         self.diffuse_texture = np.random.random((64, 64, 3)).astype(np.float32)
         self.normal_texture = np.random.random((64, 64, 3)).astype(np.float32)
-        self.specular_texture = np.random.random(
-            (64, 64, 1)).astype(np.float32)
+        self.specular_texture = np.random.random((64, 64, 1)).astype(np.float32)
 
-        # Create material property arrays
         self.roughness_map = np.random.random((32, 32)).astype(np.float32)
         self.metallic_map = np.random.random((32, 32)).astype(np.float32)
         self.emission_map = np.random.random((32, 32, 3)).astype(np.float32)
@@ -82,7 +76,6 @@ class TestDictArrays(unittest.TestCase):
             material_name="test_material"
         )
 
-        # Check that nested arrays are detected
         array_fields = mesh.array_fields
         expected_fields = {
             "vertices", "indices", "index_sizes", "cell_types",
@@ -91,7 +84,7 @@ class TestDictArrays(unittest.TestCase):
             "material_data.lighting.emission"
         }
 
-        self.assertEqual(array_fields, expected_fields)
+        assert array_fields == expected_fields
 
     def test_dict_array_encoding_decoding(self):
         """Test that dictionary arrays can be encoded and decoded."""
@@ -115,60 +108,45 @@ class TestDictArrays(unittest.TestCase):
             material_name="test_material"
         )
 
-        # Encode the mesh - returns bytes
         encoded_mesh = mesh.encode()
-        self.assertIsInstance(encoded_mesh, bytes)
-        self.assertGreater(len(encoded_mesh), 0)
+        assert isinstance(encoded_mesh, bytes)
+        assert len(encoded_mesh) > 0
 
-        # Decode the mesh via zip round-trip (proper way to encode/decode)
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_mesh = TexturedMesh.load_from_zip(buffer)
 
-        # Verify basic mesh properties
-        self.assertEqual(decoded_mesh.vertex_count, mesh.vertex_count)
-        self.assertEqual(decoded_mesh.index_count, mesh.index_count)
-        np.testing.assert_array_almost_equal(
-            decoded_mesh.vertices, mesh.vertices)
-        np.testing.assert_array_almost_equal(
-            decoded_mesh.indices, mesh.indices)
+        assert decoded_mesh.vertex_count == mesh.vertex_count
+        assert decoded_mesh.index_count == mesh.index_count
+        np.testing.assert_array_almost_equal(decoded_mesh.vertices, mesh.vertices)
+        np.testing.assert_array_almost_equal(decoded_mesh.indices, mesh.indices)
 
-        # Verify dictionary structure is preserved
-        self.assertIsInstance(decoded_mesh.textures, dict)
-        self.assertIsInstance(decoded_mesh.material_data, dict)
+        assert isinstance(decoded_mesh.textures, dict)
+        assert isinstance(decoded_mesh.material_data, dict)
 
-        # Verify texture arrays
-        self.assertIn("diffuse", decoded_mesh.textures)
-        self.assertIn("normal", decoded_mesh.textures)
-        self.assertIn("specular", decoded_mesh.textures)
+        assert "diffuse" in decoded_mesh.textures
+        assert "normal" in decoded_mesh.textures
+        assert "specular" in decoded_mesh.textures
 
         np.testing.assert_array_almost_equal(
-            decoded_mesh.textures["diffuse"], self.diffuse_texture, decimal=5
-        )
+            decoded_mesh.textures["diffuse"], self.diffuse_texture, decimal=5)
         np.testing.assert_array_almost_equal(
-            decoded_mesh.textures["normal"], self.normal_texture, decimal=5
-        )
+            decoded_mesh.textures["normal"], self.normal_texture, decimal=5)
         np.testing.assert_array_almost_equal(
-            decoded_mesh.textures["specular"], self.specular_texture, decimal=5
-        )
+            decoded_mesh.textures["specular"], self.specular_texture, decimal=5)
 
-        # Verify nested material data
-        self.assertIn("surface", decoded_mesh.material_data)
-        self.assertIn("lighting", decoded_mesh.material_data)
+        assert "surface" in decoded_mesh.material_data
+        assert "lighting" in decoded_mesh.material_data
 
         np.testing.assert_array_almost_equal(
-            decoded_mesh.material_data["surface"]["roughness"], self.roughness_map, decimal=5
-        )
+            decoded_mesh.material_data["surface"]["roughness"], self.roughness_map, decimal=5)
         np.testing.assert_array_almost_equal(
-            decoded_mesh.material_data["surface"]["metallic"], self.metallic_map, decimal=5
-        )
+            decoded_mesh.material_data["surface"]["metallic"], self.metallic_map, decimal=5)
         np.testing.assert_array_almost_equal(
-            decoded_mesh.material_data["lighting"]["emission"], self.emission_map, decimal=5
-        )
+            decoded_mesh.material_data["lighting"]["emission"], self.emission_map, decimal=5)
 
-        # Verify non-array field is preserved
-        self.assertEqual(decoded_mesh.material_name, "test_material")
+        assert decoded_mesh.material_name == "test_material"
 
     def test_dict_array_zip_serialization(self):
         """Test that dictionary arrays work with zip file serialization."""
@@ -187,45 +165,30 @@ class TestDictArrays(unittest.TestCase):
             material_name="zip_test_material"
         )
 
-        # Create a temporary file for testing
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
             temp_path = temp_file.name
 
         try:
-            # Save the mesh to a zip file
             mesh.save_to_zip(temp_path)
-
-            # Load the mesh from the zip file
             loaded_mesh = TexturedMesh.load_from_zip(temp_path)
 
-            # Verify all data is preserved
-            self.assertEqual(loaded_mesh.vertex_count, mesh.vertex_count)
-            self.assertEqual(loaded_mesh.index_count, mesh.index_count)
-            np.testing.assert_array_almost_equal(
-                loaded_mesh.vertices, mesh.vertices)
-            np.testing.assert_array_almost_equal(
-                loaded_mesh.indices, mesh.indices)
+            assert loaded_mesh.vertex_count == mesh.vertex_count
+            assert loaded_mesh.index_count == mesh.index_count
+            np.testing.assert_array_almost_equal(loaded_mesh.vertices, mesh.vertices)
+            np.testing.assert_array_almost_equal(loaded_mesh.indices, mesh.indices)
 
-            # Verify dictionary structure
-            self.assertIsInstance(loaded_mesh.textures, dict)
-            self.assertIsInstance(loaded_mesh.material_data, dict)
+            assert isinstance(loaded_mesh.textures, dict)
+            assert isinstance(loaded_mesh.material_data, dict)
 
-            # Verify arrays in dictionaries
             np.testing.assert_array_almost_equal(
-                loaded_mesh.textures["diffuse"], self.diffuse_texture, decimal=5
-            )
+                loaded_mesh.textures["diffuse"], self.diffuse_texture, decimal=5)
             np.testing.assert_array_almost_equal(
-                loaded_mesh.textures["normal"], self.normal_texture, decimal=5
-            )
+                loaded_mesh.textures["normal"], self.normal_texture, decimal=5)
             np.testing.assert_array_almost_equal(
-                loaded_mesh.material_data["surface"]["roughness"], self.roughness_map, decimal=5
-            )
+                loaded_mesh.material_data["surface"]["roughness"], self.roughness_map, decimal=5)
 
-            # Verify non-array field
-            self.assertEqual(loaded_mesh.material_name, "zip_test_material")
-
+            assert loaded_mesh.material_name == "zip_test_material"
         finally:
-            # Clean up
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
@@ -237,20 +200,17 @@ class TestDictArrays(unittest.TestCase):
             material_name="empty_dict_test"
         )
 
-        # Verify empty dictionaries don't cause issues
-        # vertices, indices, index_sizes, cell_types
-        self.assertEqual(len(mesh.array_fields), 4)
+        assert len(mesh.array_fields) == 4  # vertices, indices, index_sizes, cell_types
 
-        # Test encoding/decoding works with empty dictionaries via zip round-trip
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_mesh = TexturedMesh.load_from_zip(buffer)
 
-        self.assertIsInstance(decoded_mesh.textures, dict)
-        self.assertIsInstance(decoded_mesh.material_data, dict)
-        self.assertEqual(len(decoded_mesh.textures), 0)
-        self.assertEqual(len(decoded_mesh.material_data), 0)
+        assert isinstance(decoded_mesh.textures, dict)
+        assert isinstance(decoded_mesh.material_data, dict)
+        assert len(decoded_mesh.textures) == 0
+        assert len(decoded_mesh.material_data) == 0
 
     def test_dict_with_non_array_values(self):
         """Test that dictionaries containing non-array values are preserved."""
@@ -263,18 +223,18 @@ class TestDictArrays(unittest.TestCase):
             },
             material_data={
                 "surface": {
-                    "roughness": self.roughness_map,  # array
-                    "metallic": self.metallic_map,    # array
-                    "name": "metal_surface",          # non-array string
-                    "shininess": 0.8,                # non-array float
-                    "enabled": True                   # non-array bool
+                    "roughness": self.roughness_map,
+                    "metallic": self.metallic_map,
+                    "name": "metal_surface",
+                    "shininess": 0.8,
+                    "enabled": True
                 },
                 "lighting": {
-                    "emission": self.emission_map,    # array
-                    "intensity": 1.5,                # non-array float
-                    "color": [1.0, 0.8, 0.6]         # non-array list
+                    "emission": self.emission_map,
+                    "intensity": 1.5,
+                    "color": [1.0, 0.8, 0.6]
                 },
-                "metadata": {                         # dict with no arrays
+                "metadata": {
                     "author": "test_user",
                     "version": 2,
                     "tags": ["metal", "shiny"]
@@ -283,52 +243,32 @@ class TestDictArrays(unittest.TestCase):
             material_name="test_non_array_material"
         )
 
-        # Test zip save/load preserves both arrays and non-array values
-        import tempfile
-        import os
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
             temp_path = temp_file.name
 
         try:
-            # Save and load via zip (this preserves non-array values)
             mesh.save_to_zip(temp_path)
             loaded_mesh = TexturedMesh.load_from_zip(temp_path)
 
-            # Check that arrays are preserved
             np.testing.assert_array_almost_equal(
                 loaded_mesh.material_data["surface"]["roughness"],
-                self.roughness_map, decimal=5
-            )
+                self.roughness_map, decimal=5)
             np.testing.assert_array_almost_equal(
                 loaded_mesh.material_data["lighting"]["emission"],
-                self.emission_map, decimal=5
-            )
+                self.emission_map, decimal=5)
 
-            # Check that non-array values are preserved in the nested structure
-            self.assertEqual(
-                loaded_mesh.material_data["surface"]["name"], "metal_surface")
-            self.assertEqual(
-                loaded_mesh.material_data["surface"]["shininess"], 0.8)
-            self.assertEqual(
-                loaded_mesh.material_data["surface"]["enabled"], True)
-            self.assertEqual(
-                loaded_mesh.material_data["lighting"]["intensity"], 1.5)
-            self.assertEqual(
-                loaded_mesh.material_data["lighting"]["color"], [1.0, 0.8, 0.6])
+            assert loaded_mesh.material_data["surface"]["name"] == "metal_surface"
+            assert loaded_mesh.material_data["surface"]["shininess"] == 0.8
+            assert loaded_mesh.material_data["surface"]["enabled"] is True
+            assert loaded_mesh.material_data["lighting"]["intensity"] == 1.5
+            assert loaded_mesh.material_data["lighting"]["color"] == [1.0, 0.8, 0.6]
 
-            # Check that dict with no arrays is preserved
-            self.assertIn("metadata", loaded_mesh.material_data)
-            self.assertEqual(
-                loaded_mesh.material_data["metadata"]["author"], "test_user")
-            self.assertEqual(
-                loaded_mesh.material_data["metadata"]["version"], 2)
-            self.assertEqual(loaded_mesh.material_data["metadata"]["tags"], [
-                             "metal", "shiny"])
+            assert "metadata" in loaded_mesh.material_data
+            assert loaded_mesh.material_data["metadata"]["author"] == "test_user"
+            assert loaded_mesh.material_data["metadata"]["version"] == 2
+            assert loaded_mesh.material_data["metadata"]["tags"] == ["metal", "shiny"]
 
-            # Check scalar field
-            self.assertEqual(loaded_mesh.material_name,
-                             "test_non_array_material")
-
+            assert loaded_mesh.material_name == "test_non_array_material"
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -352,34 +292,19 @@ class TestDictArrays(unittest.TestCase):
             material_name="zip_non_array_test"
         )
 
-        # Create temporary file for testing
-        import tempfile
-        import os
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
             temp_path = temp_file.name
 
         try:
-            # Save and load via zip
             mesh.save_to_zip(temp_path)
             loaded_mesh = TexturedMesh.load_from_zip(temp_path)
 
-            # Verify non-array nested values are preserved
-            self.assertEqual(
-                loaded_mesh.material_data["config"]["name"], "test_config")
-            self.assertEqual(
-                loaded_mesh.material_data["config"]["version"], 3.14)
-            self.assertEqual(
-                loaded_mesh.material_data["config"]["settings"]["quality"], "high")
-            self.assertEqual(
-                loaded_mesh.material_data["config"]["settings"]["enabled"], True)
-            self.assertEqual(
-                loaded_mesh.material_data["config"]["settings"]["options"], [1, 2, 3])
-            self.assertEqual(loaded_mesh.material_name, "zip_non_array_test")
-
+            assert loaded_mesh.material_data["config"]["name"] == "test_config"
+            assert loaded_mesh.material_data["config"]["version"] == 3.14
+            assert loaded_mesh.material_data["config"]["settings"]["quality"] == "high"
+            assert loaded_mesh.material_data["config"]["settings"]["enabled"] is True
+            assert loaded_mesh.material_data["config"]["settings"]["options"] == [1, 2, 3]
+            assert loaded_mesh.material_name == "zip_non_array_test"
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-
-
-if __name__ == '__main__':
-    unittest.main()

@@ -8,17 +8,18 @@ validation, and preservation during serialization.
 import os
 import tempfile
 import numpy as np
-import unittest
-from typing import List
+import pytest
+from io import BytesIO
 from pydantic import ValidationError
 
 from meshly import Mesh
 
 
-class TestIndexSizes(unittest.TestCase):
+class TestIndexSizes:
     """Test index_sizes functionality."""
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def setup(self):
         """Set up test data."""
         # Create vertices for a simple mesh
         self.vertices = np.array([
@@ -37,10 +38,10 @@ class TestIndexSizes(unittest.TestCase):
         indices = np.array([0, 1, 2, 2, 3, 0], dtype=np.uint32)
         mesh = Mesh(vertices=self.vertices, indices=indices)
 
-        self.assertEqual(mesh.index_count, 6)
-        self.assertEqual(mesh.polygon_count, 2)  # Now auto-infers triangles
+        assert mesh.index_count == 6
+        assert mesh.polygon_count == 2  # Now auto-infers triangles
         # Auto-inferred uniform triangles
-        self.assertTrue(mesh.is_uniform_polygons)
+        assert mesh.is_uniform_polygons
         # Auto-inferred triangle sizes
         np.testing.assert_array_equal(mesh.index_sizes, [3, 3])
 
@@ -54,9 +55,9 @@ class TestIndexSizes(unittest.TestCase):
 
         mesh = Mesh(vertices=self.vertices, indices=indices)
 
-        self.assertEqual(mesh.index_count, 8)  # Flattened to 8 indices
-        self.assertEqual(mesh.polygon_count, 2)  # 2 polygons
-        self.assertTrue(mesh.is_uniform_polygons)  # All quads
+        assert mesh.index_count == 8  # Flattened to 8 indices
+        assert mesh.polygon_count == 2  # 2 polygons
+        assert mesh.is_uniform_polygons  # All quads
         np.testing.assert_array_equal(mesh.index_sizes, [4, 4])
 
         # Check that we can get back the original structure
@@ -74,23 +75,22 @@ class TestIndexSizes(unittest.TestCase):
 
         mesh = Mesh(vertices=self.vertices, indices=indices)
 
-        self.assertEqual(mesh.index_count, 12)  # 3 + 4 + 5 = 12
-        self.assertEqual(mesh.polygon_count, 3)  # 3 polygons
-        self.assertFalse(mesh.is_uniform_polygons)  # Mixed sizes
+        assert mesh.index_count == 12  # 3 + 4 + 5 = 12
+        assert mesh.polygon_count == 3  # 3 polygons
+        assert not mesh.is_uniform_polygons  # Mixed sizes
         np.testing.assert_array_equal(mesh.index_sizes, [3, 4, 5])
 
         # Check that we can get back the original structure
         polygon_indices = mesh.get_polygon_indices()
-        self.assertEqual(len(polygon_indices), 3)
-        self.assertEqual(polygon_indices[0], [0, 1, 2])
-        self.assertEqual(polygon_indices[1], [1, 5, 6, 2])
-        self.assertEqual(polygon_indices[2], [0, 1, 4, 3, 2])
+        assert len(polygon_indices) == 3
+        assert polygon_indices[0] == [0, 1, 2]
+        assert polygon_indices[1] == [1, 5, 6, 2]
+        assert polygon_indices[2] == [0, 1, 4, 3, 2]
 
     def test_explicit_index_sizes_validation(self):
         """Test explicit index_sizes validation."""
         # Flat indices with explicit index_sizes
-        flat_indices = np.array(
-            [0, 1, 2, 1, 5, 6, 2, 0, 1, 4], dtype=np.uint32)
+        flat_indices = np.array([0, 1, 2, 1, 5, 6, 2, 0, 1, 4], dtype=np.uint32)
         # Triangle, quad, triangle
         explicit_sizes = np.array([3, 4, 3], dtype=np.uint32)
 
@@ -100,19 +100,18 @@ class TestIndexSizes(unittest.TestCase):
             index_sizes=explicit_sizes
         )
 
-        self.assertEqual(mesh.index_count, 10)
-        self.assertEqual(mesh.polygon_count, 3)
-        self.assertFalse(mesh.is_uniform_polygons)
+        assert mesh.index_count == 10
+        assert mesh.polygon_count == 3
+        assert not mesh.is_uniform_polygons
         np.testing.assert_array_equal(mesh.index_sizes, [3, 4, 3])
 
     def test_index_sizes_validation_mismatch(self):
         """Test that validation fails when index_sizes doesn't match indices."""
         # Indices sum to 10, but index_sizes sum to 8
-        flat_indices = np.array(
-            [0, 1, 2, 1, 5, 6, 2, 0, 1, 4], dtype=np.uint32)
+        flat_indices = np.array([0, 1, 2, 1, 5, 6, 2, 0, 1, 4], dtype=np.uint32)
         wrong_sizes = np.array([3, 5], dtype=np.uint32)  # Sum = 8, not 10
 
-        with self.assertRaises(ValidationError):
+        with pytest.raises(ValidationError):
             Mesh(
                 vertices=self.vertices,
                 indices=flat_indices,
@@ -130,7 +129,7 @@ class TestIndexSizes(unittest.TestCase):
         # Explicit sizes that conflict with inferred structure
         conflicting_sizes = np.array([3, 5], dtype=np.uint32)
 
-        with self.assertRaises(ValidationError):
+        with pytest.raises(ValidationError):
             Mesh(
                 vertices=self.vertices,
                 indices=indices,
@@ -139,8 +138,6 @@ class TestIndexSizes(unittest.TestCase):
 
     def test_index_sizes_encoding_decoding(self):
         """Test that index_sizes is preserved during encoding/decoding."""
-        from io import BytesIO
-
         # Create a mixed polygon mesh
         indices = [
             [0, 1, 2],        # Triangle
@@ -153,8 +150,8 @@ class TestIndexSizes(unittest.TestCase):
 
         # Encode the mesh - returns bytes
         encoded_mesh = mesh.encode()
-        self.assertIsInstance(encoded_mesh, bytes)
-        self.assertGreater(len(encoded_mesh), 0)
+        assert isinstance(encoded_mesh, bytes)
+        assert len(encoded_mesh) > 0
 
         # Decode via zip round-trip
         buffer = BytesIO()
@@ -163,94 +160,67 @@ class TestIndexSizes(unittest.TestCase):
         decoded_mesh = Mesh.load_from_zip(buffer)
 
         # Check that index_sizes is preserved
-        np.testing.assert_array_equal(
-            decoded_mesh.index_sizes, original_index_sizes)
-        self.assertEqual(decoded_mesh.polygon_count, 3)
-        self.assertFalse(decoded_mesh.is_uniform_polygons)
+        np.testing.assert_array_equal(decoded_mesh.index_sizes, original_index_sizes)
+        assert decoded_mesh.polygon_count == 3
+        assert not decoded_mesh.is_uniform_polygons
 
-        # Check that polygon structure is preserved
         original_polygons = mesh.get_polygon_indices()
         decoded_polygons = decoded_mesh.get_polygon_indices()
-        self.assertEqual(len(original_polygons), len(decoded_polygons))
+        assert len(original_polygons) == len(decoded_polygons)
         for orig, decoded in zip(original_polygons, decoded_polygons):
-            self.assertEqual(orig, decoded)
+            assert orig == decoded
 
     def test_index_sizes_serialization(self):
         """Test that index_sizes is preserved during ZIP serialization."""
-        # Create a mixed polygon mesh
         indices = [
-            [0, 1, 2, 3],     # Quad
-            [1, 5, 6],        # Triangle
-            [0, 3, 4, 2, 1]   # Pentagon
+            [0, 1, 2, 3],
+            [1, 5, 6],
+            [0, 3, 4, 2, 1]
         ]
 
         mesh = Mesh(vertices=self.vertices, indices=indices)
         original_index_sizes = mesh.index_sizes.copy()
 
-        # Create a temporary file for testing
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
             temp_path = temp_file.name
 
         try:
-            # Save the mesh to a zip file
             mesh.save_to_zip(temp_path)
-
-            # Load the mesh from the zip file
             loaded_mesh = Mesh.load_from_zip(temp_path)
 
-            # Check that index_sizes is preserved
-            np.testing.assert_array_equal(
-                loaded_mesh.index_sizes, original_index_sizes)
-            self.assertEqual(loaded_mesh.polygon_count, 3)
-            self.assertFalse(loaded_mesh.is_uniform_polygons)
+            np.testing.assert_array_equal(loaded_mesh.index_sizes, original_index_sizes)
+            assert loaded_mesh.polygon_count == 3
+            assert not loaded_mesh.is_uniform_polygons
 
-            # Check that polygon structure is preserved
             original_polygons = mesh.get_polygon_indices()
             loaded_polygons = loaded_mesh.get_polygon_indices()
-            self.assertEqual(len(original_polygons), len(loaded_polygons))
+            assert len(original_polygons) == len(loaded_polygons)
             for orig, loaded in zip(original_polygons, loaded_polygons):
-                self.assertEqual(orig, loaded)
-
+                assert orig == loaded
         finally:
-            # Clean up
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
     def test_uniform_vs_mixed_polygons(self):
         """Test uniform vs mixed polygon detection."""
-        # Uniform triangles
-        triangle_indices = [
-            [0, 1, 2],
-            [1, 5, 6],
-            [0, 3, 4]
-        ]
+        triangle_indices = [[0, 1, 2], [1, 5, 6], [0, 3, 4]]
         triangle_mesh = Mesh(vertices=self.vertices, indices=triangle_indices)
-        self.assertTrue(triangle_mesh.is_uniform_polygons)
+        assert triangle_mesh.is_uniform_polygons
         np.testing.assert_array_equal(triangle_mesh.index_sizes, [3, 3, 3])
 
-        # Uniform quads
-        quad_indices = np.array([
-            [0, 1, 2, 3],
-            [1, 5, 6, 2]
-        ], dtype=np.uint32)
+        quad_indices = np.array([[0, 1, 2, 3], [1, 5, 6, 2]], dtype=np.uint32)
         quad_mesh = Mesh(vertices=self.vertices, indices=quad_indices)
-        self.assertTrue(quad_mesh.is_uniform_polygons)
+        assert quad_mesh.is_uniform_polygons
         np.testing.assert_array_equal(quad_mesh.index_sizes, [4, 4])
 
-        # Mixed polygons
-        mixed_indices = [
-            [0, 1, 2],        # Triangle
-            [1, 5, 6, 2]      # Quad
-        ]
+        mixed_indices = [[0, 1, 2], [1, 5, 6, 2]]
         mixed_mesh = Mesh(vertices=self.vertices, indices=mixed_indices)
-        self.assertFalse(mixed_mesh.is_uniform_polygons)
+        assert not mixed_mesh.is_uniform_polygons
         np.testing.assert_array_equal(mixed_mesh.index_sizes, [3, 4])
 
     def test_polygon_reconstruction(self):
         """Test polygon reconstruction from flat indices and index_sizes."""
-        # Create flat indices and sizes
-        flat_indices = np.array(
-            [0, 1, 2, 1, 5, 6, 2, 0, 3, 4], dtype=np.uint32)
+        flat_indices = np.array([0, 1, 2, 1, 5, 6, 2, 0, 3, 4], dtype=np.uint32)
         sizes = np.array([3, 4, 3], dtype=np.uint32)
 
         mesh = Mesh(
@@ -259,27 +229,26 @@ class TestIndexSizes(unittest.TestCase):
             index_sizes=sizes
         )
 
-        # Test uniform polygon reconstruction (should return 2D array)
         uniform_indices = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.uint32)
         uniform_mesh = Mesh(vertices=self.vertices, indices=uniform_indices)
         reconstructed_uniform = uniform_mesh.get_polygon_indices()
-        self.assertIsInstance(reconstructed_uniform, np.ndarray)
-        self.assertEqual(reconstructed_uniform.shape, (2, 3))
+        assert isinstance(reconstructed_uniform, np.ndarray)
+        assert reconstructed_uniform.shape == (2, 3)
         np.testing.assert_array_equal(reconstructed_uniform, uniform_indices)
 
-        # Test mixed polygon reconstruction (should return list of lists)
         mixed_polygons = mesh.get_polygon_indices()
-        self.assertIsInstance(mixed_polygons, list)
-        self.assertEqual(len(mixed_polygons), 3)
-        self.assertEqual(mixed_polygons[0], [0, 1, 2])
-        self.assertEqual(mixed_polygons[1], [1, 5, 6, 2])
-        self.assertEqual(mixed_polygons[2], [0, 3, 4])
+        assert isinstance(mixed_polygons, list)
+        assert len(mixed_polygons) == 3
+        assert mixed_polygons[0] == [0, 1, 2]
+        assert mixed_polygons[1] == [1, 5, 6, 2]
+        assert mixed_polygons[2] == [0, 3, 4]
 
 
-class TestIndexSizesIntegrity(unittest.TestCase):
+class TestIndexSizesIntegrity:
     """Test index_sizes integrity during mesh operations."""
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def setup(self):
         """Set up test data."""
         self.vertices = np.array([
             [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
@@ -288,49 +257,38 @@ class TestIndexSizesIntegrity(unittest.TestCase):
 
     def test_copy_preserves_index_sizes(self):
         """Test that copying a mesh preserves index_sizes."""
-        # Create a mixed polygon mesh
         indices = [
-            [0, 1, 2, 3],     # Quad
-            [1, 5, 6],        # Triangle
-            [4, 5, 6, 7, 2]   # Pentagon
+            [0, 1, 2, 3],
+            [1, 5, 6],
+            [4, 5, 6, 7, 2]
         ]
 
         mesh = Mesh(vertices=self.vertices, indices=indices)
         copied_mesh = mesh.model_copy(deep=True)
 
-        # Check that index_sizes is preserved in the copy
-        np.testing.assert_array_equal(
-            copied_mesh.index_sizes, mesh.index_sizes)
-        self.assertEqual(copied_mesh.polygon_count, mesh.polygon_count)
-        self.assertEqual(copied_mesh.is_uniform_polygons,
-                         mesh.is_uniform_polygons)
+        np.testing.assert_array_equal(copied_mesh.index_sizes, mesh.index_sizes)
+        assert copied_mesh.polygon_count == mesh.polygon_count
+        assert copied_mesh.is_uniform_polygons == mesh.is_uniform_polygons
 
-        # Verify they are independent copies
-        self.assertIsNot(copied_mesh.index_sizes, mesh.index_sizes)
-        self.assertIsNot(copied_mesh.indices, mesh.indices)
+        assert copied_mesh.index_sizes is not mesh.index_sizes
+        assert copied_mesh.indices is not mesh.indices
 
     def test_optimization_with_index_sizes(self):
         """Test that mesh optimizations work correctly with index_sizes."""
-        # Create a more complex mesh with mixed polygons
         vertices = []
         indices = []
 
-        # Create a grid of quads and triangles
         for i in range(3):
             for j in range(3):
                 base = len(vertices)
-                # Add 4 vertices for a quad
                 vertices.extend([
                     [j, i, 0], [j+1, i, 0], [j+1, i+1, 0], [j, i+1, 0]
                 ])
 
                 if (i + j) % 2 == 0:
-                    # Create a quad
                     indices.append([base, base+1, base+2, base+3])
                 else:
-                    # Create two triangles
-                    indices.extend(
-                        [[base, base+1, base+2], [base, base+2, base+3]])
+                    indices.extend([[base, base+1, base+2], [base, base+2, base+3]])
 
         mesh_vertices = np.array(vertices, dtype=np.float32)
         mesh = Mesh(vertices=mesh_vertices, indices=indices)
@@ -338,28 +296,23 @@ class TestIndexSizesIntegrity(unittest.TestCase):
         original_polygon_count = mesh.polygon_count
         original_is_uniform = mesh.is_uniform_polygons
 
-        # Test optimization methods return new meshes with preserved structure
         optimized_cache = mesh.optimize_vertex_cache()
         optimized_overdraw = mesh.optimize_overdraw()
 
-        # Check that index_sizes structure is preserved in optimized meshes
-        self.assertEqual(optimized_cache.polygon_count, original_polygon_count)
-        self.assertEqual(optimized_cache.is_uniform_polygons,
-                         original_is_uniform)
-        self.assertEqual(optimized_overdraw.polygon_count,
-                         original_polygon_count)
-        self.assertEqual(
-            optimized_overdraw.is_uniform_polygons, original_is_uniform)
+        assert optimized_cache.polygon_count == original_polygon_count
+        assert optimized_cache.is_uniform_polygons == original_is_uniform
+        assert optimized_overdraw.polygon_count == original_polygon_count
+        assert optimized_overdraw.is_uniform_polygons == original_is_uniform
 
-        # Original mesh should be unchanged
-        self.assertEqual(mesh.polygon_count, original_polygon_count)
-        self.assertEqual(mesh.is_uniform_polygons, original_is_uniform)
+        assert mesh.polygon_count == original_polygon_count
+        assert mesh.is_uniform_polygons == original_is_uniform
 
 
-class TestCellTypes(unittest.TestCase):
+class TestCellTypes:
     """Test cell_types functionality."""
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def setup(self):
         """Set up test data."""
         self.vertices = np.array([
             [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
@@ -368,29 +321,23 @@ class TestCellTypes(unittest.TestCase):
 
     def test_cell_types_auto_inference(self):
         """Test automatic inference of cell_types from index_sizes."""
-        # Mixed polygon mesh
         indices = [
-            [0, 1],           # Line (2 vertices)
-            [0, 1, 2],        # Triangle (3 vertices)
-            [0, 1, 2, 3],     # Quad (4 vertices)
-            [0, 1, 2, 3, 4]   # Pentagon (5 vertices)
+            [0, 1],
+            [0, 1, 2],
+            [0, 1, 2, 3],
+            [0, 1, 2, 3, 4]
         ]
 
         mesh = Mesh(vertices=self.vertices, indices=indices)
 
-        # Check that cell_types are automatically inferred
-        expected_cell_types = [3, 5, 9, 14]  # Line, Triangle, Quad, Pentagon
+        expected_cell_types = [3, 5, 9, 14]
         np.testing.assert_array_equal(mesh.cell_types, expected_cell_types)
         np.testing.assert_array_equal(mesh.index_sizes, [2, 3, 4, 5])
 
     def test_cell_types_explicit(self):
         """Test explicit cell_types validation."""
-        # Create a mesh with explicit cell_types
-        indices = [
-            [0, 1, 2],        # Triangle
-            [1, 2, 3, 4]      # Quad
-        ]
-        explicit_cell_types = [5, 9]  # Triangle, Quad
+        indices = [[0, 1, 2], [1, 2, 3, 4]]
+        explicit_cell_types = [5, 9]
 
         mesh = Mesh(
             vertices=self.vertices,
@@ -403,13 +350,10 @@ class TestCellTypes(unittest.TestCase):
 
     def test_cell_types_length_mismatch(self):
         """Test that validation fails when cell_types length doesn't match index_sizes."""
-        indices = [
-            [0, 1, 2],        # Triangle
-            [1, 2, 3, 4]      # Quad
-        ]
-        wrong_cell_types = [5]  # Only one cell type for two polygons
+        indices = [[0, 1, 2], [1, 2, 3, 4]]
+        wrong_cell_types = [5]
 
-        with self.assertRaises(ValidationError):
+        with pytest.raises(ValidationError):
             Mesh(
                 vertices=self.vertices,
                 indices=indices,
@@ -418,13 +362,8 @@ class TestCellTypes(unittest.TestCase):
 
     def test_cell_types_encoding_decoding(self):
         """Test that cell_types is preserved during encoding/decoding."""
-        # Create a mesh with explicit cell_types
-        indices = [
-            [0, 1, 2],        # Triangle
-            [1, 2, 3, 4],     # Quad
-            [0, 4, 5]         # Another triangle
-        ]
-        explicit_cell_types = [5, 9, 5]  # Triangle, Quad, Triangle
+        indices = [[0, 1, 2], [1, 2, 3, 4], [0, 4, 5]]
+        explicit_cell_types = [5, 9, 5]
 
         mesh = Mesh(
             vertices=self.vertices,
@@ -432,33 +371,22 @@ class TestCellTypes(unittest.TestCase):
             cell_types=explicit_cell_types
         )
 
-        # Encode the mesh - returns bytes
         encoded_mesh = mesh.encode()
-        self.assertIsInstance(encoded_mesh, bytes)
-        self.assertGreater(len(encoded_mesh), 0)
+        assert isinstance(encoded_mesh, bytes)
+        assert len(encoded_mesh) > 0
 
-        # Decode via zip round-trip
-        from io import BytesIO
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_mesh = Mesh.load_from_zip(buffer)
 
-        # Check that cell_types is preserved
-        np.testing.assert_array_equal(
-            decoded_mesh.cell_types, explicit_cell_types)
+        np.testing.assert_array_equal(decoded_mesh.cell_types, explicit_cell_types)
         np.testing.assert_array_equal(decoded_mesh.index_sizes, [3, 4, 3])
 
     def test_cell_types_serialization(self):
         """Test that cell_types is preserved during ZIP serialization."""
-        # Create a mesh with mixed polygons and explicit cell_types
-        indices = [
-            [0],              # Vertex
-            [0, 1],           # Line
-            [0, 1, 2],        # Triangle
-            [1, 2, 3, 4]      # Quad
-        ]
-        explicit_cell_types = [1, 3, 5, 9]  # Vertex, Line, Triangle, Quad
+        indices = [[0], [0, 1], [0, 1, 2], [1, 2, 3, 4]]
+        explicit_cell_types = [1, 3, 5, 9]
 
         mesh = Mesh(
             vertices=self.vertices,
@@ -466,35 +394,23 @@ class TestCellTypes(unittest.TestCase):
             cell_types=explicit_cell_types
         )
 
-        # Create a temporary file for testing
         with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
             temp_path = temp_file.name
 
         try:
-            # Save the mesh to a zip file
             mesh.save_to_zip(temp_path)
-
-            # Load the mesh from the zip file
             loaded_mesh = Mesh.load_from_zip(temp_path)
 
-            # Check that cell_types is preserved
-            np.testing.assert_array_equal(
-                loaded_mesh.cell_types, explicit_cell_types)
-            np.testing.assert_array_equal(
-                loaded_mesh.index_sizes, [1, 2, 3, 4])
-
+            np.testing.assert_array_equal(loaded_mesh.cell_types, explicit_cell_types)
+            np.testing.assert_array_equal(loaded_mesh.index_sizes, [1, 2, 3, 4])
         finally:
-            # Clean up
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
     def test_cell_types_copy_preservation(self):
         """Test that cell_types is preserved during mesh copying."""
-        indices = [
-            [0, 1, 2, 3],     # Quad
-            [1, 2, 4]         # Triangle
-        ]
-        explicit_cell_types = [9, 5]  # Quad, Triangle
+        indices = [[0, 1, 2, 3], [1, 2, 4]]
+        explicit_cell_types = [9, 5]
 
         mesh = Mesh(
             vertices=self.vertices,
@@ -502,37 +418,25 @@ class TestCellTypes(unittest.TestCase):
             cell_types=explicit_cell_types
         )
 
-        # Copy the mesh
         copied_mesh = mesh.model_copy(deep=True)
 
-        # Check that cell_types is preserved in the copy
         np.testing.assert_array_equal(copied_mesh.cell_types, mesh.cell_types)
-        np.testing.assert_array_equal(
-            copied_mesh.index_sizes, mesh.index_sizes)
+        np.testing.assert_array_equal(copied_mesh.index_sizes, mesh.index_sizes)
 
-        # Verify they are independent copies
-        self.assertIsNot(copied_mesh.cell_types, mesh.cell_types)
-        self.assertIsNot(copied_mesh.index_sizes, mesh.index_sizes)
+        assert copied_mesh.cell_types is not mesh.cell_types
+        assert copied_mesh.index_sizes is not mesh.index_sizes
 
-    def test_cell_types_vtk_inference(self):
+    @pytest.mark.parametrize("indices_list,expected_cell_types", [
+        ([0], [1]),
+        ([0, 1], [3]),
+        ([0, 1, 2], [5]),
+        ([0, 1, 2, 3], [9]),
+        ([0, 1, 2, 3, 4], [14]),
+        ([0, 1, 2, 3, 4, 5], [13]),
+        ([0, 1, 2, 3, 4, 5, 6, 7], [12]),
+        ([0, 1, 2, 3, 4, 5, 6, 7, 0], [7]),
+    ])
+    def test_cell_types_vtk_inference(self, indices_list, expected_cell_types):
         """Test VTK cell type inference for various polygon sizes."""
-        test_cases = [
-            ([0], [1]),                           # Vertex
-            ([0, 1], [3]),                        # Line
-            ([0, 1, 2], [5]),                     # Triangle
-            ([0, 1, 2, 3], [9]),                  # Quad
-            ([0, 1, 2, 3, 4], [14]),              # Pyramid
-            ([0, 1, 2, 3, 4, 5], [13]),           # Wedge
-            ([0, 1, 2, 3, 4, 5, 6, 7], [12]),     # Hexahedron
-            ([0, 1, 2, 3, 4, 5, 6, 7, 0], [7])   # Generic polygon (9 vertices)
-        ]
-
-        for indices_list, expected_cell_types in test_cases:
-            with self.subTest(polygon_size=len(indices_list)):
-                mesh = Mesh(vertices=self.vertices, indices=[indices_list])
-                np.testing.assert_array_equal(
-                    mesh.cell_types, expected_cell_types)
-
-
-if __name__ == '__main__':
-    unittest.main()
+        mesh = Mesh(vertices=self.vertices, indices=[indices_list])
+        np.testing.assert_array_equal(mesh.cell_types, expected_cell_types)

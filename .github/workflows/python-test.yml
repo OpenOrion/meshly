@@ -22,7 +22,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        cd python &&  pip install .
-    - name: Test with unittest
+        cd python &&  pip install -e ".[dev]"
+    - name: Test with pytest
       run: |
-        cd python && python -m unittest discover tests
+        cd python && pytest tests/ -v

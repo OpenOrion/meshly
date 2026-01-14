@@ -6,15 +6,16 @@ are the same before and after encoding/decoding, ensuring that the mesh geometry
 is preserved correctly.
 """
 import numpy as np
-import unittest
+import pytest
 from io import BytesIO
 from meshly import Mesh
 
 
-class TestMeshIntegrity(unittest.TestCase):
+class TestMeshIntegrity:
     """Test mesh integrity during encoding/decoding."""
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def setup(self):
         """Set up test data."""
         # Create a simple mesh (a cube)
         self.vertices = np.array([
@@ -59,60 +60,43 @@ class TestMeshIntegrity(unittest.TestCase):
 
     def test_mesh_integrity_encode_decode(self):
         """Test that mesh vertices indexed by indices are preserved during encoding/decoding."""
-        # Get the original triangles
-        original_triangles = self.get_triangles_set(
-            self.mesh.vertices, self.mesh.indices)
+        original_triangles = self.get_triangles_set(self.mesh.vertices, self.mesh.indices)
 
-        # Save and load via zip (this is the proper encode/decode cycle)
         buffer = BytesIO()
         self.mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_mesh = Mesh.load_from_zip(buffer)
 
-        # Get the decoded triangles
-        decoded_triangles = self.get_triangles_set(
-            decoded_mesh.vertices, decoded_mesh.indices)
+        decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
 
-        # Check that the triangles match
-        self.assertEqual(original_triangles, decoded_triangles)
+        assert original_triangles == decoded_triangles
 
     def test_mesh_integrity_optimize_encode_decode(self):
         """Test that mesh vertices indexed by indices are preserved during optimization, encoding, and decoding."""
-        # Create a copy of the mesh
         mesh = Mesh(vertices=self.vertices.copy(), indices=self.indices.copy())
 
-        # Optimize the mesh (instance methods return new mesh)
         optimized_mesh = mesh.optimize_vertex_cache()
         optimized_mesh = optimized_mesh.optimize_overdraw()
         optimized_mesh = optimized_mesh.optimize_vertex_fetch()
 
-        # Get the optimized triangles
-        optimized_triangles = self.get_triangles_set(
-            optimized_mesh.vertices, optimized_mesh.indices)
+        optimized_triangles = self.get_triangles_set(optimized_mesh.vertices, optimized_mesh.indices)
 
-        # Save and load via zip
         buffer = BytesIO()
         optimized_mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_mesh = Mesh.load_from_zip(buffer)
 
-        # Get the decoded triangles
-        decoded_triangles = self.get_triangles_set(
-            decoded_mesh.vertices, decoded_mesh.indices)
+        decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
 
-        # Check that the triangles match
-        self.assertEqual(optimized_triangles, decoded_triangles)
+        assert optimized_triangles == decoded_triangles
 
     def test_mesh_integrity_simplify_encode_decode(self):
         """Test that mesh vertices indexed by indices are preserved during simplification, encoding, and decoding."""
-        # Create a more complex mesh (a sphere)
-        # Generate a sphere with 16 segments and 16 rings
         segments = 16
         rings = 16
         vertices = []
         indices = []
 
-        # Generate vertices
         for i in range(rings + 1):
             v = i / rings
             phi = v * np.pi
@@ -127,7 +111,6 @@ class TestMeshIntegrity(unittest.TestCase):
 
                 vertices.append([x, y, z])
 
-        # Generate indices
         for i in range(rings):
             for j in range(segments):
                 a = i * segments + j
@@ -135,7 +118,6 @@ class TestMeshIntegrity(unittest.TestCase):
                 c = (i + 1) * segments + (j + 1) % segments
                 d = (i + 1) * segments + j
 
-                # Two triangles per quad
                 indices.extend([a, b, c])
                 indices.extend([a, c, d])
 
@@ -143,48 +125,29 @@ class TestMeshIntegrity(unittest.TestCase):
         sphere_indices = np.array(indices, dtype=np.uint32)
         sphere_mesh = Mesh(vertices=sphere_vertices, indices=sphere_indices)
 
-        # Simplify the mesh (instance method returns new mesh)
-        simplified_mesh = Mesh(
-            vertices=sphere_vertices.copy(), indices=sphere_indices.copy())
-        simplified_mesh = simplified_mesh.simplify(
-            target_ratio=0.5)  # Keep 50% of triangles
+        simplified_mesh = Mesh(vertices=sphere_vertices.copy(), indices=sphere_indices.copy())
+        simplified_mesh = simplified_mesh.simplify(target_ratio=0.5)
 
-        # Get the simplified triangles
-        simplified_triangles = self.get_triangles_set(
-            simplified_mesh.vertices, simplified_mesh.indices)
+        simplified_triangles = self.get_triangles_set(simplified_mesh.vertices, simplified_mesh.indices)
 
-        # Save and load via zip
         buffer = BytesIO()
         simplified_mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_mesh = Mesh.load_from_zip(buffer)
 
-        # Get the decoded triangles
-        decoded_triangles = self.get_triangles_set(
-            decoded_mesh.vertices, decoded_mesh.indices)
+        decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
 
-        # Check that the triangles match
-        self.assertEqual(simplified_triangles, decoded_triangles)
+        assert simplified_triangles == decoded_triangles
 
     def test_mesh_integrity_triangles(self):
         """Test that mesh triangles are preserved during encoding/decoding."""
-        # Get the original triangles
-        original_triangles = self.get_triangles_set(
-            self.mesh.vertices, self.mesh.indices)
+        original_triangles = self.get_triangles_set(self.mesh.vertices, self.mesh.indices)
 
-        # Save and load via zip
         buffer = BytesIO()
         self.mesh.save_to_zip(buffer)
         buffer.seek(0)
         decoded_mesh = Mesh.load_from_zip(buffer)
 
-        # Get the decoded triangles
-        decoded_triangles = self.get_triangles_set(
-            decoded_mesh.vertices, decoded_mesh.indices)
+        decoded_triangles = self.get_triangles_set(decoded_mesh.vertices, decoded_mesh.indices)
 
-        # Check that the triangles match
-        self.assertEqual(original_triangles, decoded_triangles)
-
-
-if __name__ == '__main__':
-    unittest.main()
+        assert original_triangles == decoded_triangles

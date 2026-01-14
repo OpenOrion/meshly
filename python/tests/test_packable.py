@@ -1,6 +1,6 @@
 """Tests for Packable base class."""
 
-import unittest
+import pytest
 import tempfile
 import os
 from io import BytesIO
@@ -43,11 +43,10 @@ class FieldData(BaseModel):
 class Snapshot(Packable):
     """Snapshot with dict of BaseModel containing arrays."""
     time: float = Field(..., description="Time value")
-    fields: dict[str, FieldData] = Field(
-        default_factory=dict, description="Field data")
+    fields: dict[str, FieldData] = Field(default_factory=dict, description="Field data")
 
 
-class TestPackable(unittest.TestCase):
+class TestPackable:
     """Test Packable functionality."""
 
     def test_simple_container(self):
@@ -56,7 +55,7 @@ class TestPackable(unittest.TestCase):
             name="test",
             values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
         )
-        self.assertEqual(data.name, "test")
+        assert data.name == "test"
         np.testing.assert_array_equal(data.values, [1.0, 2.0, 3.0])
 
     def test_array_fields_detection(self):
@@ -65,8 +64,8 @@ class TestPackable(unittest.TestCase):
             name="test",
             values=np.array([1.0, 2.0, 3.0])
         )
-        self.assertIn("values", data.array_fields)
-        self.assertNotIn("name", data.array_fields)
+        assert "values" in data.array_fields
+        assert "name" not in data.array_fields
 
     def test_encode_decode(self):
         """Test encoding and decoding via zip round-trip."""
@@ -75,18 +74,16 @@ class TestPackable(unittest.TestCase):
             values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
         )
 
-        # Test that encode produces bytes
         encoded = original.encode()
-        self.assertIsInstance(encoded, bytes)
-        self.assertGreater(len(encoded), 0)
+        assert isinstance(encoded, bytes)
+        assert len(encoded) > 0
 
-        # Test full round-trip via zip
         buffer = BytesIO()
         original.save_to_zip(buffer)
         buffer.seek(0)
         decoded = SimpleData.load_from_zip(buffer)
         np.testing.assert_array_almost_equal(decoded.values, original.values)
-        self.assertEqual(decoded.name, original.name)
+        assert decoded.name == original.name
 
     def test_save_load_zip_file(self):
         """Test saving and loading from a zip file."""
@@ -102,13 +99,9 @@ class TestPackable(unittest.TestCase):
 
             loaded = SimulationResult.load_from_zip(path)
 
-            self.assertAlmostEqual(loaded.time, original.time)
-            np.testing.assert_array_almost_equal(
-                loaded.temperature, original.temperature
-            )
-            np.testing.assert_array_almost_equal(
-                loaded.velocity, original.velocity
-            )
+            assert loaded.time == pytest.approx(original.time)
+            np.testing.assert_array_almost_equal(loaded.temperature, original.temperature)
+            np.testing.assert_array_almost_equal(loaded.velocity, original.velocity)
 
     def test_save_load_bytesio(self):
         """Test saving and loading from BytesIO."""
@@ -123,7 +116,7 @@ class TestPackable(unittest.TestCase):
         buffer.seek(0)
         loaded = SimpleData.load_from_zip(buffer)
 
-        self.assertEqual(loaded.name, original.name)
+        assert loaded.name == original.name
         np.testing.assert_array_equal(loaded.values, original.values)
 
     def test_nested_dict_arrays(self):
@@ -136,25 +129,19 @@ class TestPackable(unittest.TestCase):
             }
         )
 
-        # Check nested array detection
         array_fields = data.array_fields
-        self.assertIn("fields.pressure", array_fields)
-        self.assertIn("fields.density", array_fields)
+        assert "fields.pressure" in array_fields
+        assert "fields.density" in array_fields
 
-        # Test round-trip
         buffer = BytesIO()
         data.save_to_zip(buffer)
 
         buffer.seek(0)
         loaded = NestedData.load_from_zip(buffer)
 
-        self.assertEqual(loaded.label, data.label)
-        np.testing.assert_array_almost_equal(
-            loaded.fields["pressure"], data.fields["pressure"]
-        )
-        np.testing.assert_array_almost_equal(
-            loaded.fields["density"], data.fields["density"]
-        )
+        assert loaded.label == data.label
+        np.testing.assert_array_almost_equal(loaded.fields["pressure"], data.fields["pressure"])
+        np.testing.assert_array_almost_equal(loaded.fields["density"], data.fields["density"])
 
     def test_deterministic_encode(self):
         """Test that encode produces consistent output."""
@@ -163,11 +150,10 @@ class TestPackable(unittest.TestCase):
             values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
         )
 
-        # Multiple encodes should produce the same bytes
         encoded1 = data.encode()
         encoded2 = data.encode()
 
-        self.assertEqual(encoded1, encoded2)
+        assert encoded1 == encoded2
 
     def test_class_mismatch_error(self):
         """Test error when loading with wrong class."""
@@ -180,10 +166,8 @@ class TestPackable(unittest.TestCase):
         data.save_to_zip(buffer)
         buffer.seek(0)
 
-        with self.assertRaises(ValueError) as ctx:
+        with pytest.raises(ValueError, match="Class mismatch"):
             SimulationResult.load_from_zip(buffer)
-
-        self.assertIn("Class mismatch", str(ctx.exception))
 
     def test_dict_of_basemodel_with_arrays(self):
         """Test containers with dict[str, BaseModel] where BaseModel contains arrays."""
@@ -199,47 +183,39 @@ class TestPackable(unittest.TestCase):
                 "velocity": FieldData(
                     name="velocity",
                     type="vector",
-                    data=np.array(
-                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+                    data=np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
                     units="m/s"
                 )
             }
         )
 
-        # Check nested array detection
         array_fields = snapshot.array_fields
-        self.assertIn("fields.temperature.data", array_fields)
-        self.assertIn("fields.velocity.data", array_fields)
+        assert "fields.temperature.data" in array_fields
+        assert "fields.velocity.data" in array_fields
 
-        # Test round-trip
         buffer = BytesIO()
         snapshot.save_to_zip(buffer)
 
         buffer.seek(0)
         loaded = Snapshot.load_from_zip(buffer)
 
-        self.assertAlmostEqual(loaded.time, snapshot.time)
+        assert loaded.time == pytest.approx(snapshot.time)
 
-        # Check that FieldData instances are reconstructed
-        self.assertIsInstance(loaded.fields["temperature"], FieldData)
-        self.assertIsInstance(loaded.fields["velocity"], FieldData)
+        assert isinstance(loaded.fields["temperature"], FieldData)
+        assert isinstance(loaded.fields["velocity"], FieldData)
 
-        # Check non-array fields
-        self.assertEqual(loaded.fields["temperature"].name, "temperature")
-        self.assertEqual(loaded.fields["temperature"].type, "scalar")
-        self.assertEqual(loaded.fields["temperature"].units, "K")
+        assert loaded.fields["temperature"].name == "temperature"
+        assert loaded.fields["temperature"].type == "scalar"
+        assert loaded.fields["temperature"].units == "K"
 
-        self.assertEqual(loaded.fields["velocity"].name, "velocity")
-        self.assertEqual(loaded.fields["velocity"].type, "vector")
-        self.assertEqual(loaded.fields["velocity"].units, "m/s")
+        assert loaded.fields["velocity"].name == "velocity"
+        assert loaded.fields["velocity"].type == "vector"
+        assert loaded.fields["velocity"].units == "m/s"
 
-        # Check array data
         np.testing.assert_array_almost_equal(
-            loaded.fields["temperature"].data, snapshot.fields["temperature"].data
-        )
+            loaded.fields["temperature"].data, snapshot.fields["temperature"].data)
         np.testing.assert_array_almost_equal(
-            loaded.fields["velocity"].data, snapshot.fields["velocity"].data
-        )
+            loaded.fields["velocity"].data, snapshot.fields["velocity"].data)
 
     def test_dict_of_basemodel_with_optional_none_field(self):
         """Test that optional None fields in BaseModel are handled correctly."""
@@ -250,7 +226,7 @@ class TestPackable(unittest.TestCase):
                     name="pressure",
                     type="scalar",
                     data=np.array([100.0, 101.0], dtype=np.float32),
-                    units=None  # Optional field set to None
+                    units=None
                 )
             }
         )
@@ -261,11 +237,10 @@ class TestPackable(unittest.TestCase):
         buffer.seek(0)
         loaded = Snapshot.load_from_zip(buffer)
 
-        self.assertIsInstance(loaded.fields["pressure"], FieldData)
-        self.assertIsNone(loaded.fields["pressure"].units)
+        assert isinstance(loaded.fields["pressure"], FieldData)
+        assert loaded.fields["pressure"].units is None
         np.testing.assert_array_almost_equal(
-            loaded.fields["pressure"].data, snapshot.fields["pressure"].data
-        )
+            loaded.fields["pressure"].data, snapshot.fields["pressure"].data)
 
 
 class InnerPackable(Packable):
@@ -280,7 +255,7 @@ class OuterPackable(Packable):
     inner: Optional[InnerPackable] = Field(None, description="Nested packable")
 
 
-class TestNestedPackableCache(unittest.TestCase):
+class TestNestedPackableCache:
     """Test nested Packable with cache support."""
 
     def test_nested_packable_without_cache(self):
@@ -297,9 +272,9 @@ class TestNestedPackableCache(unittest.TestCase):
         buffer.seek(0)
         loaded = OuterPackable.load_from_zip(buffer)
 
-        self.assertEqual(loaded.name, "outer")
-        self.assertIsNotNone(loaded.inner)
-        self.assertEqual(loaded.inner.label, "inner")
+        assert loaded.name == "outer"
+        assert loaded.inner is not None
+        assert loaded.inner.label == "inner"
         np.testing.assert_array_almost_equal(loaded.inner.data, inner.data)
 
     def test_nested_packable_with_cache(self):
@@ -316,29 +291,25 @@ class TestNestedPackableCache(unittest.TestCase):
             cache_path = os.path.join(tmpdir, "cache")
             zip_path = os.path.join(tmpdir, "outer.zip")
 
-            # Create cache saver and save with cache
             cache_saver = WriteHandler.create_cache_saver(cache_path)
             outer.save_to_zip(zip_path, cache_saver=cache_saver)
 
-            # Verify cache file was created
             cache_files = os.listdir(cache_path)
-            self.assertEqual(len(cache_files), 1)
-            self.assertTrue(cache_files[0].endswith(".zip"))
+            assert len(cache_files) == 1
+            assert cache_files[0].endswith(".zip")
 
-            # Create cache loader and load with cache
             cache_loader = ReadHandler.create_cache_loader(cache_path)
             loaded = OuterPackable.load_from_zip(zip_path, cache_loader=cache_loader)
 
-            self.assertEqual(loaded.name, "cached_outer")
-            self.assertIsNotNone(loaded.inner)
-            self.assertEqual(loaded.inner.label, "cached_inner")
+            assert loaded.name == "cached_outer"
+            assert loaded.inner is not None
+            assert loaded.inner.label == "cached_inner"
             np.testing.assert_array_almost_equal(loaded.inner.data, inner.data)
 
     def test_cache_deduplication(self):
         """Test that identical nested packables share the same cache file."""
         from meshly.data_handler import ReadHandler, WriteHandler
 
-        # Create identical inner packables
         inner1 = InnerPackable(
             label="same",
             data=np.array([1.0, 2.0], dtype=np.float32)
@@ -355,22 +326,19 @@ class TestNestedPackableCache(unittest.TestCase):
             zip1_path = os.path.join(tmpdir, "outer1.zip")
             zip2_path = os.path.join(tmpdir, "outer2.zip")
 
-            # Save both with same cache
             cache_saver = WriteHandler.create_cache_saver(cache_path)
             outer1.save_to_zip(zip1_path, cache_saver=cache_saver)
             outer2.save_to_zip(zip2_path, cache_saver=cache_saver)
 
-            # Both should use the same cache file (SHA256 deduplication)
             cache_files = os.listdir(cache_path)
-            self.assertEqual(len(cache_files), 1)
+            assert len(cache_files) == 1
 
-            # Both should load correctly
             cache_loader = ReadHandler.create_cache_loader(cache_path)
             loaded1 = OuterPackable.load_from_zip(zip1_path, cache_loader=cache_loader)
             loaded2 = OuterPackable.load_from_zip(zip2_path, cache_loader=cache_loader)
 
-            self.assertEqual(loaded1.inner.label, "same")
-            self.assertEqual(loaded2.inner.label, "same")
+            assert loaded1.inner.label == "same"
+            assert loaded2.inner.label == "same"
 
     def test_cache_missing_falls_back_to_embedded(self):
         """Test loading works when cache file is missing but data is embedded."""
@@ -382,21 +350,15 @@ class TestNestedPackableCache(unittest.TestCase):
         )
         outer = OuterPackable(name="fallback_outer", inner=inner)
 
-        # Save without cache (embedded)
         buffer = BytesIO()
         outer.save_to_zip(buffer)
 
-        # Load with a cache loader that won't find anything (should still work from embedded data)
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = os.path.join(tmpdir, "cache")
-            os.makedirs(cache_path)  # Create empty cache dir
+            os.makedirs(cache_path)
             cache_loader = ReadHandler.create_cache_loader(cache_path)
             buffer.seek(0)
             loaded = OuterPackable.load_from_zip(buffer, cache_loader=cache_loader)
 
-            self.assertEqual(loaded.name, "fallback_outer")
-            self.assertEqual(loaded.inner.label, "fallback")
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert loaded.name == "fallback_outer"
+            assert loaded.inner.label == "fallback"

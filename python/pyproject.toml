@@ -39,6 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 jax = ["jax", "jaxlib"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/OpenOrion/meshly"
@@ -50,3 +51,8 @@ Documentation = "https://github.com/OpenOrion/meshly#readme"
 where = ["."]
 include = ["meshly*"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = ["-v", "--tb=short"]

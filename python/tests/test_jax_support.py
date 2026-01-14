@@ -5,7 +5,8 @@ Tests for JAX array support in meshly.
 import unittest
 import numpy as np
 from io import BytesIO
-from meshly import Mesh, Array, HAS_JAX
+from meshly import Mesh, Array
+from meshly.array import HAS_JAX
 
 
 class TestJAXSupport(unittest.TestCase):
@@ -46,7 +47,7 @@ class TestJAXSupport(unittest.TestCase):
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
-        decoded = Mesh.load_from_zip(buffer, use_jax=False)
+        decoded = Mesh.load_from_zip(buffer, array_type="numpy")
 
         self.assertIsInstance(decoded.vertices, np.ndarray)
         self.assertIsInstance(decoded.indices, np.ndarray)
@@ -65,7 +66,7 @@ class TestJAXSupport(unittest.TestCase):
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
-        decoded_jax = Mesh.load_from_zip(buffer, use_jax=True)
+        decoded_jax = Mesh.load_from_zip(buffer, array_type="jax")
 
         # Verify arrays are JAX arrays
         self.assertTrue(hasattr(decoded_jax.vertices, 'device'),
@@ -111,8 +112,8 @@ class TestJAXSupport(unittest.TestCase):
         buffer.seek(0)
 
         # Should raise error when JAX is requested but not available
-        with self.assertRaises(ValueError) as context:
-            Mesh.load_from_zip(buffer, use_jax=True)
+        with self.assertRaises(AssertionError) as context:
+            Mesh.load_from_zip(buffer, array_type="jax")
 
         self.assertIn("JAX is not available", str(context.exception))
 
@@ -158,7 +159,7 @@ class TestJAXSupport(unittest.TestCase):
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
         buffer.seek(0)
-        decoded_jax = CustomMesh.load_from_zip(buffer, use_jax=True)
+        decoded_jax = CustomMesh.load_from_zip(buffer, array_type="jax")
 
         # Verify all arrays are JAX arrays
         self.assertTrue(hasattr(decoded_jax.vertices, 'device'),

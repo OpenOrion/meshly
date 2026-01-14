@@ -1,8 +1,8 @@
 import JSZip from 'jszip'
 import { MeshoptDecoder } from "meshoptimizer"
 import * as THREE from 'three'
-import { Packable, PackableMetadata } from './packable'
-import { PackableUtils, ZipUtils } from './utils'
+import { ArrayType } from './array'
+import { CustomFieldConfig, Packable, PackableMetadata } from './packable'
 
 
 /**
@@ -21,6 +21,8 @@ export interface MeshSize {
  */
 export interface MeshMetadata extends PackableMetadata {
   mesh_size: MeshSize
+  /** Array backend type for vertices/indices (for Python compatibility) */
+  array_type?: ArrayType
 }
 
 /**
@@ -83,8 +85,8 @@ export interface MeshData {
  * 
  * @example
  * ```typescript
- * // Load from zip
- * const mesh = await Mesh.loadFromZip(zipData)
+ * // Decode from zip data
+ * const mesh = await Mesh.decode(zipData)
  * 
  * // Convert to Three.js BufferGeometry
  * const geometry = mesh.toBufferGeometry()
@@ -101,6 +103,86 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   declare markerOffsets?: Record<string, Uint32Array>
   declare markerTypes?: Record<string, Uint8Array>
   declare markers?: Record<string, number[][]>
+
+  // ============================================================
+  // Custom field decoders for meshoptimizer
+  // ============================================================
+
+  /**
+   * Decode vertices using meshoptimizer
+   */
+  private static _decodeVertices(data: Uint8Array, metadata: MeshMetadata): Float32Array {
+    const meshSize = metadata.mesh_size
+    const verticesUint8 = new Uint8Array(meshSize.vertex_count * meshSize.vertex_size)
+    MeshoptDecoder.decodeVertexBuffer(
+      verticesUint8,
+      meshSize.vertex_count,
+      meshSize.vertex_size,
+      data
+    )
+    return new Float32Array(verticesUint8.buffer)
+  }
+
+  /**
+   * Decode indices using meshoptimizer
+   */
+  private static _decodeIndices(data: Uint8Array, metadata: MeshMetadata): Uint32Array {
+    const meshSize = metadata.mesh_size
+    const indicesUint8 = new Uint8Array(meshSize.index_count! * meshSize.index_size)
+    MeshoptDecoder.decodeIndexSequence(
+      indicesUint8,
+      meshSize.index_count!,
+      meshSize.index_size,
+      data
+    )
+    return new Uint32Array(indicesUint8.buffer)
+  }
+
+  /**
+   * Custom field configurations for mesh-specific decoding
+   */
+  protected static override getCustomFields(): Record<string, CustomFieldConfig<unknown, MeshMetadata>> {
+    return {
+      vertices: {
+        fileName: 'vertices',
+        decode: (data, metadata) => Mesh._decodeVertices(data, metadata),
+        optional: false
+      },
+      indices: {
+        fileName: 'indices',
+        decode: (data, metadata) => Mesh._decodeIndices(data, metadata),
+        optional: true
+      }
+    }
+  }
+
+  // ============================================================
+  // Override decode to use MeshMetadata
+  // ============================================================
+
+  /**
+   * Decode a Mesh from zip data
+   */
+  static override async decode(zipData: ArrayBuffer | Uint8Array): Promise<Mesh> {
+    const zip = await JSZip.loadAsync(zipData)
+    const metadata = await Packable.loadMetadata<MeshMetadata>(zip)
+    const customFieldNames = Mesh.getCustomFieldNames()
+
+    const data: Record<string, unknown> = {}
+
+    // Decode custom fields (vertices, indices)
+    await Mesh.decodeCustomFields(zip, metadata, data)
+
+    // Load standard arrays
+    await Mesh.loadStandardArrays(zip, data, customFieldNames)
+
+    // Merge non-array fields from metadata
+    if (metadata.field_data) {
+      Mesh._mergeFieldData(data, metadata.field_data)
+    }
+
+    return new Mesh(data as unknown as MeshData)
+  }
 
   // ============================================================
   // Mesh-specific utility methods
@@ -159,64 +241,6 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
     }
   }
 
-
-  // ============================================================
-  // Zip file loading
-  // ============================================================
-
-  /**
-   * Load a mesh from a zip file
-   */
-  static override async loadFromZip(zipData: ArrayBuffer | Uint8Array): Promise<Mesh> {
-    const zip = await JSZip.loadAsync(zipData)
-
-    // Load metadata using Packable's generic loadMetadata
-    const metadata = await Packable.loadMetadata<MeshMetadata>(zip)
-    const meshSize = metadata.mesh_size
-
-    // Mesh-specific: decode vertices with meshoptimizer
-    const vertexData = await zip.file('mesh/vertices.bin')?.async('uint8array')
-    if (!vertexData) {
-      throw new Error('Vertex data not found in zip file')
-    }
-    const verticesUint8 = new Uint8Array(meshSize.vertex_count * meshSize.vertex_size)
-    MeshoptDecoder.decodeVertexBuffer(
-      verticesUint8,
-      meshSize.vertex_count,
-      meshSize.vertex_size,
-      vertexData
-    )
-    const vertices = new Float32Array(verticesUint8.buffer)
-
-    // Mesh-specific: decode indices with meshoptimizer (if present)
-    let indices: Uint32Array | undefined
-    if (meshSize.index_count !== null) {
-      const indexData = await zip.file('mesh/indices.bin')?.async('uint8array')
-      if (indexData) {
-        const indicesUint8 = new Uint8Array(meshSize.index_count * meshSize.index_size)
-        MeshoptDecoder.decodeIndexSequence(
-          indicesUint8,
-          meshSize.index_count,
-          meshSize.index_size,
-          indexData
-        )
-        indices = new Uint32Array(indicesUint8.buffer)
-      }
-    }
-
-    // Reuse shared utility for loading additional arrays
-    const data = await ZipUtils.loadArrays(zip)
-    const meshData = data as unknown as MeshData
-    meshData.vertices = vertices
-    if (indices) meshData.indices = indices
-
-    // Merge non-array fields from metadata
-    if (metadata.field_data) {
-      PackableUtils.mergeFieldData(meshData as unknown as Record<string, unknown>, metadata.field_data)
-    }
-
-    return new Mesh(meshData)
-  }
 
   // ============================================================
   // Marker extraction

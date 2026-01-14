@@ -115,18 +115,10 @@ class TestDictArrays(unittest.TestCase):
             material_name="test_material"
         )
 
-        # Encode the mesh
+        # Encode the mesh - returns bytes
         encoded_mesh = mesh.encode()
-
-        # Check that all arrays are encoded (including vertices and indices)
-        expected_array_names = {
-            "vertices", "indices", "index_sizes", "cell_types",
-            "textures.diffuse", "textures.normal", "textures.specular",
-            "material_data.surface.roughness", "material_data.surface.metallic",
-            "material_data.lighting.emission"
-        }
-
-        self.assertEqual(set(encoded_mesh.arrays.keys()), expected_array_names)
+        self.assertIsInstance(encoded_mesh, bytes)
+        self.assertGreater(len(encoded_mesh), 0)
 
         # Decode the mesh via zip round-trip (proper way to encode/decode)
         buffer = BytesIO()

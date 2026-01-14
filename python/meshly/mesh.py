@@ -12,11 +12,11 @@ The Mesh class inherits from Packable and adds:
 - Marker support for boundary conditions and regions
 """
 
-from .utils import ElementUtils, TriangulationUtils, MeshUtils, ZipUtils, PackableUtils
+from .utils import ElementUtils, TriangulationUtils, MeshUtils
+from .data_handler import WriteHandler, ReadHandler
 from .cell_types import CellTypeUtils, VTKCellType
-from .common import PathLike
-from .array import EncodedArray
-from .packable import Packable, PackableMetadata
+from .array import ArrayUtils, ArrayType, Array
+from .packable import Packable, PackableMetadata, CustomFieldConfig
 from meshoptimizer import (
     encode_vertex_buffer,
     encode_index_sequence,
@@ -27,42 +27,23 @@ from meshoptimizer import (
     optimize_vertex_fetch as meshopt_optimize_vertex_fetch,
     simplify as meshopt_simplify,
 )
-import json
-import zipfile
-from io import BytesIO
 from typing import (
     Dict,
     Optional,
     Type,
     Any,
     TypeVar,
-    Union,
     List,
     Sequence,
+    Union,
 )
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
-# Optional JAX support
-try:
-    import jax.numpy as jnp
-    HAS_JAX = True
-except ImportError:
-    jnp = None
-    HAS_JAX = False
-
-# Array type union - supports both numpy and JAX arrays
-if HAS_JAX:
-    JaxArray = Union[np.ndarray, jnp.ndarray]
-else:
-    JaxArray = np.ndarray
-Array = Union[np.ndarray, JaxArray]
-
-# Use meshoptimizer directly
-
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
+
 
 class MeshSizeInfo(BaseModel):
     """Mesh size information for meshoptimizer encoding/decoding."""
@@ -77,6 +58,8 @@ class MeshMetadata(PackableMetadata):
     """Metadata for a Mesh saved to zip, extending PackableMetadata with mesh-specific info."""
     mesh_size: MeshSizeInfo = Field(...,
                                     description="Mesh size information for decoding")
+    array_type: ArrayType = Field(
+        default="numpy", description="Array backend type for vertices/indices")
 
 
 class Mesh(Packable):
@@ -90,11 +73,73 @@ class Mesh(Packable):
     specialized handling for vertices and indices using meshoptimizer encoding.
     """
 
-    # Required fields
-    vertices: Array = Field(...,
-                            description="Vertex data as a numpy or JAX array")
+    # ============================================================
+    # Custom field encoders/decoders for meshoptimizer
+    # ============================================================
+
+    @staticmethod
+    def _encode_vertices(vertices: Array, mesh: "Mesh") -> bytes:
+        """Encode vertices using meshoptimizer."""
+        return encode_vertex_buffer(
+            vertices,
+            mesh.vertex_count,
+            vertices.itemsize * vertices.shape[1],
+        )
+
+    @staticmethod
+    def _decode_vertices(encoded_bytes: bytes, metadata: MeshMetadata, array_type: Optional[ArrayType]) -> Array:
+        """Decode vertices using meshoptimizer."""
+        mesh_size = metadata.mesh_size
+        effective_type = array_type or metadata.array_type
+        vertices = decode_vertex_buffer(
+            mesh_size.vertex_count, mesh_size.vertex_size, encoded_bytes
+        )
+        return ArrayUtils.convert_array(vertices, effective_type)
+
+    @staticmethod
+    def _encode_indices(indices: Array, mesh: "Mesh") -> bytes:
+        """Encode indices using meshoptimizer."""
+        return encode_index_sequence(indices, mesh.index_count, mesh.vertex_count)
+
+    @staticmethod
+    def _decode_indices(encoded_bytes: bytes, metadata: MeshMetadata, array_type: Optional[ArrayType]) -> Array:
+        """Decode indices using meshoptimizer."""
+        mesh_size = metadata.mesh_size
+        effective_type = array_type or metadata.array_type
+        indices = decode_index_sequence(
+            mesh_size.index_count, mesh_size.index_size, encoded_bytes
+        )
+        return ArrayUtils.convert_array(indices, effective_type)
+
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
+        """Custom field configurations for mesh-specific encoding/decoding."""
+        return {
+            'vertices': CustomFieldConfig(
+                file_name='vertices',
+                encode=Mesh._encode_vertices,
+                decode=Mesh._decode_vertices,
+                optional=False
+            ),
+            'indices': CustomFieldConfig(
+                file_name='indices',
+                encode=Mesh._encode_indices,
+                decode=Mesh._decode_indices,
+                optional=True
+            ),
+        }
+
+    # ============================================================
+    # Field definitions
+    # ============================================================
+
+    vertices: Array = Field(
+        ...,
+        description="Vertex data as a numpy or JAX array",
+    )
     indices: Optional[Union[Array, List[Any]]] = Field(
-        None, description="Index data as a flattened 1D numpy/JAX array or list of polygons"
+        None,
+        description="Index data as a flattened 1D numpy/JAX array or list of polygons",
     )
     index_sizes: Optional[Union[Array, List[int]]] = None
     """
@@ -201,103 +246,52 @@ class Mesh(Packable):
         """
         Validate and convert arrays to the correct types.
 
-        This method handles various input formats for indices and automatically infers
-        index_sizes when not explicitly provided:
-
-        - 2D numpy arrays: Assumes uniform polygons, infers size from array shape
-        - List of lists: Supports mixed polygon sizes, infers from individual polygon lengths
-        - Flat arrays: Requires explicit index_sizes for polygon structure
-
-        When index_sizes is explicitly provided, it validates that the structure matches
-        the inferred polygon sizes and that the sum equals the total number of indices.
-
-        Cell types are automatically inferred from polygon sizes if not provided:
-        - Size 1: Vertex (1), Size 2: Line (3), Size 3: Triangle (5), Size 4: Quad (9)
-
-        Raises:
-            ValueError: If explicit index_sizes doesn't match inferred structure or
-                       if sum of index_sizes doesn't match total indices count, or
-                       if cell_types length doesn't match index_sizes length.
+        Handles various input formats for indices and automatically infers
+        index_sizes and cell_types when not explicitly provided.
         """
-        # Ensure vertices is a float32 array, preserving array type (numpy/JAX)
+        # Helper to convert arrays to numpy (needed for meshoptimizer)
+        def to_numpy(arr):
+            return ArrayUtils.convert_array(arr, "numpy") if ArrayUtils.is_array(arr) else arr
+
+        # Ensure vertices is float32, preserving JAX type if present
         if self.vertices is not None:
-            if HAS_JAX and isinstance(self.vertices, jnp.ndarray):
-                # Keep as JAX array
-                self.vertices = self.vertices.astype(jnp.float32)
-            else:
-                # Convert to numpy array
-                self.vertices = np.asarray(self.vertices, dtype=np.float32)
+            vertex_type = ArrayUtils.detect_array_type(self.vertices)
+            self.vertices = ArrayUtils.convert_array(
+                np.asarray(self.vertices, dtype=np.float32), vertex_type)
 
-        # Handle indices - convert to flattened 1D array and extract size info using ElementUtils
+        # Process indices through ElementUtils
         if self.indices is not None:
-            # Convert JAX arrays to numpy first if needed
-            indices_to_process = self.indices
-            index_sizes_to_process = self.index_sizes
-            cell_types_to_process = self.cell_types
+            self.indices, self.index_sizes, self.cell_types = ElementUtils.convert_array_input(
+                to_numpy(self.indices), to_numpy(
+                    self.index_sizes), to_numpy(self.cell_types)
+            )
 
-            if HAS_JAX and isinstance(indices_to_process, jnp.ndarray):
-                indices_to_process = np.asarray(indices_to_process)
-            if HAS_JAX and isinstance(index_sizes_to_process, jnp.ndarray):
-                index_sizes_to_process = np.asarray(index_sizes_to_process)
-            if HAS_JAX and isinstance(cell_types_to_process, jnp.ndarray):
-                cell_types_to_process = np.asarray(cell_types_to_process)
-
-            try:
-                self.indices, self.index_sizes, self.cell_types = ElementUtils.convert_array_input(
-                    indices_to_process, index_sizes_to_process, cell_types_to_process
-                )
-            except ValueError as e:
-                raise ValueError(f"Error processing indices: {e}")
-
-        # Auto-compute dimension from cell types if not explicitly provided
+        # Auto-compute dimension from cell types
         if self.dim is None:
-            if self.cell_types is not None and len(self.cell_types) > 0:
-                self.dim = CellTypeUtils.get_mesh_dimension(self.cell_types)
-            else:
-                # Default to 3D if no cell types available
-                self.dim = 3
+            self.dim = CellTypeUtils.get_mesh_dimension(self.cell_types) \
+                if self.cell_types is not None and len(self.cell_types) > 0 else 3
 
-        # Handle marker conversion - convert sequence format to flattened arrays
+        # Convert markers to flattened arrays
         if self.markers:
             converted_markers = {}
-            for marker_name, marker_data in self.markers.items():
-                try:
-                    # Handle JAX arrays
-                    marker_data_to_process = marker_data
-                    if HAS_JAX and isinstance(marker_data_to_process, jnp.ndarray):
-                        marker_data_to_process = np.asarray(
-                            marker_data_to_process)
-
-                    if isinstance(marker_data_to_process, np.ndarray):
-                        # Already a numpy array, keep as is but validate it has corresponding sizes/types
-                        converted_markers[marker_name] = np.asarray(
-                            marker_data_to_process, dtype=np.uint32)
-
-                        # If marker_cell_types is defined but marker_sizes is missing, calculate it automatically
-                        if marker_name in self.marker_cell_types and marker_name not in self.marker_sizes:
-                            self.marker_sizes[marker_name] = CellTypeUtils.infer_sizes_from_vtk_cell_types(
-                                self.marker_cell_types[marker_name])
-
-                        # Validate that we have both sizes and types
-                        if marker_name not in self.marker_sizes or marker_name not in self.marker_cell_types:
-                            raise ValueError(
-                                f"Marker '{marker_name}' provided as array but missing marker_sizes or marker_cell_types")
-                    else:
-                        # Convert sequence of sequences to flattened structure using ElementUtils
-                        # This handles lists, tuples, or any sequence type
-                        marker_list = [list(element)
-                                       for element in marker_data_to_process]
-                        flattened_indices, sizes, cell_types = ElementUtils.convert_list_to_flattened(
-                            marker_list)
-                        converted_markers[marker_name] = flattened_indices
-                        self.marker_sizes[marker_name] = sizes
-                        self.marker_cell_types[marker_name] = cell_types
-
-                except ValueError as e:
-                    raise ValueError(
-                        f"Error converting markers for '{marker_name}': {e}")
-
-            # Update markers to be the flattened arrays
+            for name, data in self.markers.items():
+                data = to_numpy(data)
+                if isinstance(data, np.ndarray):
+                    converted_markers[name] = data.astype(np.uint32)
+                    # Auto-calculate sizes from cell_types if missing
+                    if name in self.marker_cell_types and name not in self.marker_sizes:
+                        self.marker_sizes[name] = CellTypeUtils.infer_sizes_from_vtk_cell_types(
+                            self.marker_cell_types[name])
+                    if name not in self.marker_sizes or name not in self.marker_cell_types:
+                        raise ValueError(
+                            f"Marker '{name}' missing marker_sizes or marker_cell_types")
+                else:
+                    # Convert list of lists to flattened structure
+                    indices, sizes, types = ElementUtils.convert_list_to_flattened(
+                        [list(el) for el in data])
+                    converted_markers[name] = indices
+                    self.marker_sizes[name] = sizes
+                    self.marker_cell_types[name] = types
             self.markers = converted_markers
 
         return self
@@ -533,7 +527,8 @@ class Mesh(Packable):
 
         # Check for unsupported types
         skip_types = {VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE}
-        supported_types = {VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
+        supported_types = {
+            VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
         all_handled = supported_types | skip_types
 
         for i, ct in enumerate(effective_types):
@@ -659,88 +654,10 @@ class Mesh(Packable):
             module_name=self.__class__.__module__,
             field_data=field_data,
             mesh_size=mesh_size,
+            array_type=ArrayUtils.detect_array_type(self.vertices),
         )
-
-    # Override save_to_zip for mesh-specific encoding (vertices/indices use meshoptimizer)
-    def save_to_zip(
-        self,
-        destination: Union[PathLike, BytesIO],
-        date_time: Optional[tuple] = None
-    ) -> None:
-        """Save mesh to a zip file with meshoptimizer compression for vertices/indices."""
-        # Encode vertices/indices using meshoptimizer
-        encoded_vertices = encode_vertex_buffer(
-            self.vertices,
-            self.vertex_count,
-            self.vertices.itemsize * self.vertices.shape[1],
-        )
-
-        encoded_indices = None
-        if self.indices is not None:
-            encoded_indices = encode_index_sequence(
-                self.indices, self.index_count, self.vertex_count
-            )
-
-        # Use Packable helpers for the rest
-        encoded_data = self.encode()
-        field_data = self._extract_non_array_fields()
-
-        # Prepare files using parent helper, excluding vertices/indices (handled specially)
-        files_to_write = self._prepare_zip_files(
-            encoded_data, field_data,
-            exclude_arrays={"vertices", "indices"}
-        )
-
-        # Add mesh-specific files
-        files_to_write.append(("mesh/vertices.bin", encoded_vertices))
-        if encoded_indices is not None:
-            files_to_write.append(("mesh/indices.bin", encoded_indices))
-
-        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
-            ZipUtils.write_files(zipf, files_to_write, date_time)
 
     @classmethod
-    def load_from_zip(cls: Type[T], source: Union[PathLike, BytesIO], use_jax: bool = False) -> T:
-        """Load mesh from a zip file."""
-        if use_jax and not HAS_JAX:
-            raise ValueError(
-                "JAX is not available. Install JAX to use JAX arrays.")
-
-        with zipfile.ZipFile(source, "r") as zipf:
-            metadata = cls.load_metadata(zipf, MeshMetadata)
-
-            # Get mesh size info from typed metadata
-            mesh_size = metadata.mesh_size
-
-            # Decode vertices using meshoptimizer
-            with zipf.open("mesh/vertices.bin") as f:
-                encoded_vertices = f.read()
-            vertices = decode_vertex_buffer(
-                mesh_size.vertex_count, mesh_size.vertex_size, encoded_vertices
-            )
-            if use_jax:
-                vertices = jnp.array(vertices)
-
-            # Decode indices using meshoptimizer
-            indices = None
-            if "mesh/indices.bin" in zipf.namelist() and mesh_size.index_count:
-                with zipf.open("mesh/indices.bin") as f:
-                    encoded_indices = f.read()
-                indices = decode_index_sequence(
-                    mesh_size.index_count, mesh_size.index_size, encoded_indices
-                )
-                if use_jax:
-                    indices = jnp.array(indices)
-
-            # Load and decode other arrays
-            data = ZipUtils.load_arrays(zipf, use_jax)
-
-            # Build mesh args
-            mesh_data = {"vertices": vertices, "indices": indices}
-            mesh_data.update(data)
-
-            # Merge non-array fields from metadata
-            if metadata.field_data:
-                PackableUtils.merge_field_data(mesh_data, metadata.field_data)
-
-            return cls(**mesh_data)
+    def load_metadata(cls, handler: ReadHandler, metadata_cls: Type[PackableMetadata] = None) -> MeshMetadata:
+        """Load MeshMetadata from handler."""
+        return super().load_metadata(handler, MeshMetadata)

@@ -7,12 +7,15 @@
 
 // Export from packable module
 export {
+    CacheLoader,
+    CustomDecoder,
+    CustomFieldConfig,
     Packable,
     PackableMetadata
 } from './packable'
 
 // Export from array module
-export { ArrayMetadata, ArrayUtils } from './array'
+export { ArrayMetadata, ArrayType, ArrayUtils, EncodedArray } from './array'
 
 // Export from mesh module
 export {
@@ -21,7 +24,4 @@ export {
     MeshMetadata,
     MeshSize
 } from './mesh'
-
-// Export from utils module
-export { ZipUtils } from './utils'
 

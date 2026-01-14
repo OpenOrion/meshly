@@ -14,17 +14,38 @@ pip install meshly
 
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
+- **`CustomFieldConfig`**: Configuration for custom field encoding/decoding
+- **`ArrayUtils`**: Utility class for encoding/decoding individual arrays
 
 ### Key Capabilities
 
 - Automatic encoding/decoding of numpy array attributes, including nested dictionaries
 - Custom subclasses with additional array fields are automatically serialized
+- Custom field encoding via `_get_custom_fields()` override
 - Enhanced polygon support with `index_sizes` and VTK-compatible `cell_types`
 - Mesh markers for boundary conditions, material regions, and geometric features
 - Mesh operations: triangulate, optimize, simplify, combine, extract
 - Optional JAX array support for GPU-accelerated workflows
 
 ## Quick Start
+
+### Standalone Array Compression
+
+Compress individual arrays without creating a Packable:
+
+```python
+import numpy as np
+from meshly import ArrayUtils
+
+# Create an array
+data = np.random.randn(1000, 3).astype(np.float32)
+
+# Save to zip
+ArrayUtils.save_to_zip(data, "array.zip")
+
+# Load from zip
+loaded = ArrayUtils.load_from_zip("array.zip")
+```
 
 ### Basic Mesh Usage
 
@@ -47,6 +68,10 @@ mesh.save_to_zip("mesh.zip")
 # Load from zip
 loaded = Mesh.load_from_zip("mesh.zip")
 print(f"Loaded {loaded.vertex_count} vertices")
+
+# Or use encode/decode for in-memory operations
+encoded = mesh.encode()  # Returns bytes
+decoded = Mesh.decode(encoded)
 ```
 
 ### Custom Mesh Subclasses
@@ -81,6 +106,40 @@ mesh = TexturedMesh(
 
 mesh.save_to_zip("textured.zip")
 loaded = TexturedMesh.load_from_zip("textured.zip")
+```
+
+### Custom Field Encoding
+
+For fields that need special encoding (like meshoptimizer for vertices/indices), override `_get_custom_fields()`:
+
+```python
+from meshly import Packable, CustomFieldConfig
+from typing import Dict
+
+class CompressedData(Packable):
+    """Example with custom field encoding."""
+    data: np.ndarray
+    
+    @staticmethod
+    def _encode_data(data: np.ndarray, instance: "CompressedData") -> bytes:
+        # Custom encoding logic
+        return custom_compress(data)
+    
+    @staticmethod
+    def _decode_data(encoded: bytes, metadata, array_type) -> np.ndarray:
+        # Custom decoding logic
+        return custom_decompress(encoded)
+    
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
+        return {
+            'data': CustomFieldConfig(
+                file_name='data',
+                encode=cls._encode_data,
+                decode=cls._decode_data,
+                optional=False
+            ),
+        }
 ```
 
 ### Dict of Pydantic BaseModel Objects
@@ -127,6 +186,87 @@ loaded = SceneMesh.load_from_zip("scene.zip")
 # loaded.materials["wood"] is a MaterialProperties instance
 ```
 
+### Nested Packables
+
+Fields that are themselves `Packable` subclasses are automatically handled:
+
+```python
+class PhysicsProperties(Packable):
+    """Physics data as a nested Packable."""
+    mass: float = 1.0
+    inertia_tensor: np.ndarray  # 3x3 matrix
+
+class PhysicsMesh(Mesh):
+    """Mesh with nested Packable field."""
+    physics: Optional[PhysicsProperties] = None
+
+# Nested Packables use their own encode/decode methods
+mesh = PhysicsMesh(
+    vertices=vertices,
+    indices=indices,
+    physics=PhysicsProperties(
+        mass=2.5,
+        inertia_tensor=np.eye(3, dtype=np.float32)
+    )
+)
+
+mesh.save_to_zip("physics_mesh.zip")
+loaded = PhysicsMesh.load_from_zip("physics_mesh.zip")
+print(loaded.physics.mass)  # 2.5
+```
+
+### Caching Nested Packables
+
+For large projects with shared nested Packables, use caching to deduplicate data using SHA256 content-addressable storage:
+
+```python
+from meshly import ReadHandler, WriteHandler
+
+# Create cache functions from a directory path
+cache_saver = WriteHandler.create_cache_saver("/path/to/cache")
+cache_loader = ReadHandler.create_cache_loader("/path/to/cache")
+
+# Save with caching - nested Packables stored separately by hash
+mesh.save_to_zip("mesh.zip", cache_saver=cache_saver)
+
+# Load with caching - nested Packables loaded from cache
+loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_loader=cache_loader)
+```
+
+**Deduplication example:**
+
+```python
+# Two meshes sharing identical physics properties
+shared_physics = PhysicsProperties(mass=1.0, inertia_tensor=np.eye(3))
+
+mesh1 = PhysicsMesh(vertices=v1, indices=i1, physics=shared_physics)
+mesh2 = PhysicsMesh(vertices=v2, indices=i2, physics=shared_physics)
+
+# Save both with the same cache - physics stored only once!
+mesh1.save_to_zip("mesh1.zip", cache_saver=cache_saver)
+mesh2.save_to_zip("mesh2.zip", cache_saver=cache_saver)
+```
+
+**Custom cache functions:**
+
+```python
+from meshly import CacheLoader, CacheSaver
+
+# Type signatures:
+# CacheLoader = Callable[[str], Optional[bytes]]  # hash -> bytes or None
+# CacheSaver = Callable[[str, bytes], None]       # hash, bytes -> None
+
+# Example: Redis-backed cache
+def redis_loader(hash: str) -> Optional[bytes]:
+    return redis_client.get(f"packable:{hash}")
+
+def redis_saver(hash: str, data: bytes) -> None:
+    redis_client.set(f"packable:{hash}", data)
+
+mesh.save_to_zip("mesh.zip", cache_saver=redis_saver)
+loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_loader=redis_loader)
+```
+
 ## Architecture
 
 ### Class Hierarchy
@@ -146,19 +286,19 @@ PackableMetadata (base metadata)
 
 The `Packable` base class provides:
 - `save_to_zip()` / `load_from_zip()` - File I/O with compression
-- `encode()` - In-memory serialization
+- `encode()` / `decode()` - In-memory serialization to/from bytes
+- `convert_to()` - Convert arrays between numpy and JAX
+- `_get_custom_fields()` - Override point for custom field encoding
 - `load_metadata()` - Generic metadata loading with type parameter
-- `_create_metadata()` - Override point for custom metadata
 
 ### Zip File Structure
 
 ```
 mesh.zip
 ├── metadata.json           # PackableMetadata or MeshMetadata
-├── mesh/                   # Mesh-specific (meshoptimizer encoded)
-│   ├── vertices.bin
-│   └── indices.bin
-└── arrays/                 # Additional arrays
+├── vertices.bin            # Meshoptimizer-encoded (custom field)
+├── indices.bin             # Meshoptimizer-encoded (custom field, optional)
+└── arrays/                 # Standard arrays (auto-compressed)
     ├── texture_coords/
     │   ├── array.bin
     │   └── metadata.json
@@ -288,36 +428,88 @@ mesh = Mesh(
 )
 
 # Load with JAX arrays
-mesh = Mesh.load_from_zip("mesh.zip", use_jax=True)
+mesh = Mesh.load_from_zip("mesh.zip", array_type="jax")
+
+# Convert between array types
+numpy_mesh = mesh.convert_to("numpy")
+jax_mesh = mesh.convert_to("jax")
 ```
 
 ## API Reference
+
+### ArrayUtils
+
+```python
+class ArrayUtils:
+    # Encode/decode arrays
+    @staticmethod
+    def encode_array(array: Array) -> EncodedArray
+    @staticmethod
+    def decode_array(encoded: EncodedArray) -> np.ndarray
+    
+    # File I/O for single arrays
+    @staticmethod
+    def save_to_zip(array: Array, destination: PathLike | BytesIO) -> None
+    @staticmethod
+    def load_from_zip(source: PathLike | BytesIO, array_type=None) -> Array
+    
+    # Array type utilities
+    @staticmethod
+    def is_array(obj) -> bool
+    @staticmethod
+    def detect_array_type(array: Array) -> ArrayType
+    @staticmethod
+    def convert_array(array: Array, array_type: ArrayType) -> Array
+```
+
+### CustomFieldConfig
+
+```python
+@dataclass
+class CustomFieldConfig(Generic[V, M]):
+    file_name: str                                    # File name in zip (without .bin)
+    encode: Callable[[V, Any], bytes]                 # (value, instance) -> bytes
+    decode: Callable[[bytes, M, Optional[ArrayType]], V]  # (bytes, metadata, array_type) -> value
+    optional: bool = False                            # Won't throw if missing
+```
 
 ### Packable (Base Class)
 
 ```python
 class Packable(BaseModel):
-    def save_to_zip(self, destination, date_time=None) -> None
+    # File I/O
+    def save_to_zip(self, destination, cache_saver=None) -> None
     @classmethod
-    def load_from_zip(cls, source, use_jax=False) -> T
+    def load_from_zip(cls, source, array_type=None, cache_loader=None) -> T
     
+    # In-memory serialization
+    def encode(self, cache_saver=None) -> bytes
+    @classmethod
+    def decode(cls, buf: bytes, array_type=None, cache_loader=None) -> T
+    
+    # Array conversion
+    def convert_to(self, array_type: ArrayType) -> T
+    
+    # Single array loading
     @staticmethod
-    def load_array(source, name, use_jax=False) -> Array
+    def load_array(source, name, array_type=None) -> Array
     
-    def encode(self) -> EncodedData
-    
+    # Metadata
     @classmethod
-    def load_metadata(cls, zipf, metadata_cls=PackableMetadata) -> M
+    def load_metadata(cls, handler, metadata_cls=PackableMetadata) -> M
     
-    def _create_metadata(self, field_data) -> PackableMetadata  # Override point
+    # Custom field encoding (override in subclasses)
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]
 ```
 
 ### Mesh
 
 ```python
 class Mesh(Packable):
-    vertices: Array           # Required
-    indices: Optional[Array]  # Optional
+    # Fields
+    vertices: Array           # Required (meshoptimizer encoded)
+    indices: Optional[Array]  # Optional (meshoptimizer encoded)
     index_sizes: Optional[Array]  # Auto-inferred
     cell_types: Optional[Array]   # Auto-inferred
     dim: Optional[int]        # Auto-computed
@@ -344,7 +536,9 @@ class Mesh(Packable):
     @staticmethod
     def combine(meshes, marker_names=None, preserve_markers=True) -> Mesh
     
-    def _create_metadata(self, field_data) -> MeshMetadata  # Returns MeshMetadata
+    # Custom field encoding for meshoptimizer
+    @classmethod
+    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]
 ```
 
 ### Metadata Classes
@@ -354,6 +548,7 @@ class PackableMetadata(BaseModel):
     class_name: str
     module_name: str
     field_data: Dict[str, Any]
+    packable_refs: Dict[str, str]  # SHA256 hash refs for cached packables
 
 class MeshSizeInfo(BaseModel):
     vertex_count: int
@@ -363,6 +558,19 @@ class MeshSizeInfo(BaseModel):
 
 class MeshMetadata(PackableMetadata):
     mesh_size: MeshSizeInfo
+    array_type: ArrayType = "numpy"  # "numpy" or "jax"
+```
+
+### Cache Types
+
+```python
+# Type aliases for cache callbacks
+CacheLoader = Callable[[str], Optional[bytes]]  # hash -> bytes or None
+CacheSaver = Callable[[str, bytes], None]       # hash, bytes -> None
+
+# Factory methods to create cache functions from paths
+ReadHandler.create_cache_loader(source: PathLike) -> CacheLoader
+WriteHandler.create_cache_saver(destination: PathLike) -> CacheSaver
 ```
 
 ## Examples

@@ -1,6 +1,6 @@
 # meshly
 
-A TypeScript library for loading Python meshoptimizer zip files and converting to THREE.js geometries.
+A TypeScript library for decoding Python meshly zip files and converting to THREE.js geometries.
 
 ## Installation
 
@@ -12,25 +12,26 @@ pnpm add meshly
 
 ## Features
 
-- Load meshes from Python meshly zip files
+- Decode meshes from Python meshly zip files
 - Decode meshoptimizer-compressed vertex and index buffers
 - Convert to THREE.js BufferGeometry
 - Support for polygon meshes with automatic triangulation
 - Marker extraction for boundary conditions and regions
+- Custom field decoding via `getCustomFields()` override
 - Full TypeScript type definitions
 
 ## Quick Start
 
-### Load Mesh from Zip
+### Decode Mesh from Zip
 
 ```typescript
 import { Mesh } from 'meshly'
 import * as THREE from 'three'
 
-// Load mesh from zip file
+// Fetch and decode mesh
 const response = await fetch('mesh.zip')
 const zipData = await response.arrayBuffer()
-const mesh = await Mesh.loadFromZip(zipData)
+const mesh = await Mesh.decode(zipData)
 
 // Convert to THREE.js geometry
 const geometry = mesh.toBufferGeometry()
@@ -43,7 +44,7 @@ const threeMesh = new THREE.Mesh(geometry, material)
 ```typescript
 import { Mesh } from 'meshly'
 
-const mesh = await Mesh.loadFromZip(zipData)
+const mesh = await Mesh.decode(zipData)
 
 // Access mesh properties
 console.log(`Vertices: ${mesh.vertices.length / 3}`)
@@ -63,6 +64,27 @@ console.log(`Dimension: ${mesh.dim}`)
 ```
 Packable<TData> (base class)
 └── Mesh<MeshData> (3D mesh with meshoptimizer decoding)
+```
+
+### Custom Field Decoding
+
+Subclasses can override `getCustomFields()` to define custom decoders:
+
+```typescript
+protected static override getCustomFields(): Record<string, CustomFieldConfig> {
+  return {
+    vertices: {
+      fileName: 'vertices',
+      decode: (data, metadata) => Mesh._decodeVertices(data, metadata),
+      optional: false
+    },
+    indices: {
+      fileName: 'indices', 
+      decode: (data, metadata) => Mesh._decodeIndices(data, metadata),
+      optional: true
+    }
+  }
+}
 ```
 
 ### Metadata Interfaces
@@ -93,10 +115,9 @@ interface MeshSize {
 ```
 mesh.zip
 ├── metadata.json           # MeshMetadata (extends PackableMetadata)
-├── mesh/                   # Meshoptimizer encoded
-│   ├── vertices.bin
-│   └── indices.bin
-└── arrays/                 # Additional arrays
+├── vertices.bin            # Meshoptimizer-encoded (custom field)
+├── indices.bin             # Meshoptimizer-encoded (custom field, optional)
+└── arrays/                 # Standard arrays
     ├── indexSizes/
     │   ├── array.bin
     │   └── metadata.json
@@ -110,7 +131,7 @@ mesh.zip
 Meshly handles various polygon types with automatic triangulation for THREE.js:
 
 ```typescript
-const mesh = await Mesh.loadFromZip(zipData)
+const mesh = await Mesh.decode(zipData)
 
 // Check polygon structure
 console.log(`Polygon count: ${mesh.getPolygonCount()}`)
@@ -143,7 +164,7 @@ const geometry = mesh.toBufferGeometry()
 Extract submeshes by marker name:
 
 ```typescript
-const mesh = await Mesh.loadFromZip(zipData)
+const mesh = await Mesh.decode(zipData)
 
 // Check available markers
 console.log('Markers:', Object.keys(mesh.markerIndices || {}))
@@ -158,7 +179,7 @@ const geometry = mesh.extractMarkerAsBufferGeometry('inlet')
 
 ## Loading Individual Arrays
 
-Load a single array without loading the entire mesh (useful for large files):
+Load a single array without decoding the entire mesh (useful for large files):
 
 ```typescript
 // Load just the normals array
@@ -168,28 +189,24 @@ const normals = await Mesh.loadArray(zipData, 'normals')
 const inletIndices = await Mesh.loadArray(zipData, 'markerIndices.inlet')
 ```
 
-## Decoding Encoded Meshes
+## API Reference
 
-Decode meshes from the EncodedMesh format:
+### CustomFieldConfig
 
 ```typescript
-import { Mesh, EncodedMesh } from 'meshly'
+// Cache loader function type for nested packables
+type CacheLoader = (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
 
-// Decode an encoded mesh
-const encodedMesh: EncodedMesh = {
-  vertices: encodedVertexBuffer,
-  indices: encodedIndexBuffer,
-  vertex_count: 100,
-  vertex_size: 12,  // 3 floats × 4 bytes
-  index_count: 300,
-  index_size: 4,
-  arrays: { /* additional encoded arrays */ }
+// Custom decoder function type
+type CustomDecoder<T, M extends PackableMetadata> = (data: Uint8Array, metadata: M) => T
+
+// Custom field configuration
+interface CustomFieldConfig<T = unknown, M extends PackableMetadata = PackableMetadata> {
+  fileName: string           // File name in zip (without .bin)
+  decode: CustomDecoder<T, M>  // Decoder function
+  optional?: boolean         // Won't throw if missing (default: false)
 }
-
-const mesh = Mesh.decode(encodedMesh)
 ```
-
-## API Reference
 
 ### Packable (Base Class)
 
@@ -197,9 +214,23 @@ const mesh = Mesh.decode(encodedMesh)
 class Packable<TData> {
   constructor(data: TData)
   
-  static async loadMetadata<T extends PackableMetadata>(zip: JSZip): Promise<T>
-  static async loadFromZip<TData>(zipData: ArrayBuffer | Uint8Array): Promise<Packable<TData>>
+  // Decode from zip data (with optional cache loader for nested packables)
+  static async decode<TData>(
+    zipData: ArrayBuffer | Uint8Array,
+    cacheLoader?: CacheLoader
+  ): Promise<Packable<TData>>
+  
+  // Load single array
   static async loadArray(zipData: ArrayBuffer | Uint8Array, name: string): Promise<TypedArray>
+  
+  // Load metadata
+  static async loadMetadata<T extends PackableMetadata>(zip: JSZip): Promise<T>
+  
+  // Custom field configuration (override in subclasses)
+  protected static getCustomFields(): Record<string, CustomFieldConfig>
+  
+  // Packable field types for nested packable decoding (override in subclasses)
+  protected static getPackableFieldTypes(): Record<string, typeof Packable>
 }
 ```
 
@@ -222,9 +253,8 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   isUniformPolygons(): boolean
   getPolygonIndices(): Uint32Array[] | Uint32Array
   
-  // Decoding
-  static decode(encodedMesh: EncodedMesh): Mesh
-  static async loadFromZip(zipData: ArrayBuffer | Uint8Array): Promise<Mesh>
+  // Decoding (with optional cache loader for nested packables)
+  static async decode(zipData: ArrayBuffer | Uint8Array, cacheLoader?: CacheLoader): Promise<Mesh>
   
   // Marker extraction
   extractByMarker(markerName: string): Mesh
@@ -232,6 +262,9 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   // THREE.js integration
   toBufferGeometry(): THREE.BufferGeometry
   extractMarkerAsBufferGeometry(markerName: string): THREE.BufferGeometry
+  
+  // Custom field configuration for meshoptimizer decoding
+  protected static override getCustomFields(): Record<string, CustomFieldConfig<unknown, MeshMetadata>>
 }
 ```
 
@@ -259,11 +292,13 @@ interface PackableMetadata {
   class_name: string
   module_name: string
   field_data?: Record<string, unknown>
+  packable_refs?: Record<string, string>  // SHA256 hash refs for cached packables
 }
 
 // Mesh-specific metadata extending base
 interface MeshMetadata extends PackableMetadata {
   mesh_size: MeshSize
+  array_type?: "numpy" | "jax"  // For Python compatibility
 }
 
 interface MeshSize {
@@ -274,30 +309,61 @@ interface MeshSize {
 }
 ```
 
+### Cache Support
+
+When loading meshes with nested Packables that were saved with caching (using Python's `cache_saver`), provide a `CacheLoader` function:
+
+```typescript
+import { Mesh, CacheLoader } from 'meshly'
+
+// CacheLoader type: (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
+
+// Example: Fetch from server cache
+const cacheLoader: CacheLoader = async (hash) => {
+  const response = await fetch(`/cache/${hash}.zip`)
+  return response.ok ? response.arrayBuffer() : undefined
+}
+
+// Decode with cache support
+const mesh = await Mesh.decode(zipData, cacheLoader)
+```
+
+**Cache loader examples:**
+
+```typescript
+// From IndexedDB
+const idbLoader: CacheLoader = async (hash) => {
+  const db = await openDB('meshly-cache')
+  return db.get('packables', hash)
+}
+
+// From Map (in-memory)
+const memoryCache = new Map<string, ArrayBuffer>()
+const memoryLoader: CacheLoader = async (hash) => memoryCache.get(hash)
+```
+```
+
 ### Utility Classes
 
 ```typescript
 // Array encoding/decoding
 class ArrayUtils {
   static decodeArray(data: Uint8Array, metadata: ArrayMetadata): Float32Array | Uint32Array
-}
-
-// Zip file utilities
-class ZipUtils {
-  static async loadArrays(zip: JSZip): Promise<Record<string, unknown>>
   static async loadArray(zip: JSZip, name: string): Promise<TypedArray>
 }
 
-// Packable field merging utilities  
-class PackableUtils {
-  static mergeFieldData(data: Record<string, unknown>, fieldData: Record<string, unknown>): void
-  static stripModelMetadata(obj: Record<string, unknown>): Record<string, unknown>
+// Array metadata
+interface ArrayMetadata {
+  shape: number[]
+  dtype: string
+  itemsize: number
+  array_type?: "numpy" | "jax"  // For Python compatibility
 }
 ```
 
 ## Python Compatibility
 
-This library is designed to load meshes created by the Python meshly library:
+This library is designed to decode meshes created by the Python meshly library:
 
 ```python
 # Python: Save mesh
@@ -307,9 +373,9 @@ mesh.save_to_zip("mesh.zip")
 ```
 
 ```typescript
-// TypeScript: Load mesh
+// TypeScript: Decode mesh
 import { Mesh } from 'meshly'
-const mesh = await Mesh.loadFromZip(zipData)
+const mesh = await Mesh.decode(zipData)
 const geometry = mesh.toBufferGeometry()
 ```
 

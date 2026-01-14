@@ -8,29 +8,26 @@ meshoptimizer, including:
 2. Mesh class as a Pydantic base class for representing 3D meshes
 3. MeshUtils static class for mesh optimization operations
 4. ArrayUtils class for array encoding/decoding operations
-5. EncodedMesh class for storing encoded mesh data
-6. I/O utilities for storing and loading meshes and arrays
-7. Support for custom subclasses with automatic encoding/decoding of numpy arrays
-8. CellTypeUtils for VTK cell type conversions and edge topology extraction
+5. I/O utilities for storing and loading meshes and arrays
+6. Support for custom subclasses with automatic encoding/decoding of numpy arrays
+7. CellTypeUtils for VTK cell type conversions and edge topology extraction
 """
 
 from .packable import (
     Packable,
     PackableMetadata,
-    EncodedData,
 )
 
 from .mesh import (
     Mesh,
-    Array,
-    HAS_JAX,
 )
 
 from .array import (
     EncodedArray,
     ArrayMetadata,
-    EncodedArrayModel,
     ArrayUtils,
+    ArrayType,
+    Array,
 )
 
 from .cell_types import (
@@ -44,21 +41,30 @@ from .utils import (
     MeshUtils,
 )
 
+from .data_handler import (
+    CacheLoader,
+    CacheSaver,
+    ReadHandler,
+    WriteHandler,
+)
+
 
 __all__ = [
     # Packable base class
     "Packable",
     "PackableMetadata",
-    "EncodedData",
+    "CacheLoader",
+    "CacheSaver",
+    "ArrayType",
+    # Data handlers
+    "ReadHandler",
+    "WriteHandler",
     # Mesh classes
     "Mesh",
     # Array types and utilities
     "Array",
-    "HAS_JAX",
     "EncodedArray",
-    "EncodedArrayModel",
     "ArrayMetadata",
-    "ArrayResult",
     "ArrayUtils",
     # Cell type utilities
     "CellType",

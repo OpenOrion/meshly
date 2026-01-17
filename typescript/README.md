@@ -18,6 +18,8 @@ pnpm add meshly
 - Support for polygon meshes with automatic triangulation
 - Marker extraction for boundary conditions and regions
 - Custom field decoding via `getCustomFields()` override
+- **Reconstruct API** for resolving `$ref` asset references
+- **CachedAssetLoader** for disk-cached asset loading
 - Full TypeScript type definitions
 
 ## Quick Start
@@ -92,8 +94,6 @@ protected static override getCustomFields(): Record<string, CustomFieldConfig> {
 ```typescript
 // Base metadata (matches Python PackableMetadata)
 interface PackableMetadata {
-  class_name: string
-  module_name: string
   field_data?: Record<string, unknown>
 }
 
@@ -198,14 +198,32 @@ const inletIndices = await Mesh.loadArray(zipData, 'markerIndices.inlet')
 interface DataHandler {
   // Read binary content from a file
   readBinary(path: string): Promise<ArrayBuffer | Uint8Array | undefined>
+  // Write binary content to a file (optional)
+  writeBinary?(path: string, content: Uint8Array | ArrayBuffer): Promise<void>
   // Check if a file exists (optional)
   exists?(path: string): Promise<boolean>
 }
 
-// Create a DataHandler from a hash loader function
-function createDataHandler(
-  loader: (hash: string) => Promise<ArrayBuffer | Uint8Array | undefined>
-): DataHandler
+// Asset fetch function type
+type AssetFetcher = (checksum: string) => Promise<Uint8Array | ArrayBuffer>
+
+// Asset provider: either a dict of assets or a fetcher function
+type AssetProvider = Record<string, Uint8Array | ArrayBuffer> | AssetFetcher
+```
+
+### CachedAssetLoader
+
+```typescript
+// Asset loader with optional disk cache for persistence
+class CachedAssetLoader {
+  constructor(
+    fetch: AssetFetcher,  // Function that fetches asset bytes by checksum
+    cache: DataHandler    // DataHandler for caching fetched assets
+  )
+  
+  // Get asset bytes, checking cache first then fetching if needed
+  async getAsset(checksum: string): Promise<Uint8Array | ArrayBuffer>
+}
 ```
 
 ### CustomFieldConfig
@@ -228,11 +246,18 @@ interface CustomFieldConfig<T = unknown, M extends PackableMetadata = PackableMe
 class Packable<TData> {
   constructor(data: TData)
   
-  // Decode from zip data (with optional cache handler for nested packables)
-  static async decode<TData>(
-    zipData: ArrayBuffer | Uint8Array,
-    cacheHandler?: DataHandler
-  ): Promise<Packable<TData>>
+  // Decode from zip data
+  static async decode<TData>(zipData: ArrayBuffer | Uint8Array): Promise<Packable<TData>>
+  
+  // Reconstruct from extracted data and assets
+  static async reconstruct<T>(
+    data: Record<string, unknown>,
+    assets: AssetProvider | CachedAssetLoader,
+    schema?: ReconstructSchema
+  ): Promise<T>
+  
+  // Decode packed array format (metadata + data bytes)
+  static _decodePackedArray(packed: Uint8Array | ArrayBuffer): TypedArray
   
   // Load single array
   static async loadArray(zipData: ArrayBuffer | Uint8Array, name: string): Promise<TypedArray>
@@ -242,9 +267,6 @@ class Packable<TData> {
   
   // Custom field configuration (override in subclasses)
   protected static getCustomFields(): Record<string, CustomFieldConfig>
-  
-  // Packable field types for nested packable decoding (override in subclasses)
-  protected static getPackableFieldTypes(): Record<string, typeof Packable>
 }
 ```
 
@@ -267,8 +289,8 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   isUniformPolygons(): boolean
   getPolygonIndices(): Uint32Array[] | Uint32Array
   
-  // Decoding (with optional cache handler for nested packables)
-  static async decode(zipData: ArrayBuffer | Uint8Array, cacheHandler?: DataHandler): Promise<Mesh>
+  // Decoding
+  static async decode(zipData: ArrayBuffer | Uint8Array): Promise<Mesh>
   
   // Marker extraction
   extractByMarker(markerName: string): Mesh
@@ -279,6 +301,7 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   
   // Custom field configuration for meshoptimizer decoding
   protected static override getCustomFields(): Record<string, CustomFieldConfig<unknown, MeshMetadata>>
+}
 }
 ```
 
@@ -303,10 +326,7 @@ interface MeshData {
 ```typescript
 // Base metadata for all Packable types
 interface PackableMetadata {
-  class_name: string
-  module_name: string
   field_data?: Record<string, unknown>
-  packable_refs?: Record<string, string>  // SHA256 hash refs for cached packables
 }
 
 // Mesh-specific metadata extending base
@@ -323,49 +343,53 @@ interface MeshSize {
 }
 ```
 
-### Cache Support
-
-When loading meshes with nested Packables that were saved with caching (using Python's `cache_handler`), provide a `DataHandler`:
+### Reconstruct Schema Types
 
 ```typescript
-import { Mesh, DataHandler, createDataHandler } from 'meshly'
+// Decoder function for Packable types
+type PackableDecoder<T> = (data: Uint8Array | ArrayBuffer) => Promise<T> | T
 
-// Example: Fetch from server cache using createDataHandler helper
-const cacheHandler = createDataHandler(async (hash) => {
-  const response = await fetch(`/cache/${hash}.zip`)
-  return response.ok ? response.arrayBuffer() : undefined
-})
+// Schema for a single field
+type FieldSchema = 
+  | { type: 'array'; element?: FieldSchema }      // TypedArray or Array of items
+  | { type: 'packable'; decode: PackableDecoder<unknown> }  // Nested Packable
+  | { type: 'dict'; value?: FieldSchema }         // Dict with uniform value type
+  | { type: 'object'; fields?: ReconstructSchema } // Object with known field types
 
-// Decode with cache support
-const mesh = await Mesh.decode(zipData, cacheHandler)
+// Schema mapping field names to their types
+type ReconstructSchema = Record<string, FieldSchema>
+
+// Result of Python's Packable.extract()
+interface SerializedPackableData {
+  data: Record<string, unknown>      // Serializable dict with $ref references
+  assets: Record<string, Uint8Array> // Map of checksum -> encoded bytes
+}
 ```
 
-**DataHandler examples:**
+### Reconstruct Example
 
 ```typescript
-// From IndexedDB using createDataHandler
-const idbHandler = createDataHandler(async (hash) => {
-  const db = await openDB('meshly-cache')
-  return db.get('packables', hash)
-})
+import { Packable, CachedAssetLoader, ReconstructSchema } from 'meshly'
 
-// From Map (in-memory)
-const memoryCache = new Map<string, ArrayBuffer>()
-const memoryHandler = createDataHandler(async (hash) => memoryCache.get(hash))
+// Simple case - all $refs are arrays
+const result = await Packable.reconstruct(data, assets)
 
-// Custom class implementing DataHandler interface
-class ServerCacheHandler implements DataHandler {
-  constructor(private baseUrl: string) {}
-  
-  async readBinary(path: string): Promise<ArrayBuffer | undefined> {
-    const response = await fetch(`${this.baseUrl}/${path}`)
-    return response.ok ? response.arrayBuffer() : undefined
+// With nested Packables - define schema for type hints
+const schema: ReconstructSchema = {
+  mesh: { type: 'packable', decode: (bytes) => Mesh.decode(bytes) },
+  snapshots: { 
+    type: 'array', 
+    element: { type: 'packable', decode: (bytes) => Mesh.decode(bytes) }
   }
 }
+const result = await Packable.reconstruct(data, assets, schema)
 
-const serverHandler = new ServerCacheHandler('/api/cache')
-const mesh = await Mesh.decode(zipData, serverHandler)
-```
+// With CachedAssetLoader for disk caching
+const loader = new CachedAssetLoader(
+  async (checksum) => fetch(`/api/assets/${checksum}`).then(r => r.arrayBuffer()),
+  myDataHandler
+)
+const result = await Packable.reconstruct(data, loader, schema)
 ```
 
 ### Utility Classes

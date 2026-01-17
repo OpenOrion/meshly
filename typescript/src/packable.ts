@@ -7,8 +7,8 @@
  */
 
 import JSZip from "jszip"
-import { ArrayUtils, TypedArray } from "./array"
-import { DataHandler } from "./data-handler"
+import { ArrayMetadata, ArrayUtils, EncodedArray, TypedArray } from "./array"
+import { AssetProvider, CachedAssetLoader, getAsset } from "./data-handler"
 
 
 /**
@@ -16,14 +16,8 @@ import { DataHandler } from "./data-handler"
  * Uses snake_case to match Python serialization format.
  */
 export interface PackableMetadata {
-  /** Name of the class that created this data */
-  class_name: string
-  /** Module where the class is defined */
-  module_name: string
   /** Non-array field values */
   field_data?: Record<string, unknown>
-  /** SHA256 hash references for cached packable fields (field_name -> hash) */
-  packable_refs?: Record<string, string>
 }
 
 /**
@@ -85,7 +79,8 @@ export class Packable<TData> {
    * Get custom field configurations for this class.
    * Subclasses override this to define custom decoders.
    */
-  protected static getCustomFields(): Record<string, CustomFieldConfig> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  protected static getCustomFields(): Record<string, CustomFieldConfig<unknown, any>> {
     return {}
   }
 
@@ -113,89 +108,6 @@ export class Packable<TData> {
         data[fieldName] = config.decode(encoded, metadata)
       } else if (!config.optional) {
         throw new Error(`Required custom field '${fieldName}' (${config.fileName}.bin) not found in zip`)
-      }
-    }
-  }
-
-  // ============================================================
-  // Packable field handling
-  // ============================================================
-
-  /**
-   * Get packable field types for this class.
-   * Subclasses override this to declare nested Packable fields.
-   * Returns a map of field names to their Packable subclass constructors.
-   */
-  protected static getPackableFieldTypes(): Record<string, typeof Packable> {
-    return {}
-  }
-
-  /**
-   * Get the set of packable field names
-   */
-  protected static getPackableFieldNames(): Set<string> {
-    return new Set(Object.keys(this.getPackableFieldTypes()))
-  }
-
-  /**
-   * Decode packable fields from the zip or cache.
-   * 
-   * Supports both embedded packables (in packables/ folder) and cached
-   * packables (referenced by SHA256 hash in metadata.packable_refs).
-   */
-  protected static async decodePackableFields(
-    zip: JSZip,
-    metadata: PackableMetadata,
-    data: Record<string, unknown>,
-    cacheHandler?: DataHandler
-  ): Promise<void> {
-    const packableFieldTypes = this.getPackableFieldTypes()
-    const loadedFields = new Set<string>()
-
-    // First, try to load from cache using hash refs
-    if (cacheHandler && metadata.packable_refs) {
-      for (const [fieldName, hash] of Object.entries(metadata.packable_refs)) {
-        const PackableClass = packableFieldTypes[fieldName]
-        if (!PackableClass) continue
-
-        try {
-          const cachedData = await cacheHandler.readBinary(`${hash}.zip`)
-          if (cachedData) {
-            // Use the specific subclass's decode method with cache support
-            data[fieldName] = await PackableClass.decode(cachedData, cacheHandler)
-            loadedFields.add(fieldName)
-          }
-        } catch {
-          // Not in cache, will try embedded
-        }
-      }
-    }
-
-    // Then load any embedded packables (for backward compatibility or no-cache case)
-    const packablesFolder = zip.folder("packables")
-    if (!packablesFolder) return
-
-    const packableFiles: string[] = []
-    packablesFolder.forEach((relativePath, file) => {
-      if (relativePath.endsWith(".zip") && !file.dir) {
-        packableFiles.push(relativePath)
-      }
-    })
-
-    for (const relativePath of packableFiles) {
-      // Extract field name: "inner_mesh.zip" -> "inner_mesh"
-      const fieldName = relativePath.slice(0, -4)
-
-      // Skip if already loaded from cache
-      if (loadedFields.has(fieldName)) continue
-
-      const PackableClass = packableFieldTypes[fieldName]
-      if (!PackableClass) continue
-
-      const file = packablesFolder.file(relativePath)
-      if (file) {
-        const encodedBytes = await file.async('arraybuffer')
-        data[fieldName] = await PackableClass.decode(encodedBytes, cacheHandler)
       }
     }
   }
@@ -260,21 +172,15 @@ export class Packable<TData> {
    * Decode a Packable from zip data.
    * 
    * @param zipData - Zip file bytes
-   * @param cacheHandler - Optional DataHandler to load cached packables by SHA256 hash.
-   *                       When provided and metadata contains packable_refs,
-   *                       nested packables are loaded from cache.
    * 
    * Subclasses can override this to handle custom field decoding.
    */
   static async decode<TData>(
-    zipData: ArrayBuffer | Uint8Array,
-    cacheHandler?: DataHandler
+    zipData: ArrayBuffer | Uint8Array
   ): Promise<Packable<TData>> {
     const zip = await JSZip.loadAsync(zipData)
     const metadata = await Packable.loadMetadata(zip)
     const customFieldNames = this.getCustomFieldNames()
-    const packableFieldNames = this.getPackableFieldNames()
-    const skipFields = new Set([...customFieldNames, ...packableFieldNames])
 
     const data: Record<string, unknown> = {}
 
@@ -282,10 +188,7 @@ export class Packable<TData> {
     await this.decodeCustomFields(zip, metadata, data)
 
     // Load standard arrays
-    await this.loadStandardArrays(zip, data, skipFields)
-
-    // Decode packable fields
-    await this.decodePackableFields(zip, metadata, data, cacheHandler)
+    await this.loadStandardArrays(zip, data, customFieldNames)
 
     // Merge non-array fields from metadata
     if (metadata.field_data) {
@@ -363,4 +266,184 @@ export class Packable<TData> {
     const zip = await JSZip.loadAsync(zipData)
     return ArrayUtils.loadArray(zip, name)
   }
+
+  // ============================================================
+  // Extract / Reconstruct for content-addressable storage
+  // ============================================================
+
+  /**
+   * Decode a packed array asset (metadata + data bytes) to a TypedArray.
+   * 
+   * Format: [4 bytes metadata length][metadata json][array data]
+   */
+  static _decodePackedArray(packed: Uint8Array | ArrayBuffer): TypedArray {
+    const bytes = packed instanceof Uint8Array ? packed : new Uint8Array(packed)
+
+    // Read metadata length (4 bytes little-endian)
+    const metadataLen = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24)
+
+    // Parse metadata JSON
+    const metadataJson = new TextDecoder().decode(bytes.slice(4, 4 + metadataLen))
+    const metadata: ArrayMetadata = JSON.parse(metadataJson)
+
+    // Get array data
+    const arrayData = bytes.slice(4 + metadataLen)
+
+    const encoded: EncodedArray = { data: arrayData, metadata }
+    return ArrayUtils.decodeArray(encoded)
+  }
+
+  /**
+   * Reconstruct a data object from extracted data and assets.
+   * 
+   * Since TypeScript doesn't have runtime type information like Python's Pydantic,
+   * this provides a simpler approach:
+   * - Resolves $ref references to arrays or nested Packables
+   * - Uses the optional `schema` to determine which refs are Packables vs arrays
+   * 
+   * @param data - The data dict from extract(), with $ref references
+   * @param assets - Asset provider (dict, function, or CachedAssetLoader)
+   * @param schema - Optional schema defining which fields are Packables
+   * @returns Reconstructed data object with resolved references
+   * 
+   * @example
+   * ```ts
+   * // Simple case - all $refs are arrays
+   * const rebuilt = await Packable.reconstruct(data, assets)
+   * 
+   * // With nested Packables - define schema
+   * const schema: ReconstructSchema = {
+   *   mesh: { type: 'packable', decode: Mesh.decode },
+   *   snapshots: { 
+   *     type: 'array', 
+   *     element: { 
+   *       mesh: { type: 'packable', decode: Mesh.decode } 
+   *     } 
+   *   }
+   * }
+   * const rebuilt = await Packable.reconstruct(data, assets, schema)
+   * ```
+   */
+  static async reconstruct<T = Record<string, unknown>>(
+    data: Record<string, unknown>,
+    assets: AssetProvider | CachedAssetLoader,
+    schema?: ReconstructSchema
+  ): Promise<T> {
+    const result: Record<string, unknown> = {}
+
+    for (const [key, value] of Object.entries(data)) {
+      const fieldSchema = schema?.[key]
+      result[key] = await Packable._resolveValue(value, assets, fieldSchema)
+    }
+
+    return result as T
+  }
+
+  /**
+   * Resolve a single value, handling $ref, nested objects, and arrays.
+   */
+  private static async _resolveValue(
+    value: unknown,
+    assets: AssetProvider | CachedAssetLoader,
+    schema?: FieldSchema
+  ): Promise<unknown> {
+    if (value === null || value === undefined) {
+      return value
+    }
+
+    // Handle $ref references
+    if (isRefObject(value)) {
+      const checksum = value.$ref
+      const assetBytes = await getAsset(assets, checksum)
+      const bytes = assetBytes instanceof Uint8Array ? assetBytes : new Uint8Array(assetBytes)
+
+      // Use schema to determine type, default to array
+      if (schema?.type === 'packable' && schema.decode) {
+        return schema.decode(bytes)
+      }
+
+      // Default: decode as array
+      return Packable._decodePackedArray(bytes)
+    }
+
+    // Handle arrays (JS arrays, not TypedArrays)
+    if (Array.isArray(value)) {
+      const elementSchema = schema?.type === 'array' ? schema.element : undefined
+      return Promise.all(
+        value.map(v => Packable._resolveValue(v, assets, elementSchema))
+      )
+    }
+
+    // Handle nested objects
+    if (typeof value === 'object' && !ArrayBuffer.isView(value)) {
+      const obj = value as Record<string, unknown>
+      const result: Record<string, unknown> = {}
+
+      for (const [k, v] of Object.entries(obj)) {
+        // Skip Python model metadata
+        if (k === '__model_class__' || k === '__model_module__') continue
+
+        // Get nested schema if this is a dict schema
+        const nestedSchema = schema?.type === 'dict' ? schema.value :
+          schema?.type === 'object' ? schema.fields?.[k] : undefined
+        result[k] = await Packable._resolveValue(v, assets, nestedSchema)
+      }
+
+      return result
+    }
+
+    // Primitive - return as-is
+    return value
+  }
+}
+
+
+// ============================================================
+// Reconstruct Schema Types
+// ============================================================
+
+/**
+ * Reference object with $ref checksum
+ */
+interface RefObject {
+  $ref: string
+}
+
+function isRefObject(value: unknown): value is RefObject {
+  return typeof value === 'object' && value !== null && '$ref' in value
+}
+
+/**
+ * Decoder function for Packable types
+ */
+export type PackableDecoder<T> = (data: Uint8Array | ArrayBuffer) => Promise<T> | T
+
+/**
+ * Schema for a single field in reconstruct
+ */
+export type FieldSchema =
+  | { type: 'array'; element?: FieldSchema }  // TypedArray or Array of items
+  | { type: 'packable'; decode: PackableDecoder<unknown> }  // Nested Packable
+  | { type: 'dict'; value?: FieldSchema }  // Dict with uniform value type
+  | { type: 'object'; fields?: ReconstructSchema }  // Object with known field types
+
+/**
+ * Schema mapping field names to their types for reconstruction.
+ * 
+ * Without runtime type information, TypeScript needs hints to know
+ * which $ref values are Packables vs arrays.
+ */
+export type ReconstructSchema = Record<string, FieldSchema>
+
+/**
+ * Result of extracting a Packable for serialization.
+ * 
+ * Contains the serializable data dict with checksum references,
+ * plus the encoded assets (arrays as bytes).
+ */
+export interface SerializedPackableData {
+  /** Serializable dict with primitive fields and checksum refs for arrays */
+  data: Record<string, unknown>
+  /** Map of checksum -> encoded bytes for all arrays */
+  assets: Record<string, Uint8Array>
 }

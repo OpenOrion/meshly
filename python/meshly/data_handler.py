@@ -1,18 +1,46 @@
 import stat
-from typing import Callable, List, Optional, Union
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Union
 import zipfile
 from io import BytesIO
 from pathlib import Path
 from abc import abstractmethod
 from .common import PathLike
 
+HandlerSource = Union[PathLike, BytesIO]
 
-ZipBuffer = BytesIO
+# Type for asset provider: either a dict or a callable that fetches by checksum
+AssetFetcher = Callable[[str], bytes]
+AssetProvider = Union[Dict[str, bytes], AssetFetcher, "CachedAssetLoader"]
 
-HandlerSource = Union[PathLike, ZipBuffer]
+
+@dataclass
+class CachedAssetLoader:
+    """Asset loader with optional disk cache for persistence.
+
+    Wraps a callable asset fetcher with a DataHandler for caching.
+    Fetched assets are stored as 'assets/{checksum}.bin' and read
+    from cache on subsequent access.
+
+    Example:
+        def fetch_from_cloud(checksum: str) -> bytes:
+            return cloud_storage.download(checksum)
+
+        # Create loader with disk cache
+        cache = DataHandler.create(Path("./cache"))
+        loader = CachedAssetLoader(fetch_from_cloud, cache)
+
+        lazy = Packable.reconstruct(SimulationCase, data, loader)
+    """
+    fetch: AssetFetcher
+    """Callable that fetches asset bytes by checksum"""
+    cache: "DataHandler"
+    """DataHandler for caching fetched assets"""
 
 
-class BaseDataHandler:
+class DataHandler:
+    """Protocol for reading and writing files to various sources."""
+
     rel_path: str
 
     def resolved_path(self, subpath: PathLike) -> Path:
@@ -21,10 +49,6 @@ class BaseDataHandler:
             return Path(str(subpath))
         return Path(f"{self.rel_path}/{subpath}")
 
-
-class DataHandler(BaseDataHandler):
-    """Protocol for reading and writing files to various sources."""
-
     def __init__(self, source: HandlerSource, rel_path=""):
         self.source = source
         self.rel_path = rel_path
@@ -32,34 +56,39 @@ class DataHandler(BaseDataHandler):
     @abstractmethod
     def read_text(self, subpath: PathLike, encoding: str = "utf-8") -> str:
         """Read text content from a file."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def read_binary(self, subpath: PathLike) -> bytes:
         """Read binary content from a file."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None:
         """Write text content to a file."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def write_binary(self, subpath: PathLike, content: Union[bytes, BytesIO], executable: bool = False) -> None:
         """Write binary content to a file."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]:
         """List files in the given subpath."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def exists(self, subpath: PathLike) -> bool:
         """Check if a file exists."""
-        ...
+        raise NotImplementedError
 
-    def to_path(self, rel_path: str):
+    @abstractmethod
+    def remove_file(self, subpath: PathLike) -> None:
+        """Remove a file."""
+        raise NotImplementedError
+
+    def to_path(self, rel_path: str) -> "DataHandler":
         """Get a handler with a nested relative path."""
         return DataHandler.create(self.source, f"{self.rel_path}/{rel_path}" if self.rel_path != "" else rel_path, self)
 
@@ -75,7 +104,7 @@ class DataHandler(BaseDataHandler):
         Returns:
             Handler implementation
         """
-        if isinstance(source, ZipBuffer):
+        if isinstance(source, BytesIO):
             return ZipHandler(
                 source,
                 rel_path,
@@ -88,6 +117,15 @@ class DataHandler(BaseDataHandler):
     def finalize(self):
         """Close any resources if needed."""
         pass
+
+    def __enter__(self):
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit context manager, calling finalize()."""
+        self.finalize()
+        return False
 
 
 class FileHandler(DataHandler):
@@ -140,6 +178,11 @@ class FileHandler(DataHandler):
     def exists(self, subpath: PathLike) -> bool:
         full_path = self.source / self.resolved_path(subpath)
         return full_path.exists()
+
+    def remove_file(self, subpath: PathLike) -> None:
+        full_path = self.source / self.resolved_path(subpath)
+        if full_path.exists():
+            full_path.unlink()
 
 
 class ZipHandler(DataHandler):
@@ -218,10 +261,12 @@ class ZipHandler(DataHandler):
         except KeyError:
             return False
 
+    def remove_file(self, subpath: PathLike) -> None:
+        # Note: zipfile doesn't support removing files directly.
+        # This would require recreating the zip without the file.
+        raise NotImplementedError("ZipHandler does not support removing files")
+
     def finalize(self):
         """Close the zip file."""
         if hasattr(self, 'zip_file') and self.zip_file:
             self.zip_file.close()
-
-
-ZipBuffer = BytesIO

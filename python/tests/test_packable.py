@@ -3,8 +3,10 @@
 import pytest
 import tempfile
 import os
+import json
 from io import BytesIO
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Dict, Any
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -43,7 +45,8 @@ class FieldData(BaseModel):
 class Snapshot(Packable):
     """Snapshot with dict of BaseModel containing arrays."""
     time: float = Field(..., description="Time value")
-    fields: dict[str, FieldData] = Field(default_factory=dict, description="Field data")
+    fields: dict[str, FieldData] = Field(
+        default_factory=dict, description="Field data")
 
 
 class TestPackable:
@@ -100,8 +103,10 @@ class TestPackable:
             loaded = SimulationResult.load_from_zip(path)
 
             assert loaded.time == pytest.approx(original.time)
-            np.testing.assert_array_almost_equal(loaded.temperature, original.temperature)
-            np.testing.assert_array_almost_equal(loaded.velocity, original.velocity)
+            np.testing.assert_array_almost_equal(
+                loaded.temperature, original.temperature)
+            np.testing.assert_array_almost_equal(
+                loaded.velocity, original.velocity)
 
     def test_save_load_bytesio(self):
         """Test saving and loading from BytesIO."""
@@ -140,8 +145,10 @@ class TestPackable:
         loaded = NestedData.load_from_zip(buffer)
 
         assert loaded.label == data.label
-        np.testing.assert_array_almost_equal(loaded.fields["pressure"], data.fields["pressure"])
-        np.testing.assert_array_almost_equal(loaded.fields["density"], data.fields["density"])
+        np.testing.assert_array_almost_equal(
+            loaded.fields["pressure"], data.fields["pressure"])
+        np.testing.assert_array_almost_equal(
+            loaded.fields["density"], data.fields["density"])
 
     def test_deterministic_encode(self):
         """Test that encode produces consistent output."""
@@ -166,7 +173,9 @@ class TestPackable:
         data.save_to_zip(buffer)
         buffer.seek(0)
 
-        with pytest.raises(ValueError, match="Class mismatch"):
+        # Loading wrong class should fail with Pydantic validation error
+        # (missing required fields for SimulationResult)
+        with pytest.raises(Exception):  # ValidationError from Pydantic
             SimulationResult.load_from_zip(buffer)
 
     def test_dict_of_basemodel_with_arrays(self):
@@ -183,7 +192,8 @@ class TestPackable:
                 "velocity": FieldData(
                     name="velocity",
                     type="vector",
-                    data=np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+                    data=np.array(
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
                     units="m/s"
                 )
             }
@@ -242,123 +252,512 @@ class TestPackable:
         np.testing.assert_array_almost_equal(
             loaded.fields["pressure"].data, snapshot.fields["pressure"].data)
 
+    def test_decode_without_class_raises_error(self):
+        """Test that Packable.decode() raises TypeError - must use specific class."""
+        # Create and encode a SimpleData instance
+        original = SimpleData(
+            name="dynamic_test",
+            values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        )
+        encoded = original.encode()
 
-class InnerPackable(Packable):
-    """Inner packable for testing nested support."""
-    label: str = Field(..., description="Label")
-    data: np.ndarray = Field(..., description="Data array")
+        # Decode using base Packable class - should raise TypeError
+        with pytest.raises(TypeError, match="Cannot decode on base Packable class"):
+            Packable.decode(encoded)
+        
+        # Should work with the specific class
+        decoded = SimpleData.decode(encoded)
+        assert decoded.name == original.name
+        np.testing.assert_array_almost_equal(decoded.values, original.values)
+
+    def test_load_from_zip_without_class_raises_error(self):
+        """Test that Packable.load_from_zip() raises TypeError - must use specific class."""
+        original = SimulationResult(
+            time=0.5,
+            temperature=np.array([300.0, 301.0, 302.0], dtype=np.float32),
+            velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "result.zip")
+            original.save_to_zip(path)
+
+            # Load using base Packable - should raise TypeError
+            with pytest.raises(TypeError, match="Cannot decode on base Packable class"):
+                Packable.load_from_zip(path)
+            
+            # Should work with the specific class
+            loaded = SimulationResult.load_from_zip(path)
+            assert loaded.time == pytest.approx(original.time)
+            np.testing.assert_array_almost_equal(
+                loaded.temperature, original.temperature)
 
 
-class OuterPackable(Packable):
-    """Outer packable containing a nested packable."""
-    name: str = Field(..., description="Name")
-    inner: Optional[InnerPackable] = Field(None, description="Nested packable")
+class TestExtractReconstruct:
+    """Test extract() and reconstruct() functionality."""
+
+    def test_extract_simple(self):
+        """Test extract() returns data dict with refs and assets."""
+        original = SimpleData(
+            name="test",
+            values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        
+        # Data should have the primitive field
+        assert extracted.data["name"] == "test"
+        
+        # Array should be replaced with ref (no $type - we use schema)
+        assert "$ref" in extracted.data["values"]
+        checksum = extracted.data["values"]["$ref"]
+        
+        # Assets should contain the encoded array
+        assert checksum in extracted.assets
+        assert isinstance(extracted.assets[checksum], bytes)
+
+    def test_reconstruct_simple(self):
+        """Test reconstruct() rebuilds the Packable from data and assets."""
+        original = SimpleData(
+            name="roundtrip",
+            values=np.array([4.0, 5.0, 6.0], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        reconstructed = Packable.reconstruct(SimpleData, extracted.data, extracted.assets)
+        
+        assert reconstructed.name == original.name
+        np.testing.assert_array_almost_equal(reconstructed.values, original.values)
+
+    def test_extract_reconstruct_simulation_result(self):
+        """Test extract/reconstruct with multiple arrays."""
+        original = SimulationResult(
+            time=0.5,
+            temperature=np.array([300.0, 301.0], dtype=np.float32),
+            velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        
+        # Should have 2 assets (2 arrays)
+        assert len(extracted.assets) == 2
+        
+        # Primitive field should be preserved
+        assert extracted.data["time"] == 0.5
+        
+        # Arrays should be refs
+        assert "$ref" in extracted.data["temperature"]
+        assert "$ref" in extracted.data["velocity"]
+        
+        # Reconstruct
+        reconstructed = Packable.reconstruct(SimulationResult, extracted.data, extracted.assets)
+        
+        assert reconstructed.time == pytest.approx(original.time)
+        np.testing.assert_array_almost_equal(reconstructed.temperature, original.temperature)
+        np.testing.assert_array_almost_equal(reconstructed.velocity, original.velocity)
+
+    def test_extract_data_is_json_serializable(self):
+        """Test that extracted data can be JSON serialized."""
+        original = SimulationResult(
+            time=1.0,
+            temperature=np.array([100.0], dtype=np.float32),
+            velocity=np.array([[0.0]], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        
+        # Should be able to serialize to JSON
+        json_str = json.dumps(extracted.data)
+        assert isinstance(json_str, str)
+        
+        # And deserialize back
+        loaded_data = json.loads(json_str)
+        assert loaded_data["time"] == 1.0
+
+    def test_reconstruct_missing_asset_raises(self):
+        """Test that reconstruct raises KeyError when asset is missing."""
+        data = {"name": "test", "values": {"$ref": "nonexistent_checksum"}}
+        
+        with pytest.raises(KeyError, match="Missing asset"):
+            Packable.reconstruct(SimpleData, data, {})
+
+    def test_extract_requires_basemodel(self):
+        """Test extract() requires a Pydantic BaseModel, not plain dict."""
+        data = {
+            "name": "test",
+            "positions": np.array([[0, 0, 0], [1, 1, 1]], dtype=np.float32),
+        }
+        
+        with pytest.raises(TypeError, match="requires a Pydantic BaseModel"):
+            Packable.extract(data)
+
+    def test_reconstruct_with_callable_returns_lazy_model(self):
+        """Test that reconstruct() with callable returns LazyModel for lazy loading."""
+        from meshly.packable import LazyModel
+        
+        original = SimulationResult(
+            time=0.5,
+            temperature=np.array([300.0, 301.0], dtype=np.float32),
+            velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        
+        # Track which assets were requested
+        requested_checksums = []
+        
+        def lazy_loader(checksum: str) -> bytes:
+            """Simulate lazy loading from external storage."""
+            requested_checksums.append(checksum)
+            if checksum not in extracted.assets:
+                raise KeyError(f"Missing asset with checksum '{checksum}'")
+            return extracted.assets[checksum]
+        
+        # Reconstruct using callable - returns LazyModel
+        lazy = Packable.reconstruct(
+            SimulationResult, extracted.data, lazy_loader
+        )
+        
+        # Should be a LazyModel, not loaded yet
+        assert isinstance(lazy, LazyModel)
+        assert len(requested_checksums) == 0
+        
+        # Access fields to trigger loading
+        assert lazy.time == pytest.approx(original.time)
+        np.testing.assert_array_almost_equal(lazy.temperature, original.temperature)
+        np.testing.assert_array_almost_equal(lazy.velocity, original.velocity)
+        
+        # Now assets should be loaded
+        assert len(requested_checksums) == 2
+
+    def test_reconstruct_callable_missing_asset_raises_on_access(self):
+        """Test that callable asset provider raises KeyError on field access."""
+        data = {"name": "test", "values": {"$ref": "nonexistent"}}
+        
+        def failing_loader(checksum: str) -> bytes:
+            raise KeyError(f"Missing asset with checksum '{checksum}'")
+        
+        # With callable, returns LazyModel immediately (no error)
+        lazy = Packable.reconstruct(SimpleData, data, failing_loader)
+        
+        # Error raised when accessing the field
+        with pytest.raises(KeyError, match="Missing asset"):
+            _ = lazy.values
+
+    def test_lazy_reconstruct_defers_loading(self):
+        """Test that reconstruct() with callable doesn't load assets until accessed."""
+        original = SimulationResult(
+            time=0.5,
+            temperature=np.array([300.0, 301.0], dtype=np.float32),
+            velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        requested_checksums = []
+        
+        def tracking_loader(checksum: str) -> bytes:
+            requested_checksums.append(checksum)
+            return extracted.assets[checksum]
+        
+        # Create lazy model with callable - NO assets should be loaded yet
+        lazy = Packable.reconstruct(
+            SimulationResult, extracted.data, tracking_loader
+        )
+        assert len(requested_checksums) == 0, "No assets should be loaded on creation"
+        
+        # Access primitive field - still no asset loading
+        assert lazy.time == pytest.approx(0.5)
+        assert len(requested_checksums) == 0, "Primitive access shouldn't load assets"
+        
+        # Access temperature - should load only temperature asset
+        temp = lazy.temperature
+        assert len(requested_checksums) == 1, "Should load exactly one asset"
+        np.testing.assert_array_almost_equal(temp, original.temperature)
+        
+        # Access temperature again - should use cache, not reload
+        temp2 = lazy.temperature
+        assert len(requested_checksums) == 1, "Cached access shouldn't reload"
+        
+        # Access velocity - should load velocity asset
+        vel = lazy.velocity
+        assert len(requested_checksums) == 2, "Should now have loaded both assets"
+        np.testing.assert_array_almost_equal(vel, original.velocity)
+
+    def test_lazy_reconstruct_resolve(self):
+        """Test that resolve() returns the full Pydantic model."""
+        original = SimulationResult(
+            time=1.0,
+            temperature=np.array([100.0], dtype=np.float32),
+            velocity=np.array([[0.0]], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        
+        # Use callable to get LazyModel
+        lazy = Packable.reconstruct(
+            SimulationResult, extracted.data, lambda c: extracted.assets[c]
+        )
+        
+        # Resolve to get actual model
+        resolved = lazy.resolve()
+        
+        # Should be actual SimulationResult instance
+        assert isinstance(resolved, SimulationResult)
+        assert resolved.time == pytest.approx(1.0)
+        np.testing.assert_array_almost_equal(resolved.temperature, original.temperature)
+        
+        # Resolve again should return same instance
+        resolved2 = lazy.resolve()
+        assert resolved is resolved2
+
+    def test_lazy_model_repr(self):
+        """Test LazyModel has informative repr."""
+        original = SimulationResult(
+            time=0.5,
+            temperature=np.array([300.0], dtype=np.float32),
+            velocity=np.array([[1.0]], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        lazy = Packable.reconstruct(
+            SimulationResult, extracted.data, lambda c: extracted.assets[c]
+        )
+        
+        repr_str = repr(lazy)
+        assert "LazyModel" in repr_str
+        assert "SimulationResult" in repr_str
+        
+        # After accessing one field, repr should reflect that
+        _ = lazy.temperature
+        repr_str = repr(lazy)
+        assert "temperature" in repr_str
+
+    def test_lazy_model_is_readonly(self):
+        """Test that LazyModel doesn't allow attribute setting."""
+        original = SimpleData(
+            name="test",
+            values=np.array([1.0], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        lazy = Packable.reconstruct(
+            SimpleData, extracted.data, lambda c: extracted.assets[c]
+        )
+        
+        with pytest.raises(AttributeError, match="read-only"):
+            lazy.name = "modified"
+
+    def test_reconstruct_with_cache_handler(self):
+        """Test that CachedAssetLoader persists fetched assets to disk."""
+        from meshly.data_handler import DataHandler
+        from meshly.packable import CachedAssetLoader
+        
+        original = SimulationResult(
+            time=0.5,
+            temperature=np.array([300.0, 301.0], dtype=np.float32),
+            velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        )
+        
+        extracted = Packable.extract(original)
+        fetch_count = [0]  # Use list to track calls in closure
+        
+        def counting_loader(checksum: str) -> bytes:
+            fetch_count[0] += 1
+            return extracted.assets[checksum]
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / "cache"
+            cache_handler = DataHandler.create(cache_path)
+            
+            # First lazy model with CachedAssetLoader - should fetch from loader
+            loader1 = CachedAssetLoader(counting_loader, cache_handler)
+            lazy1 = Packable.reconstruct(
+                SimulationResult, extracted.data, loader1
+            )
+            
+            # Access temperature - should fetch and cache
+            _ = lazy1.temperature
+            assert fetch_count[0] == 1
+            
+            # Access velocity - should fetch and cache
+            _ = lazy1.velocity
+            assert fetch_count[0] == 2
+            
+            # Finalize to write cache
+            cache_handler.finalize()
+            
+            # Create new cache handler pointing to same location
+            cache_handler2 = DataHandler.create(cache_path)
+            
+            # Second lazy model with same cache - should read from cache
+            loader2 = CachedAssetLoader(counting_loader, cache_handler2)
+            lazy2 = Packable.reconstruct(
+                SimulationResult, extracted.data, loader2
+            )
+            
+            # Access both fields - should NOT call loader (reads from cache)
+            temp2 = lazy2.temperature
+            vel2 = lazy2.velocity
+            assert fetch_count[0] == 2, "Should read from cache, not call loader"
+            
+            # Verify data integrity
+            np.testing.assert_array_almost_equal(temp2, original.temperature)
+            np.testing.assert_array_almost_equal(vel2, original.velocity)
 
 
-class TestNestedPackableCache:
-    """Test nested Packable with cache support."""
+class TestNestedPackableRejection:
+    """Test that direct Packable fields are rejected, but nested in dicts is allowed."""
 
-    def test_nested_packable_without_cache(self):
-        """Test nested packable save/load without cache."""
+    def test_direct_nested_packable_rejected(self):
+        """Test that a Packable field containing another Packable is rejected."""
+        
+        class InnerPackable(Packable):
+            label: str
+            data: np.ndarray
+        
+        class OuterPackable(Packable):
+            name: str
+            inner: Optional[InnerPackable] = None
+        
         inner = InnerPackable(
             label="inner",
-            data=np.array([1.0, 2.0, 3.0], dtype=np.float32)
+            data=np.array([1.0, 2.0], dtype=np.float32)
         )
-        outer = OuterPackable(name="outer", inner=inner)
+        
+        with pytest.raises(TypeError, match="Direct Packable fields are not allowed"):
+            OuterPackable(name="outer", inner=inner)
+
+    def test_dict_of_packables_allowed(self):
+        """Test that Dict[str, Packable] is allowed (Packable inside typed dict)."""
+        
+        class ContainerPackable(Packable):
+            name: str
+            items: Dict[str, SimpleData] = Field(default_factory=dict)
+        
+        inner = SimpleData(
+            name="inner",
+            values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        )
+        
+        # Should be allowed with typed dict
+        container = ContainerPackable(name="container", items={"nested": inner})
+        assert container.name == "container"
+        assert isinstance(container.items["nested"], SimpleData)
+
+    def test_extract_typed_dict_with_nested_packables(self):
+        """Test that extract() handles typed dicts with nested Packables."""
+        
+        class ContainerPackable(Packable):
+            name: str
+            items: Dict[str, SimpleData] = Field(default_factory=dict)
+        
+        inner = SimpleData(
+            name="inner",
+            values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        )
+        
+        container = ContainerPackable(name="container", items={"nested": inner})
+        
+        # Extract should create refs for the nested Packable
+        extracted = Packable.extract(container)
+        
+        # The nested packable should be a ref (no $type - schema provides type info)
+        assert "$ref" in extracted.data["items"]["nested"]
+        
+        # Should have asset for the nested packable
+        assert len(extracted.assets) >= 1
+        
+    def test_reconstruct_typed_dict_with_nested_packables(self):
+        """Test that reconstruct() handles typed dicts with nested Packables."""
+        
+        class ContainerPackable(Packable):
+            name: str
+            items: Dict[str, SimpleData] = Field(default_factory=dict)
+        
+        inner = SimpleData(
+            name="inner",
+            values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        )
+        
+        container = ContainerPackable(name="container", items={"nested": inner})
+        
+        # Extract and reconstruct
+        extracted = Packable.extract(container)
+        reconstructed = Packable.reconstruct(ContainerPackable, extracted.data, extracted.assets)
+        
+        assert reconstructed.name == "container"
+        assert isinstance(reconstructed.items["nested"], SimpleData)
+        assert reconstructed.items["nested"].name == "inner"
+        np.testing.assert_array_almost_equal(
+            reconstructed.items["nested"].values, inner.values
+        )
+
+    def test_none_nested_packable_allowed(self):
+        """Test that Optional[Packable] = None is allowed."""
+        
+        class InnerPackable(Packable):
+            label: str
+            data: np.ndarray
+        
+        class OuterPackable(Packable):
+            name: str
+            inner: Optional[InnerPackable] = None
+        
+        # Should work with None
+        outer = OuterPackable(name="outer", inner=None)
+        assert outer.name == "outer"
+        assert outer.inner is None
+
+
+class TestDataHandler:
+    """Test DataHandler functionality."""
+
+    def test_context_manager_file_handler(self):
+        """Test DataHandler can be used as context manager with FileHandler."""
+        from meshly.data_handler import DataHandler
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with DataHandler.create(tmpdir) as handler:
+                handler.write_text("test.txt", "hello world")
+                assert handler.exists("test.txt")
+
+            # File should still exist after context exit
+            assert os.path.exists(os.path.join(tmpdir, "test.txt"))
+
+    def test_context_manager_zip_handler(self):
+        """Test DataHandler can be used as context manager with ZipHandler."""
+        from meshly.data_handler import DataHandler
 
         buffer = BytesIO()
-        outer.save_to_zip(buffer)
+        with DataHandler.create(buffer) as handler:
+            handler.write_text("metadata.json", '{"test": true}')
+            handler.write_binary("data.bin", b"binary content")
 
+        # After context exit, zip should be finalized and readable
         buffer.seek(0)
-        loaded = OuterPackable.load_from_zip(buffer)
+        with DataHandler.create(BytesIO(buffer.read())) as reader:
+            content = reader.read_text("metadata.json")
+            assert content == '{"test": true}'
+            assert reader.read_binary("data.bin") == b"binary content"
 
-        assert loaded.name == "outer"
-        assert loaded.inner is not None
-        assert loaded.inner.label == "inner"
-        np.testing.assert_array_almost_equal(loaded.inner.data, inner.data)
-
-    def test_nested_packable_with_cache(self):
-        """Test nested packable save/load with cache."""
+    def test_remove_file(self):
+        """Test remove_file functionality for FileHandler."""
         from meshly.data_handler import DataHandler
-
-        inner = InnerPackable(
-            label="cached_inner",
-            data=np.array([4.0, 5.0, 6.0], dtype=np.float32)
-        )
-        outer = OuterPackable(name="cached_outer", inner=inner)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = os.path.join(tmpdir, "cache")
-            zip_path = os.path.join(tmpdir, "outer.zip")
+            handler = DataHandler.create(tmpdir)
+            handler.write_text("to_delete.txt", "temporary")
+            assert handler.exists("to_delete.txt")
 
-            cache_handler = DataHandler.create(cache_path)
-            outer.save_to_zip(zip_path, cache_handler=cache_handler)
+            handler.remove_file("to_delete.txt")
+            assert not handler.exists("to_delete.txt")
 
-            cache_files = os.listdir(cache_path)
-            assert len(cache_files) == 1
-            assert cache_files[0].endswith(".zip")
-
-            read_cache_handler = DataHandler.create(cache_path)
-            loaded = OuterPackable.load_from_zip(zip_path, cache_handler=read_cache_handler)
-
-            assert loaded.name == "cached_outer"
-            assert loaded.inner is not None
-            assert loaded.inner.label == "cached_inner"
-            np.testing.assert_array_almost_equal(loaded.inner.data, inner.data)
-
-    def test_cache_deduplication(self):
-        """Test that identical nested packables share the same cache file."""
+    def test_remove_file_zip_raises(self):
+        """Test remove_file raises NotImplementedError for ZipHandler."""
         from meshly.data_handler import DataHandler
-
-        inner1 = InnerPackable(
-            label="same",
-            data=np.array([1.0, 2.0], dtype=np.float32)
-        )
-        inner2 = InnerPackable(
-            label="same",
-            data=np.array([1.0, 2.0], dtype=np.float32)
-        )
-        outer1 = OuterPackable(name="outer1", inner=inner1)
-        outer2 = OuterPackable(name="outer2", inner=inner2)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = os.path.join(tmpdir, "cache")
-            zip1_path = os.path.join(tmpdir, "outer1.zip")
-            zip2_path = os.path.join(tmpdir, "outer2.zip")
-
-            cache_handler = DataHandler.create(cache_path)
-            outer1.save_to_zip(zip1_path, cache_handler=cache_handler)
-            outer2.save_to_zip(zip2_path, cache_handler=cache_handler)
-
-            cache_files = os.listdir(cache_path)
-            assert len(cache_files) == 1
-
-            read_cache_handler = DataHandler.create(cache_path)
-            loaded1 = OuterPackable.load_from_zip(zip1_path, cache_handler=read_cache_handler)
-            loaded2 = OuterPackable.load_from_zip(zip2_path, cache_handler=read_cache_handler)
-
-            assert loaded1.inner.label == "same"
-            assert loaded2.inner.label == "same"
-
-    def test_cache_missing_falls_back_to_embedded(self):
-        """Test loading works when cache file is missing but data is embedded."""
-        from meshly.data_handler import DataHandler
-
-        inner = InnerPackable(
-            label="fallback",
-            data=np.array([7.0, 8.0], dtype=np.float32)
-        )
-        outer = OuterPackable(name="fallback_outer", inner=inner)
 
         buffer = BytesIO()
-        outer.save_to_zip(buffer)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cache_path = os.path.join(tmpdir, "cache")
-            os.makedirs(cache_path)
-            read_cache_handler = DataHandler.create(cache_path)
-            buffer.seek(0)
-            loaded = OuterPackable.load_from_zip(buffer, cache_handler=read_cache_handler)
-
-            assert loaded.name == "fallback_outer"
-            assert loaded.inner.label == "fallback"
+        with DataHandler.create(buffer) as handler:
+            handler.write_text("test.txt", "content")
+            with pytest.raises(NotImplementedError):
+                handler.remove_file("test.txt")

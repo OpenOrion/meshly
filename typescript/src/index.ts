@@ -9,12 +9,22 @@
 export {
     CustomDecoder,
     CustomFieldConfig,
+    FieldSchema,
     Packable,
-    PackableMetadata
+    PackableDecoder,
+    PackableMetadata,
+    ReconstructSchema,
+    SerializedPackableData
 } from './packable'
 
 // Export from data-handler module
-export { DataHandler, createDataHandler } from './data-handler'
+export {
+    AssetFetcher,
+    AssetProvider,
+    CachedAssetLoader,
+    DataHandler,
+    getAsset
+} from './data-handler'
 
 // Export from array module
 export { ArrayMetadata, ArrayType, ArrayUtils, EncodedArray } from './array'

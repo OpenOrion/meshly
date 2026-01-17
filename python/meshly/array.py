@@ -12,7 +12,7 @@ import numpy as np
 from pydantic import BaseModel, Field
 from meshoptimizer._loader import lib
 
-from .data_handler import DataHandler, ZipBuffer
+from .data_handler import DataHandler
 from .common import PathLike
 
 # Optional JAX support
@@ -374,8 +374,8 @@ class ArrayUtils:
         """
         encoded = ArrayUtils.encode_array(array)
 
-        zip_buffer = ZipBuffer()
-        handler = WriteHandler.create_handler(zip_buffer)
+        zip_buffer = BytesIO()
+        handler = DataHandler.create(zip_buffer)
         ArrayUtils.save_array(handler, "array", encoded)
         handler.finalize()
 
@@ -403,9 +403,9 @@ class ArrayUtils:
         """
         if isinstance(source, BytesIO):
             source.seek(0)
-            handler = DataHandler.create(ZipBuffer(source.read()))
+            handler = DataHandler.create(BytesIO(source.read()))
         else:
             with open(source, "rb") as f:
-                handler = DataHandler.create(ZipBuffer(f.read()))
+                handler = DataHandler.create(BytesIO(f.read()))
 
         return ArrayUtils.load_array(handler, "array", array_type)

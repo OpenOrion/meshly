@@ -1,6 +1,6 @@
 import stat
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Union
+from typing import Awaitable, Callable, Dict, List, Optional, Union
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -10,7 +10,9 @@ from .common import PathLike
 HandlerSource = Union[PathLike, BytesIO]
 
 # Type for asset provider: either a dict or a callable that fetches by checksum
-AssetFetcher = Callable[[str], bytes]
+# Supports both sync and async fetch functions
+# The callable can return None to indicate the asset should be read from cache
+AssetFetcher = Callable[[str], Union[bytes, None, Awaitable[Optional[bytes]]]]
 AssetProvider = Union[Dict[str, bytes], AssetFetcher, "CachedAssetLoader"]
 
 
@@ -21,10 +23,18 @@ class CachedAssetLoader:
     Wraps a callable asset fetcher with a DataHandler for caching.
     Fetched assets are stored as 'assets/{checksum}.bin' and read
     from cache on subsequent access.
+    
+    The fetch callable can return None to indicate the asset is not
+    available from the remote source, in which case the loader will
+    attempt to read from the cache. If not in cache either, a KeyError
+    is raised.
 
     Example:
-        def fetch_from_cloud(checksum: str) -> bytes:
-            return cloud_storage.download(checksum)
+        def fetch_from_cloud(checksum: str) -> bytes | None:
+            try:
+                return cloud_storage.download(checksum)
+            except NotFoundError:
+                return None  # Will fallback to cache
 
         # Create loader with disk cache
         cache = DataHandler.create(Path("./cache"))
@@ -33,9 +43,9 @@ class CachedAssetLoader:
         lazy = Packable.reconstruct(SimulationCase, data, loader)
     """
     fetch: AssetFetcher
-    """Callable that fetches asset bytes by checksum"""
+    """Callable that fetches asset bytes by checksum (can return None to use cache)"""
     cache: "DataHandler"
-    """DataHandler for caching fetched assets"""
+    """DataHandler for caching fetched assets"""""
 
 
 class DataHandler:

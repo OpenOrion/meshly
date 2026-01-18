@@ -210,11 +210,6 @@ export class Packable<TData> {
     fieldData: Record<string, unknown>
   ): void {
     for (const [key, value] of Object.entries(fieldData)) {
-      // Skip Python BaseModel reconstruction metadata
-      if (key === "__model_class__" || key === "__model_module__") {
-        continue
-      }
-
       const existing = data[key]
 
       if (
@@ -229,31 +224,10 @@ export class Packable<TData> {
           existing as Record<string, unknown>,
           value as Record<string, unknown>
         )
-      } else if (typeof value === "object" && value !== null && !ArrayBuffer.isView(value)) {
-        // Value is an object that might contain Python metadata - clean it
-        data[key] = Packable._stripModelMetadata(value as Record<string, unknown>)
       } else {
         data[key] = value
       }
     }
-  }
-
-  /**
-   * Recursively strip Python BaseModel metadata keys from an object.
-   */
-  private static _stripModelMetadata(obj: Record<string, unknown>): Record<string, unknown> {
-    const result: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(obj)) {
-      if (key === "__model_class__" || key === "__model_module__") {
-        continue
-      }
-      if (typeof value === "object" && value !== null && !ArrayBuffer.isView(value)) {
-        result[key] = Packable._stripModelMetadata(value as Record<string, unknown>)
-      } else {
-        result[key] = value
-      }
-    }
-    return result
   }
 
   /**

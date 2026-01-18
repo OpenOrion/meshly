@@ -5,15 +5,16 @@ This module provides functions for compressing numpy arrays using meshoptimizer'
 encoding functions and storing/loading them as encoded data.
 """
 import ctypes
-from io import BytesIO
 import json
-from typing import Any, Dict, List, Literal, Optional, Union
-import numpy as np
-from pydantic import BaseModel, Field
-from meshoptimizer._loader import lib
+from io import BytesIO
+from typing import Any, Literal, Optional, Union
 
-from .data_handler import DataHandler, ZipBuffer
+import numpy as np
+from meshoptimizer._loader import lib
+from pydantic import BaseModel, Field
+
 from .common import PathLike
+from .data_handler import DataHandler
 
 # Optional JAX support
 try:
@@ -37,7 +38,7 @@ class ArrayMetadata(BaseModel):
     Used in zip files to store array metadata.
     """
 
-    shape: List[int] = Field(..., description="Shape of the array")
+    shape: list[int] = Field(..., description="Shape of the array")
     dtype: str = Field(..., description="Data type of the array as string")
     itemsize: int = Field(..., description="Size of each item in bytes")
     array_type: ArrayType = Field(
@@ -133,57 +134,59 @@ class ArrayUtils:
             return obj
 
     @staticmethod
-    def extract_nested_arrays(obj, prefix: str = "") -> Dict[str, Array]:
+    def extract_nested_arrays(
+        obj,
+        prefix: str = "",
+        skip: Optional[callable] = None,
+    ) -> dict[str, Array]:
         """Recursively extract arrays from nested dicts and BaseModel instances.
 
-        Note: Packable instances are skipped - they handle their own encoding.
+        Args:
+            obj: Object to extract arrays from
+            prefix: Path prefix for nested keys
+            skip: Optional predicate - if skip(obj) is True, skip this object
         """
-        from pydantic import BaseModel
-        from .packable import Packable
         arrays = {}
-        if ArrayUtils.is_array(obj):
-            arrays[prefix] = obj
-        elif isinstance(obj, Packable):
-            # Skip Packable instances - they encode themselves
+        if skip and skip(obj):
             pass
+        elif ArrayUtils.is_array(obj):
+            arrays[prefix] = obj
         elif isinstance(obj, BaseModel):
             for name in type(obj).model_fields:
                 value = getattr(obj, name, None)
                 if value is not None:
                     key = f"{prefix}.{name}" if prefix else name
-                    arrays.update(ArrayUtils.extract_nested_arrays(value, key))
+                    arrays.update(ArrayUtils.extract_nested_arrays(value, key, skip))
         elif isinstance(obj, dict):
             for k, v in obj.items():
                 key = f"{prefix}.{k}" if prefix else k
-                arrays.update(ArrayUtils.extract_nested_arrays(v, key))
+                arrays.update(ArrayUtils.extract_nested_arrays(v, key, skip))
         return arrays
 
     @staticmethod
-    def extract_non_arrays(obj):
-        """Extract non-array values, preserving BaseModel type info for reconstruction.
+    def extract_non_arrays(obj, skip: Optional[callable] = None):
+        """Extract non-array values from nested structures.
 
-        Note: Packable instances are skipped - they handle their own encoding.
+        Args:
+            obj: Object to extract non-arrays from
+            skip: Optional predicate - if skip(obj) is True, skip this object
         """
-        from pydantic import BaseModel
-        from .packable import Packable
         if ArrayUtils.is_array(obj):
             return None
-        if isinstance(obj, Packable):
-            # Skip Packable instances - they encode themselves
+        if skip and skip(obj):
             return None
         if isinstance(obj, BaseModel):
-            result = {"__model_class__": obj.__class__.__name__,
-                      "__model_module__": obj.__class__.__module__}
+            result = {}
             for name in type(obj).model_fields:
                 val = getattr(obj, name, None)
-                if not ArrayUtils.is_array(val) and not isinstance(val, Packable):
-                    extracted = ArrayUtils.extract_non_arrays(val)
+                if not ArrayUtils.is_array(val) and not (skip and skip(val)):
+                    extracted = ArrayUtils.extract_non_arrays(val, skip)
                     if extracted is not None:
                         result[name] = extracted
-            return result if len(result) > 2 else None
+            return result or None
         if isinstance(obj, dict):
-            result = {k: ArrayUtils.extract_non_arrays(v) for k, v in obj.items()
-                      if not ArrayUtils.is_array(v) and not isinstance(v, Packable)}
+            result = {k: ArrayUtils.extract_non_arrays(v, skip) for k, v in obj.items()
+                      if not ArrayUtils.is_array(v) and not (skip and skip(v))}
             result = {k: v for k, v in result.items() if v is not None}
             return result or None
         return obj
@@ -374,8 +377,8 @@ class ArrayUtils:
         """
         encoded = ArrayUtils.encode_array(array)
 
-        zip_buffer = ZipBuffer()
-        handler = WriteHandler.create_handler(zip_buffer)
+        zip_buffer = BytesIO()
+        handler = DataHandler.create(zip_buffer)
         ArrayUtils.save_array(handler, "array", encoded)
         handler.finalize()
 
@@ -403,9 +406,9 @@ class ArrayUtils:
         """
         if isinstance(source, BytesIO):
             source.seek(0)
-            handler = DataHandler.create(ZipBuffer(source.read()))
+            handler = DataHandler.create(BytesIO(source.read()))
         else:
             with open(source, "rb") as f:
-                handler = DataHandler.create(ZipBuffer(f.read()))
+                handler = DataHandler.create(BytesIO(f.read()))
 
         return ArrayUtils.load_array(handler, "array", array_type)

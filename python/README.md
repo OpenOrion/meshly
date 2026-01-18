@@ -17,12 +17,16 @@ pip install meshly
 - **`CustomFieldConfig`**: Configuration for custom field encoding/decoding
 - **`ArrayUtils`**: Utility class for encoding/decoding individual arrays
 - **`DataHandler`**: Unified interface for reading and writing files or zip archives
+- **`CachedAssetLoader`**: Asset loader with disk cache for content-addressable storage
+- **`LazyModel`**: Lazy proxy that defers asset loading until field access
 
 ### Key Capabilities
 
 - Automatic encoding/decoding of numpy array attributes, including nested dictionaries
 - Custom subclasses with additional array fields are automatically serialized
 - Custom field encoding via `_get_custom_fields()` override
+- **Extract/Reconstruct API** for content-addressable storage with deduplication
+- **Lazy loading** with `LazyModel` for deferred asset resolution
 - Enhanced polygon support with `index_sizes` and VTK-compatible `cell_types`
 - Mesh markers for boundary conditions, material regions, and geometric features
 - Mesh operations: triangulate, optimize, simplify, combine, extract
@@ -187,116 +191,110 @@ loaded = SceneMesh.load_from_zip("scene.zip")
 # loaded.materials["wood"] is a MaterialProperties instance
 ```
 
-### Nested Packables
+### Extract and Reconstruct API
 
-Fields that are themselves `Packable` subclasses are automatically handled:
+For content-addressable storage with deduplication, use the `extract()` and `reconstruct()` static methods:
 
 ```python
-class PhysicsProperties(Packable):
-    """Physics data as a nested Packable."""
-    mass: float = 1.0
-    inertia_tensor: np.ndarray  # 3x3 matrix
+from meshly import Packable
 
-class PhysicsMesh(Mesh):
-    """Mesh with nested Packable field."""
-    physics: Optional[PhysicsProperties] = None
+class SimulationResult(Packable):
+    """Simulation data with arrays."""
+    time: float
+    temperature: np.ndarray
+    velocity: np.ndarray
 
-# Nested Packables use their own encode/decode methods
-mesh = PhysicsMesh(
-    vertices=vertices,
-    indices=indices,
-    physics=PhysicsProperties(
-        mass=2.5,
-        inertia_tensor=np.eye(3, dtype=np.float32)
-    )
+result = SimulationResult(
+    time=0.5,
+    temperature=np.array([300.0, 301.0, 302.0], dtype=np.float32),
+    velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 )
 
-mesh.save_to_zip("physics_mesh.zip")
-loaded = PhysicsMesh.load_from_zip("physics_mesh.zip")
-print(loaded.physics.mass)  # 2.5
+# Extract to serializable data + assets
+extracted = Packable.extract(result)
+# extracted.data = {"time": 0.5, "temperature": {"$ref": "abc123..."}, "velocity": {"$ref": "def456..."}}
+# extracted.assets = {"abc123...": <bytes>, "def456...": <bytes>}
+
+# Data is JSON-serializable
+import json
+json.dumps(extracted.data)  # Works!
+
+# Reconstruct from data + assets (eager loading)
+rebuilt = Packable.reconstruct(SimulationResult, extracted.data, extracted.assets)
+assert rebuilt.time == 0.5
 ```
 
-### Caching Nested Packables
+### Lazy Loading with Callable Assets
 
-For large projects with shared nested Packables, use caching to deduplicate data using SHA256 content-addressable storage:
+When assets is a callable (or `CachedAssetLoader`), `reconstruct()` returns a `LazyModel` that defers loading:
 
 ```python
-from meshly import DataHandler
+from meshly import Packable, CachedAssetLoader, DataHandler
+from meshly.packable import LazyModel
 
-# Create cache handlers from a directory path
-cache_handler = DataHandler.create("/path/to/cache")
+# Define a fetch function (e.g., from cloud storage)
+def fetch_asset(checksum: str) -> bytes:
+    return cloud_storage.download(checksum)
 
-# Save with caching - nested Packables stored separately by hash
-mesh.save_to_zip("mesh.zip", cache_handler=cache_handler)
+# Reconstruct with callable - returns LazyModel
+lazy = Packable.reconstruct(SimulationResult, data, fetch_asset)
+assert isinstance(lazy, LazyModel)
 
-# Load with caching - nested Packables loaded from cache
-loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_handler=cache_handler)
+# No assets loaded yet!
+print(lazy.time)         # Primitive field - no fetch needed
+print(lazy.temperature)  # NOW temperature asset is fetched
+print(lazy.velocity)     # NOW velocity asset is fetched
+
+# Get full Pydantic model
+model = lazy.resolve()
+assert isinstance(model, SimulationResult)
 ```
 
-**Deduplication example:**
+### CachedAssetLoader for Disk Persistence
+
+Use `CachedAssetLoader` to cache fetched assets to disk:
 
 ```python
-# Two meshes sharing identical physics properties
-shared_physics = PhysicsProperties(mass=1.0, inertia_tensor=np.eye(3))
+from meshly import CachedAssetLoader, DataHandler
 
-mesh1 = PhysicsMesh(vertices=v1, indices=i1, physics=shared_physics)
-mesh2 = PhysicsMesh(vertices=v2, indices=i2, physics=shared_physics)
+# Create disk cache
+cache = DataHandler.create("/path/to/cache")
+loader = CachedAssetLoader(fetch_asset, cache)
 
-# Save both with the same cache handler - physics stored only once!
-mesh1.save_to_zip("mesh1.zip", cache_handler=cache_handler)
-mesh2.save_to_zip("mesh2.zip", cache_handler=cache_handler)
+# First access fetches and caches
+lazy = Packable.reconstruct(SimulationResult, data, loader)
+temp = lazy.temperature  # Fetches from source, saves to cache
+
+# Subsequent access reads from cache
+lazy2 = Packable.reconstruct(SimulationResult, data, loader)
+temp2 = lazy2.temperature  # Reads from cache, no fetch!
 ```
 
-**Custom cache handlers:**
+### Deduplication with Extract
 
-You can implement custom `DataHandler` subclasses for different storage backends:
+Since assets are keyed by SHA256 checksum, identical arrays automatically deduplicate:
 
 ```python
-from meshly.data_handler import DataHandler
-from typing import Optional, List
-from pathlib import Path
+# Two results with same temperature data
+result1 = SimulationResult(time=0.0, temperature=shared_temp, velocity=v1)
+result2 = SimulationResult(time=1.0, temperature=shared_temp, velocity=v2)
 
-class RedisDataHandler(DataHandler):
-    """Data handler backed by Redis."""
-    def __init__(self, redis_client, prefix="packable:"):
-        super().__init__(source="", rel_path="")
-        self.redis = redis_client
-        self.prefix = prefix
-    
-    def read_binary(self, subpath) -> bytes:
-        data = self.redis.get(f"{self.prefix}{subpath}")
-        if data is None:
-            raise FileNotFoundError(f"Key not found: {self.prefix}{subpath}")
-        return data
-    
-    def read_text(self, subpath, encoding="utf-8") -> str:
-        return self.read_binary(subpath).decode(encoding)
-    
-    def list_files(self, subpath="", recursive=False) -> List[Path]:
-        raise NotImplementedError("File listing not supported")
+extracted1 = Packable.extract(result1)
+extracted2 = Packable.extract(result2)
 
+# Same checksum for temperature - deduplicated!
+assert extracted1.data["temperature"] == extracted2.data["temperature"]
+```
 
-class RedisWriteHandler(WriteHandler):
-    """Write handler backed by Redis."""
-    def __init__(self, redis_client, prefix="packable:"):
-        super().__init__(destination="", rel_path="")
-        self.redis = redis_client
-        self.prefix = prefix
-    
-    def write_binary(self, subpath, content, executable=False) -> None:
-        data = content if isinstance(content, bytes) else content.read()
-        self.redis.set(f"{self.prefix}{subpath}", data)
-    
-    def write_text(self, subpath, content, executable=False) -> None:
-        self.redis.set(f"{self.prefix}{subpath}", content.encode('utf-8'))
+**Note**: Direct Packable fields inside another Packable are not supported. Use `extract()` and `reconstruct()` for composing Packables, or embed Packables inside typed dicts:
 
+```python
+from typing import Dict
 
-# Usage with Redis
-cache_writer = RedisWriteHandler(redis_client)
-cache_reader = RedisReadHandler(redis_client)
-
-mesh.save_to_zip("mesh.zip", cache_handler=cache_writer)
-loaded = PhysicsMesh.load_from_zip("mesh.zip", cache_handler=cache_reader)
+class Container(Packable):
+    name: str
+    # Dict of Packables is allowed - extract() handles them
+    items: Dict[str, SimulationResult] = Field(default_factory=dict)
 ```
 
 ## Architecture
@@ -319,9 +317,11 @@ PackableMetadata (base metadata)
 The `Packable` base class provides:
 - `save_to_zip()` / `load_from_zip()` - File I/O with compression
 - `encode()` / `decode()` - In-memory serialization to/from bytes
+- `extract()` / `reconstruct()` - Content-addressable storage with `$ref` checksums
 - `convert_to()` - Convert arrays between numpy and JAX
 - `_get_custom_fields()` - Override point for custom field encoding
 - `load_metadata()` - Generic metadata loading with type parameter
+- `checksum` - Computed SHA256 checksum property
 
 ### Zip File Structure
 
@@ -510,14 +510,14 @@ class CustomFieldConfig(Generic[V, M]):
 ```python
 class Packable(BaseModel):
     # File I/O
-    def save_to_zip(self, destination, cache_saver=None) -> None
+    def save_to_zip(self, destination, cache_handler=None) -> None
     @classmethod
-    def load_from_zip(cls, source, array_type=None, cache_loader=None) -> T
+    def load_from_zip(cls, source, array_type=None, cache_handler=None) -> T
     
     # In-memory serialization
-    def encode(self, cache_saver=None) -> bytes
+    def encode(self, cache_handler=None) -> bytes
     @classmethod
-    def decode(cls, buf: bytes, array_type=None, cache_loader=None) -> T
+    def decode(cls, buf: bytes, array_type=None, cache_handler=None) -> T
     
     # Array conversion
     def convert_to(self, array_type: ArrayType) -> T
@@ -593,103 +593,73 @@ class MeshMetadata(PackableMetadata):
     array_type: ArrayType = "numpy"  # "numpy" or "jax"
 ```
 
-### Cache Types
+### DataHandler
+
+The `data_handler` module provides a unified interface for reading and writing data, supporting both regular files and zip archives.
 
 ```python
-# Type aliases for cache callbacks
-CacheLoader = Callable[[str], Optional[bytes]]  # hash -> bytes or None
-CacheSaver = Callable[[str, bytes], None]       # hash, bytes -> None
+from meshly import DataHandler
 
-# Factory methods to create cache functions from paths
-ReadHandler.create_cache_loader(source: PathLike) -> CacheLoader
-WriteHandler.create_cache_saver(destination: PathLike) -> CacheSaver
-```
-
-### Data Handlers
-
-The `data_handler` module provides abstract interfaces for reading and writing data, supporting both regular files and zip archives.
-
-```python
-from meshly import ReadHandler, WriteHandler
-
-# ReadHandler - Abstract base for reading files
-class ReadHandler:
+# DataHandler - Unified interface for file I/O
+class DataHandler:
     def __init__(self, source: PathLike | BytesIO, rel_path: str = "")
     
-    # Abstract methods (implemented by FileReadHandler, ZipReadHandler)
+    # Abstract methods (implemented by FileHandler, ZipHandler)
     def read_text(self, subpath: PathLike, encoding: str = "utf-8") -> str
     def read_binary(self, subpath: PathLike) -> bytes
-    def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]
-    
-    # Navigate to subdirectory
-    def to_path(self, rel_path: str) -> ReadHandler
-    
-    # Factory method - automatically creates FileReadHandler or ZipReadHandler
-    @staticmethod
-    def create_handler(source: PathLike | BytesIO, rel_path: str = "") -> ReadHandler
-    
-    # Create cache loader for nested Packables
-    @staticmethod
-    def create_cache_loader(source: PathLike | BytesIO) -> CacheLoader
-
-# WriteHandler - Abstract base for writing files
-class WriteHandler:
-    def __init__(self, destination: PathLike | BytesIO, rel_path: str = "")
-    
-    # Abstract methods (implemented by FileWriteHandler, ZipWriteHandler)
     def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None
     def write_binary(self, subpath: PathLike, content: bytes | BytesIO, executable: bool = False) -> None
+    def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]
+    def exists(self, subpath: PathLike) -> bool
+    def remove_file(self, subpath: PathLike) -> None  # FileHandler only; raises NotImplementedError for ZipHandler
     
     # Navigate to subdirectory
-    def to_path(self, rel_path: str) -> WriteHandler
+    def to_path(self, rel_path: str) -> DataHandler
     
-    # Factory method - automatically creates FileWriteHandler or ZipWriteHandler
+    # Factory method - automatically creates FileHandler or ZipHandler
     @staticmethod
-    def create_handler(destination: PathLike | BytesIO, rel_path: str = "") -> WriteHandler
+    def create(source: PathLike | BytesIO, rel_path: str = "") -> DataHandler
     
-    # Create cache saver for nested Packables
-    @staticmethod
-    def create_cache_saver(destination: PathLike | BytesIO) -> CacheSaver
-    
-    # Close resources (important for ZipWriteHandler)
+    # Close resources (important for ZipHandler)
     def finalize(self) -> None
+    
+    # Context manager support (calls finalize() on exit)
+    def __enter__(self) -> DataHandler
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool
 ```
 
 #### Concrete Implementations
 
 ```python
-# FileReadHandler - Read from filesystem
-handler = FileReadHandler("/path/to/directory")
+# FileHandler - Read/write from filesystem
+handler = DataHandler.create("/path/to/directory")
 data = handler.read_binary("subdir/file.bin")
+handler.write_text("config.json", '{"version": 1}')
 files = handler.list_files("subdir", recursive=True)
 
-# ZipReadHandler - Read from zip archives
-with open("archive.zip", "rb") as f:
-    handler = ZipReadHandler(BytesIO(f.read()))
-    metadata = handler.read_text("metadata.json")
-    array_data = handler.read_binary("arrays/vertices/array.bin")
-
-# FileWriteHandler - Write to filesystem
-handler = FileWriteHandler("/path/to/output")
-handler.write_text("config.json", '{"version": 1}')
-handler.write_binary("data.bin", compressed_bytes)
-
-# ZipWriteHandler - Write to zip archives
+# ZipHandler - Read/write from zip archives (using context manager)
 buf = BytesIO()
-handler = ZipWriteHandler(buf)
-handler.write_text("metadata.json", json_string)
-handler.write_binary("data.bin", array_bytes)
-handler.finalize()  # Important: closes the zip file
+with DataHandler.create(buf) as handler:
+    handler.write_text("metadata.json", json_string)
+    handler.write_binary("data.bin", array_bytes)
+# finalize() is automatically called when exiting the context
 zip_bytes = buf.getvalue()
+
+# Reading from existing zip
+with open("archive.zip", "rb") as f:
+    with DataHandler.create(BytesIO(f.read())) as handler:
+        metadata = handler.read_text("metadata.json")
+        array_data = handler.read_binary("arrays/vertices/array.bin")
 ```
 
 #### Advanced Usage
 
 ```python
 # Use handlers for custom storage backends
-class S3ReadHandler(ReadHandler):
-    """Custom handler for reading from S3."""
+class S3DataHandler(DataHandler):
+    """Custom handler for reading/writing from S3."""
     def __init__(self, bucket: str, prefix: str = ""):
+        super().__init__(source="", rel_path="")
         self.bucket = bucket
         self.prefix = prefix
     
@@ -697,12 +667,36 @@ class S3ReadHandler(ReadHandler):
         key = f"{self.prefix}/{subpath}" if self.prefix else str(subpath)
         return s3_client.get_object(Bucket=self.bucket, Key=key)['Body'].read()
     
+    def write_binary(self, subpath: PathLike, content: bytes | BytesIO, executable: bool = False) -> None:
+        if isinstance(content, BytesIO):
+            content.seek(0)
+            content = content.read()
+        key = f"{self.prefix}/{subpath}" if self.prefix else str(subpath)
+        s3_client.put_object(Bucket=self.bucket, Key=key, Body=content)
+    
+    def exists(self, subpath: PathLike) -> bool:
+        key = f"{self.prefix}/{subpath}" if self.prefix else str(subpath)
+        try:
+            s3_client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except:
+            return False
+    
     # ... implement other methods
 
-# Deterministic zip output (ZipWriteHandler uses fixed timestamps)
+# Deterministic zip output (ZipHandler uses fixed timestamps)
 # This ensures identical content produces identical zip files
-handler = ZipWriteHandler(buf)
+handler = DataHandler.create(buf)
 # All files get timestamp (2020, 1, 1, 0, 0, 0) for reproducibility
+
+# Automatic mode switching for ZipHandler
+handler = DataHandler.create(BytesIO())
+# Handler starts in write mode for empty buffer
+handler.write_binary("file1.bin", data1)
+# Automatically switches to read mode when needed
+content = handler.read_binary("file1.bin")
+# Switches back to write mode
+handler.write_binary("file2.bin", data2)
 ```
 
 ## Examples

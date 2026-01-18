@@ -21,8 +21,6 @@ async function createTestMeshZip(): Promise<ArrayBuffer> {
 
     // Add metadata
     zip.file('metadata.json', JSON.stringify({
-        class_name: 'Mesh',
-        module_name: 'meshly.mesh',
         mesh_size: {
             vertex_count: 3,
             vertex_size: 12,
@@ -67,8 +65,6 @@ async function createTestMeshWithMarkersZip(): Promise<ArrayBuffer> {
 
     // Add metadata
     zip.file('metadata.json', JSON.stringify({
-        class_name: 'Mesh',
-        module_name: 'meshly.mesh',
         mesh_size: {
             vertex_count: 4,
             vertex_size: 12,

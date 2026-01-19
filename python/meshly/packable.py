@@ -217,9 +217,11 @@ class Packable(BaseModel):
                 continue
             value = getattr(self, field_name, None)
             if value is not None:
-                result.update(ArrayUtils.extract_nested_arrays(
-                    value, field_name, skip=lambda x: isinstance(x, Packable)
-                ).keys())
+                result.update(
+                    ArrayUtils.extract_nested_arrays(
+                        value, field_name, skip=lambda x: isinstance(x, Packable)
+                    ).keys()
+                )
         return result
 
     def _extract_non_array_fields(self) -> dict[str, Any]:
@@ -231,7 +233,9 @@ class Packable(BaseModel):
                 continue
             value = getattr(self, name, None)
             if value is not None and not ArrayUtils.is_array(value):
-                extracted = ArrayUtils.extract_non_arrays(value, skip=lambda x: isinstance(x, Packable))
+                extracted = ArrayUtils.extract_non_arrays(
+                    value, skip=lambda x: isinstance(x, Packable)
+                )
                 if extracted is not None:
                     model_data[name] = extracted
         return model_data
@@ -430,9 +434,7 @@ class Packable(BaseModel):
             SerializedPackableData with data dict (refs for arrays) and assets dict
         """
         if not isinstance(obj, BaseModel):
-            raise TypeError(
-                f"extract() requires a Pydantic BaseModel, got {type(obj).__name__}."
-            )
+            raise TypeError(f"extract() requires a Pydantic BaseModel, got {type(obj).__name__}.")
 
         assets: dict[str, bytes] = {}
         data: dict[str, Any] = {}
@@ -440,6 +442,12 @@ class Packable(BaseModel):
         for field_name in type(obj).model_fields:
             if hasattr(obj, "__private_attributes__") and field_name in obj.__private_attributes__:
                 continue
+            value = getattr(obj, field_name, None)
+            if value is not None:
+                data[field_name] = SerializationUtils.extract_value(value, assets)
+
+        # Include computed fields (Pydantic v2)
+        for field_name in type(obj).model_computed_fields:
             value = getattr(obj, field_name, None)
             if value is not None:
                 data[field_name] = SerializationUtils.extract_value(value, assets)

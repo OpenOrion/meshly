@@ -16,6 +16,7 @@ meshoptimizer, including:
 from .packable import (
     Packable,
     PackableMetadata,
+    SerializedPackableData,
 )
 
 from .mesh import (
@@ -42,6 +43,8 @@ from .utils import (
 )
 
 from .data_handler import (
+    AssetProvider,
+    CachedAssetLoader,
     DataHandler,
 )
 
@@ -50,8 +53,11 @@ __all__ = [
     # Packable base class
     "Packable",
     "PackableMetadata",
+    "SerializedPackableData",
     "ArrayType",
     # Data handlers
+    "AssetProvider",
+    "CachedAssetLoader",
     "DataHandler",
     # Mesh classes
     "Mesh",

@@ -1,10 +1,10 @@
 {
     "python.testing.pytestArgs": [
-        "-v",
-        "./python/tests"
+        "-v"
     ],
     "python.testing.pytestEnabled": true,
     "python.testing.unittestEnabled": false,
+    "python.testing.cwd": "${workspaceFolder}/python",
     "jupyter.notebookFileRoot": "${workspaceFolder}/python",
     // Vitest configuration for TypeScript tests
     "vitest.root": "./typescript",

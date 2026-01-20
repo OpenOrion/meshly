@@ -6,64 +6,168 @@ this base to get automatic array encoding/decoding support.
 
 Custom data classes can inherit from Packable to store simulation
 results, time-series data, or any structured data with numpy arrays.
+
+Packables cannot contain nested Packables. For composite structures,
+use the extract() and reconstruct() methods to handle asset management.
 """
 
-import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
-from typing import (
-    Callable,
-    Dict,
-    Generic,
-    Optional,
-    Set,
-    Type,
-    Any,
-    TypeVar,
-    Union,
-)
+from pathlib import Path
+from typing import Any, Generic, TypeVar, Union
+
 from pydantic import BaseModel, Field
-from .array import ArrayUtils, ArrayType, Array
+
+from .array import Array, ArrayType, ArrayUtils
 from .common import PathLike
-from .data_handler import DataHandler, ZipBuffer
+from .data_handler import AssetProvider, CachedAssetLoader, DataHandler
+from .utils.checksum_utils import ChecksumUtils
+from .utils.schema_utils import SchemaUtils
+from .utils.serialization_utils import SerializationUtils
+
+TModel = TypeVar("TModel", bound=BaseModel)
 
 
 class PackableMetadata(BaseModel):
     """Metadata for a Packable saved to zip."""
-    class_name: str = Field(..., description="Name of the data class")
-    module_name: str = Field(...,
-                             description="Module containing the data class")
-    field_data: Dict[str, Any] = Field(
-        default_factory=dict, description="Non-array field values")
-    packable_refs: Dict[str, str] = Field(
-        default_factory=dict,
-        description="SHA256 hashes for cached packable fields (field_name -> hash)"
-    )
+
+    field_data: dict[str, Any] = Field(default_factory=dict, description="Non-array field values")
 
 
 TPackableMetadata = TypeVar("TPackableMetadata", bound=PackableMetadata)
 TPackable = TypeVar("TPackable", bound="Packable")
-FieldValue = TypeVar("FieldValue")  # Value type for custom fields
+FieldValue = TypeVar("FieldValue")
+
+
+@dataclass
+class SerializedPackableData:
+    """Result of extracting a Packable for serialization.
+
+    Contains the serializable data dict with checksum references,
+    plus the encoded assets (arrays as bytes).
+    """
+
+    data: dict[str, Any]
+    """Serializable dict with primitive fields and checksum refs for arrays"""
+    assets: dict[str, bytes]
+    """Map of checksum -> encoded bytes for all arrays"""
+
+
+class LazyModel(Generic[TModel]):
+    """Lazy proxy for a Pydantic BaseModel that defers asset loading until field access.
+
+    Example:
+        def fetch_asset(checksum: str) -> bytes:
+            return cloud_storage.download(checksum)
+
+        lazy = Packable.reconstruct(SimulationCase, data, fetch_asset)
+        # No assets loaded yet
+
+        temp = lazy.temperature  # NOW the temperature asset is fetched
+        vel = lazy.velocity      # NOW the velocity asset is fetched
+    """
+
+    __slots__ = ("_model_class", "_data", "_assets", "_array_type", "_cache", "_resolved")
+
+    def __init__(
+        self,
+        model_class: type[TModel],
+        data: dict[str, Any],
+        assets: AssetProvider,
+        array_type: ArrayType | None = None,
+    ):
+        object.__setattr__(self, "_model_class", model_class)
+        object.__setattr__(self, "_data", data)
+        object.__setattr__(self, "_assets", assets)
+        object.__setattr__(self, "_array_type", array_type)
+        object.__setattr__(self, "_cache", {})
+        object.__setattr__(self, "_resolved", None)
+
+    def _get_cached_asset(self, checksum: str) -> bytes:
+        """Get asset bytes, using cache if CachedAssetLoader is provided."""
+        return SerializationUtils.get_cached_asset(
+            object.__getattribute__(self, "_assets"), checksum
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        cache = object.__getattribute__(self, "_cache")
+        if name in cache:
+            return cache[name]
+
+        model_class = object.__getattribute__(self, "_model_class")
+        data = object.__getattribute__(self, "_data")
+        array_type = object.__getattribute__(self, "_array_type")
+
+        if name not in model_class.model_fields:
+            raise AttributeError(f"'{model_class.__name__}' has no attribute '{name}'")
+
+        if name not in data:
+            return None
+
+        field_value = data[name]
+        field_type = model_class.model_fields[name].annotation
+
+        resolved = SchemaUtils.resolve_value_with_type(
+            field_value, field_type, self._get_cached_asset, array_type
+        )
+
+        cache[name] = resolved
+        return resolved
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("LazyModel is read-only. Use resolve() to get a mutable model.")
+
+    def resolve(self) -> TModel:
+        """Fully resolve all fields and return the actual Pydantic model."""
+        resolved = object.__getattribute__(self, "_resolved")
+        if resolved is not None:
+            return resolved
+
+        model_class = object.__getattribute__(self, "_model_class")
+        data = object.__getattribute__(self, "_data")
+        array_type = object.__getattribute__(self, "_array_type")
+        cache = object.__getattribute__(self, "_cache")
+
+        resolved_data = {}
+        for field_name, field_info in model_class.model_fields.items():
+            if field_name in cache:
+                resolved_data[field_name] = cache[field_name]
+            elif field_name in data:
+                resolved_data[field_name] = SchemaUtils.resolve_value_with_type(
+                    data[field_name], field_info.annotation, self._get_cached_asset, array_type
+                )
+
+        result = model_class(**resolved_data)
+        object.__setattr__(self, "_resolved", result)
+        return result
+
+    def __repr__(self) -> str:
+        model_class = object.__getattribute__(self, "_model_class")
+        cache = object.__getattribute__(self, "_cache")
+        data = object.__getattribute__(self, "_data")
+        loaded = list(cache.keys())
+        pending = [k for k in data.keys() if k not in cache]
+        return f"LazyModel[{model_class.__name__}](loaded={loaded}, pending={pending})"
 
 
 @dataclass
 class CustomFieldConfig(Generic[FieldValue, TPackableMetadata]):
     """Configuration for custom field encoding/decoding."""
+
     file_name: str
     """File name in zip (without .bin extension)"""
     encode: Callable[[FieldValue, Any], bytes]
     """Encoder function: (value, instance) -> bytes"""
-    decode: Callable[[bytes, TPackableMetadata,
-                      Optional[ArrayType]], FieldValue]
+    decode: Callable[[bytes, TPackableMetadata, ArrayType | None], FieldValue]
     """Decoder function: (bytes, metadata, array_type) -> value"""
     optional: bool = False
     """Whether the field is optional (won't throw if missing)"""
 
 
 class Packable(BaseModel):
-    """
-    Base class for data containers with automatic array serialization.
+    """Base class for data containers with automatic array serialization.
 
     Subclasses can define numpy array attributes which will be automatically
     detected, encoded, and saved to zip files. Non-array fields are preserved
@@ -87,8 +191,25 @@ class Packable(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
+    def __init__(self, **data):
+        super().__init__(**data)
+        self._validate_no_direct_packable_fields()
+
+    def _validate_no_direct_packable_fields(self) -> None:
+        """Validate that this Packable has no direct Packable fields."""
+        for field_name in type(self).model_fields:
+            if field_name in self.__private_attributes__:
+                continue
+            value = getattr(self, field_name, None)
+            if value is not None and isinstance(value, Packable):
+                raise TypeError(
+                    f"Direct Packable fields are not allowed. Field '{field_name}' "
+                    f"contains a {type(value).__name__}. Packables can be nested "
+                    "inside dicts or other BaseModels, and extract() will handle them."
+                )
+
     @property
-    def array_fields(self) -> Set[str]:
+    def array_fields(self) -> set[str]:
         """Get all array field paths, including nested arrays in dicts/BaseModels."""
         result = set()
         for field_name in type(self).model_fields:
@@ -96,12 +217,15 @@ class Packable(BaseModel):
                 continue
             value = getattr(self, field_name, None)
             if value is not None:
-                result.update(ArrayUtils.extract_nested_arrays(
-                    value, field_name).keys())
+                result.update(
+                    ArrayUtils.extract_nested_arrays(
+                        value, field_name, skip=lambda x: isinstance(x, Packable)
+                    ).keys()
+                )
         return result
 
-    def _extract_non_array_fields(self) -> Dict[str, Any]:
-        """Extract non-array field values for metadata, preserving BaseModel type info."""
+    def _extract_non_array_fields(self) -> dict[str, Any]:
+        """Extract non-array field values for metadata."""
         model_data = {}
         direct_arrays = {f for f in self.array_fields if "." not in f}
         for name in type(self).model_fields:
@@ -109,191 +233,84 @@ class Packable(BaseModel):
                 continue
             value = getattr(self, name, None)
             if value is not None and not ArrayUtils.is_array(value):
-                extracted = ArrayUtils.extract_non_arrays(value)
+                extracted = ArrayUtils.extract_non_arrays(
+                    value, skip=lambda x: isinstance(x, Packable)
+                )
                 if extracted is not None:
                     model_data[name] = extracted
         return model_data
 
-    def _create_metadata(self, field_data: Dict[str, Any]) -> PackableMetadata:
-        """
-        Create metadata for this Packable.
-
-        Subclasses can override this to return custom metadata types.
-
-        Args:
-            field_data: Non-array field values to include in metadata
-
-        Returns:
-            PackableMetadata (or subclass) instance
-        """
-        return PackableMetadata(
-            class_name=self.__class__.__name__,
-            module_name=self.__class__.__module__,
-            field_data=field_data,
-        )
+    def _create_metadata(self, field_data: dict[str, Any]) -> PackableMetadata:
+        """Create metadata for this Packable. Subclasses can override."""
+        return PackableMetadata(field_data=field_data)
 
     @classmethod
     def load_metadata(
-        cls,
-        handler: DataHandler,
-        metadata_cls: Type[TPackableMetadata] = PackableMetadata
+        cls, handler: DataHandler, metadata_cls: type[TPackableMetadata] = PackableMetadata
     ) -> TPackableMetadata:
-        """
-        Load and validate metadata using a read handler.
-
-        Args:
-            handler: ReadHandler for reading files
-            metadata_cls: The metadata class to use for parsing (default: PackableMetadata)
-
-        Returns:
-            Metadata object of the specified type
-
-        Raises:
-            ValueError: If class name doesn't match
-        """
+        """Load and validate metadata using a read handler."""
         metadata_text = handler.read_text("metadata.json")
         metadata_dict = json.loads(metadata_text)
-        metadata = metadata_cls(**metadata_dict)
+        return metadata_cls(**metadata_dict)
 
-        if metadata.class_name != cls.__name__ or metadata.module_name != cls.__module__:
-            raise ValueError(
-                f"Class mismatch: expected {cls.__name__} but got {metadata.class_name} from {metadata.module_name}"
-            )
-
-        return metadata
-
-    def save_to_zip(
-        self,
-        destination: Union[PathLike, BytesIO],
-        cache_handler: Optional[DataHandler] = None,
-    ) -> None:
-        """
-        Save this container to a zip file.
-
-        Args:
-            destination: Path to the output zip file or BytesIO buffer
-            cache_handler: Optional DataHandler for caching nested Packables.
-                          When provided, nested Packable fields are saved via
-                          cache_handler.write_binary() and only hash
-                          references are stored in the parent zip. This enables
-                          deduplication and smaller parent files.
-        """
-        encoded = self.encode(cache_handler=cache_handler)
+    def save_to_zip(self, destination: Union[PathLike, BytesIO]) -> None:
+        """Save this container to a zip file."""
+        encoded = self.encode()
         if isinstance(destination, BytesIO):
             destination.write(encoded)
         else:
-            with open(destination, "wb") as f:
-                f.write(encoded)
+            Path(destination).write_bytes(encoded)
 
     @classmethod
     def load_from_zip(
-        cls: Type[TPackable],
+        cls: type[TPackable],
         source: Union[PathLike, BytesIO],
-        array_type: Optional[ArrayType] = None,
-        cache_handler: Optional[DataHandler] = None,
+        array_type: ArrayType | None = None,
     ) -> TPackable:
-        """
-        Load a Packable from a zip file.
-
-        Args:
-            source: Path to the input zip file or BytesIO object
-            array_type: Array backend to use ("numpy" or "jax"). If None (default),
-                       uses the array_type stored in each array's metadata,
-                       preserving the original array types that were saved.
-            cache_handler: Optional Handler to load nested Packables from cache.
-                          When the zip contains hash references (packable_refs),
-                          cache_handler.read_binary() is called to retrieve
-                          cached bytes.
-
-        Returns:
-            Loaded Packable instance
-        """
+        """Load a Packable from a zip file."""
         if isinstance(source, BytesIO):
             source.seek(0)
-            return cls.decode(source.read(), array_type, cache_handler)
+            return cls.decode(source.read(), array_type)
         else:
             with open(source, "rb") as f:
-                return cls.decode(f.read(), array_type, cache_handler)
+                return cls.decode(f.read(), array_type)
 
     @classmethod
-    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
-        """
-        Get custom field configurations for this class.
-
-        Subclasses override this to define custom encoders/decoders.
-
-        Returns:
-            Dict mapping field names to CustomFieldConfig objects
-        """
+    def _get_custom_fields(cls) -> dict[str, CustomFieldConfig]:
+        """Get custom field configurations. Subclasses override this."""
         return {}
 
     @classmethod
-    def _get_custom_field_names(cls) -> Set[str]:
+    def _get_custom_field_names(cls) -> set[str]:
         """Get set of field names that have custom encoding/decoding."""
         return set(cls._get_custom_fields().keys())
-
-    def _get_packable_fields(self) -> Dict[str, "Packable"]:
-        """Get fields that are Packable instances (excluding self)."""
-        packable_fields = {}
-        for field_name in type(self).model_fields:
-            if field_name in self.__private_attributes__:
-                continue
-            value = getattr(self, field_name, None)
-            if value is not None and isinstance(value, Packable):
-                packable_fields[field_name] = value
-        return packable_fields
-
-    def _get_packable_field_names(self) -> Set[str]:
-        """Get set of field names that are Packable instances."""
-        return set(self._get_packable_fields().keys())
-
-    @classmethod
-    def _get_packable_field_types(cls) -> Set[str]:
-        """Get field names that are Packable types from type hints (for decoding)."""
-        import typing
-        hints = typing.get_type_hints(cls)
-        packable_fields = set()
-
-        for field_name, field_type in hints.items():
-            # Handle Optional[PackableSubclass]
-            origin = typing.get_origin(field_type)
-            if origin is Union:
-                args = typing.get_args(field_type)
-                for arg in args:
-                    if isinstance(arg, type) and issubclass(arg, Packable):
-                        packable_fields.add(field_name)
-                        break
-            elif isinstance(field_type, type) and issubclass(field_type, Packable):
-                packable_fields.add(field_name)
-
-        return packable_fields
 
     @classmethod
     def _decode_custom_fields(
         cls,
         handler: DataHandler,
         metadata: PackableMetadata,
-        data: Dict[str, Any],
-        array_type: Optional[ArrayType] = None
+        data: dict[str, Any],
+        array_type: ArrayType | None = None,
     ) -> None:
         """Decode fields with custom decoders."""
         for field_name, config in cls._get_custom_fields().items():
             try:
                 encoded_bytes = handler.read_binary(f"{config.file_name}.bin")
-                data[field_name] = config.decode(
-                    encoded_bytes, metadata, array_type)
+                data[field_name] = config.decode(encoded_bytes, metadata, array_type)
             except (KeyError, FileNotFoundError):
                 if not config.optional:
                     raise ValueError(
-                        f"Required custom field '{field_name}' ({config.file_name}.bin) not found in zip")
+                        f"Required custom field '{field_name}' ({config.file_name}.bin) not found"
+                    )
 
     @classmethod
     def _load_standard_arrays(
         cls,
         handler: DataHandler,
-        data: Dict[str, Any],
-        skip_fields: Set[str],
-        array_type: Optional[ArrayType] = None
+        data: dict[str, Any],
+        skip_fields: set[str],
+        array_type: ArrayType | None = None,
     ) -> None:
         """Load standard arrays from arrays/ folder, skipping custom fields."""
         try:
@@ -306,11 +323,9 @@ class Packable(BaseModel):
             if not file_str.endswith("/array.bin"):
                 continue
 
-            # Extract array name: "arrays/markerIndices/boundary/array.bin" -> "markerIndices.boundary"
             array_path = file_str[7:-10]  # Remove "arrays/" and "/array.bin"
             name = array_path.replace("/", ".")
 
-            # Skip custom fields
             base_field = name.split(".")[0]
             if base_field in skip_fields:
                 continue
@@ -318,7 +333,6 @@ class Packable(BaseModel):
             decoded = ArrayUtils.load_array(handler, name, array_type)
 
             if "." in name:
-                # Nested array - build nested structure
                 parts = name.split(".")
                 current = data
                 for part in parts[:-1]:
@@ -327,42 +341,29 @@ class Packable(BaseModel):
                     current = current[part]
                 current[parts[-1]] = decoded
             else:
-                # Flat array
                 data[name] = decoded
 
-    def _encode_standard_arrays(self, skip_fields: Set[str]) -> Dict[str, bytes]:
+    def _encode_standard_arrays(self, skip_fields: set[str]) -> dict[str, bytes]:
         """Encode standard arrays, skipping custom fields."""
         encoded_arrays = {}
 
         for field_name in self.array_fields:
-            # Skip fields with custom encoding
             if field_name in skip_fields:
                 continue
 
-            # Handle nested array paths (e.g., "textures.diffuse")
             if "." in field_name:
                 parts = field_name.split(".")
                 obj = self
                 for part in parts[:-1]:
-                    if isinstance(obj, dict):
-                        obj = obj[part]
-                    else:
-                        obj = getattr(obj, part)
-
-                if isinstance(obj, dict):
-                    array = obj[parts[-1]]
-                else:
-                    array = getattr(obj, parts[-1])
-
+                    obj = obj[part] if isinstance(obj, dict) else getattr(obj, part)
+                array = obj[parts[-1]] if isinstance(obj, dict) else getattr(obj, parts[-1])
                 if ArrayUtils.is_array(array):
                     encoded_arrays[field_name] = ArrayUtils.encode_array(array)
             else:
-                # Handle direct array fields
                 try:
                     array = getattr(self, field_name)
                     if ArrayUtils.is_array(array):
-                        encoded_arrays[field_name] = ArrayUtils.encode_array(
-                            array)
+                        encoded_arrays[field_name] = ArrayUtils.encode_array(array)
                 except AttributeError:
                     pass
 
@@ -376,86 +377,21 @@ class Packable(BaseModel):
                 encoded_bytes = config.encode(value, self)
                 handler.write_binary(f"{config.file_name}.bin", encoded_bytes)
 
-    def _encode_packable_fields(
-        self,
-        handler: DataHandler,
-        cache_handler: Optional[DataHandler] = None
-    ) -> Dict[str, str]:
-        """Encode fields that are Packable instances.
-
-        Args:
-            handler: DataHandler for the parent zip (used when no cache)
-            cache_handler: Optional DataHandler to save to cache. When provided,
-                          packables are saved via cache_handler.write_binary() and
-                          only hash refs are returned.
-
-        Returns:
-            Dict mapping field names to SHA256 hashes (only when cache_handler provided)
-        """
-        packable_refs: Dict[str, str] = {}
-
-        for field_name, packable in self._get_packable_fields().items():
-            # Recursively use cache for nested packables too
-            encoded_bytes = packable.encode(cache_handler=cache_handler)
-
-            if cache_handler is not None:
-                # Compute SHA256 hash of the encoded bytes
-                hash_digest = hashlib.sha256(encoded_bytes).hexdigest()[:16]
-                packable_refs[field_name] = hash_digest
-
-                # Save to cache with deduplication via exists check
-                hash_path = f"{hash_digest}.zip"
-                if not cache_handler.exists(hash_path):
-                    cache_handler.write_binary(hash_path, encoded_bytes)
-            else:
-                # Embed in parent zip as before
-                handler.write_binary(f"packables/{field_name}.zip", encoded_bytes)
-
-        return packable_refs
-
-    def encode(self, cache_handler: Optional[DataHandler] = None) -> bytes:
-        """
-        Serialize this Packable to bytes.
-
-        Args:
-            cache_handler: Optional DataHandler to save nested Packables to cache.
-                          When provided, nested Packable fields are saved via
-                          cache_handler.write_binary() instead of
-                          embedding in the zip.
-
-        Returns:
-            Bytes containing the zip-encoded data
-        """
+    def encode(self) -> bytes:
+        """Serialize this Packable to bytes (zip format)."""
         custom_field_names = self._get_custom_field_names()
-        packable_field_names = self._get_packable_field_names()
-        skip_fields = custom_field_names | packable_field_names
-
-        # Encode standard arrays
-        encoded_arrays = self._encode_standard_arrays(skip_fields)
-
-        # Create metadata
+        encoded_arrays = self._encode_standard_arrays(custom_field_names)
         field_data = self._extract_non_array_fields()
         metadata = self._create_metadata(field_data)
 
-        # Write to zip
-        destination = ZipBuffer()
+        destination = BytesIO()
         handler = DataHandler.create(destination)
 
-        # Save standard arrays
         for name in sorted(encoded_arrays.keys()):
             ArrayUtils.save_array(handler, name, encoded_arrays[name])
 
-        # Save custom encoded fields
         self._encode_custom_fields(handler)
 
-        # Save packable fields (with optional caching)
-        packable_refs = self._encode_packable_fields(handler, cache_handler)
-
-        # Store packable refs in metadata if using cache
-        if packable_refs:
-            metadata.packable_refs = packable_refs
-
-        # Save metadata
         handler.write_text(
             "metadata.json",
             json.dumps(metadata.model_dump(), indent=2, sort_keys=True),
@@ -465,183 +401,122 @@ class Packable(BaseModel):
         return destination.getvalue()
 
     @classmethod
-    def _decode_packable_fields(
-        cls,
-        handler: DataHandler,
-        metadata: PackableMetadata,
-        data: Dict[str, Any],
-        array_type: Optional[ArrayType] = None,
-        cache_handler: Optional[DataHandler] = None
-    ) -> None:
-        """Decode fields that are Packable instances.
-
-        Supports both embedded packables (in packables/ folder) and cached
-        packables (referenced by SHA256 hash in metadata.packable_refs).
-
-        Args:
-            handler: DataHandler for the parent zip
-            metadata: Loaded metadata containing packable_refs
-            data: Dict to populate with decoded packables
-            array_type: Optional array backend to use
-            cache_handler: Optional DataHandler to load cached packables by hash
-        """
-        # Get field type hints to know the Packable subclass for each field
-        import typing
-        hints = typing.get_type_hints(cls)
-
-        # Helper to decode a packable field given its bytes
-        def decode_field(field_name: str, encoded_bytes: bytes) -> None:
-            field_type = hints.get(field_name)
-            if field_type is None:
-                return
-
-            # Handle Optional[PackableSubclass]
-            origin = typing.get_origin(field_type)
-            if origin is Union:
-                args = typing.get_args(field_type)
-                for arg in args:
-                    if isinstance(arg, type) and issubclass(arg, Packable):
-                        field_type = arg
-                        break
-
-            if not isinstance(field_type, type) or not issubclass(field_type, Packable):
-                return
-
-            data[field_name] = field_type.decode(encoded_bytes, array_type, cache_handler)
-
-        # First, try to load from cache using hash refs
-        if cache_handler and metadata.packable_refs:
-            for field_name, hash_digest in metadata.packable_refs.items():
-                try:
-                    cached_bytes = cache_handler.read_binary(f"{hash_digest}.zip")
-                    decode_field(field_name, cached_bytes)
-                except (FileNotFoundError, KeyError):
-                    pass  # Not in cache, will try embedded
-
-        # Then load any embedded packables (for backward compatibility or no-cache case)
-        try:
-            packable_files = handler.list_files("packables", recursive=True)
-        except (KeyError, FileNotFoundError):
-            return
-
-        for file_path in packable_files:
-            file_str = str(file_path)
-            if not file_str.endswith(".zip"):
-                continue
-
-            # Extract field name: "packables/inner_mesh.zip" -> "inner_mesh"
-            field_name = file_str[10:-4]  # Remove "packables/" and ".zip"
-
-            # Skip if already loaded from cache
-            if field_name in data:
-                continue
-
-            encoded_bytes = handler.read_binary(file_str)
-            decode_field(field_name, encoded_bytes)
-
-    @classmethod
     def decode(
-        cls: Type[TPackable],
+        cls: type[TPackable],
         buf: bytes,
-        array_type: Optional[ArrayType] = None,
-        cache_handler: Optional[DataHandler] = None
+        array_type: ArrayType | None = None,
     ) -> TPackable:
-        """
-        Deserialize a Packable from bytes.
+        """Deserialize a Packable from bytes."""
+        if cls is Packable:
+            raise TypeError(
+                "Cannot decode on base Packable class. "
+                "Use the specific subclass: MyClass.decode(...)"
+            )
 
-        Args:
-            buf: Bytes containing the zip-encoded data
-            array_type: Array backend to use. If None (default), uses the
-                       array_type stored in each array's metadata.
-            cache_handler: Optional DataHandler to load nested Packables from cache.
-                          When metadata contains hash references,
-                          cache_handler.read_binary() is called to retrieve
-                          cached bytes.
-
-        Returns:
-            Loaded Packable instance
-        """
-        handler = DataHandler.create(ZipBuffer(buf))
+        handler = DataHandler.create(BytesIO(buf))
         metadata = cls.load_metadata(handler)
+        skip_fields = cls._get_custom_field_names()
 
-        # Fields to skip when loading standard arrays
-        skip_fields = cls._get_custom_field_names() | cls._get_packable_field_types()
-
-        data: Dict[str, Any] = {}
-
-        # Decode custom fields first
+        data: dict[str, Any] = {}
         cls._decode_custom_fields(handler, metadata, data, array_type)
-
-        # Load standard arrays
         cls._load_standard_arrays(handler, data, skip_fields, array_type)
 
-        # Decode packable fields
-        cls._decode_packable_fields(handler, metadata, data, array_type, cache_handler)
-
-        # Merge non-array fields from metadata
         if metadata.field_data:
-            Packable._merge_field_data(data, metadata.field_data)
+            SchemaUtils.merge_field_data_with_schema(cls, data, metadata.field_data)
 
         return cls(**data)
 
-    def __reduce__(self):
-        """
-        Support for pickle serialization.
+    @staticmethod
+    def extract(obj: BaseModel) -> SerializedPackableData:
+        """Extract arrays and Packables from a BaseModel into serializable data and assets.
 
-        Array types are preserved automatically via the per-array metadata.
+        Returns:
+            SerializedPackableData with data dict (refs for arrays) and assets dict
         """
-        return (
-            self.__class__.decode,
-            (self.encode(),),
+        if not isinstance(obj, BaseModel):
+            raise TypeError(f"extract() requires a Pydantic BaseModel, got {type(obj).__name__}.")
+
+        assets: dict[str, bytes] = {}
+        data: dict[str, Any] = {}
+
+        for field_name in type(obj).model_fields:
+            if hasattr(obj, "__private_attributes__") and field_name in obj.__private_attributes__:
+                continue
+            value = getattr(obj, field_name, None)
+            if value is not None:
+                data[field_name] = SerializationUtils.extract_value(value, assets)
+
+        # Include computed fields (Pydantic v2)
+        for field_name in type(obj).model_computed_fields:
+            value = getattr(obj, field_name, None)
+            if value is not None:
+                data[field_name] = SerializationUtils.extract_value(value, assets)
+
+        return SerializedPackableData(data=data, assets=assets)
+
+    @staticmethod
+    def compute_checksum(
+        obj: Union[bytes, "SerializedPackableData", "Packable", BaseModel],
+    ) -> str:
+        """Compute SHA256 checksum for various types of data.
+
+        Returns:
+            16-character hex string (first 64 bits of SHA256)
+        """
+        if isinstance(obj, bytes):
+            return ChecksumUtils.compute_bytes_checksum(obj)
+
+        if isinstance(obj, SerializedPackableData):
+            return ChecksumUtils.compute_dict_checksum(obj.data, obj.assets)
+
+        if isinstance(obj, Packable):
+            return ChecksumUtils.compute_bytes_checksum(obj.encode())
+
+        if isinstance(obj, BaseModel):
+            extracted = Packable.extract(obj)
+            return ChecksumUtils.compute_dict_checksum(extracted.data, extracted.assets)
+
+        raise TypeError(
+            f"compute_checksum() requires bytes, SerializedPackableData, Packable, or BaseModel, "
+            f"got {type(obj).__name__}"
         )
 
     @staticmethod
+    def reconstruct(
+        model_class: type[TModel],
+        data: dict[str, Any],
+        assets: AssetProvider,
+        array_type: ArrayType | None = None,
+    ) -> Union[TModel, LazyModel[TModel]]:
+        """Reconstruct a Pydantic BaseModel from extracted data and assets.
+
+        If assets is a dict, returns the actual model (eager loading).
+        If assets is a callable or CachedAssetLoader, returns a LazyModel proxy.
+        """
+        if callable(assets) or isinstance(assets, CachedAssetLoader):
+            return LazyModel(model_class, data, assets, array_type)
+
+        resolved_data = SchemaUtils.resolve_refs_with_schema(model_class, data, assets, array_type)
+        return model_class(**resolved_data)
+
+    def __reduce__(self):
+        """Support for pickle serialization."""
+        return (self.__class__.decode, (self.encode(),))
+
+    @staticmethod
     def load_array(
-        source: Union[PathLike, BytesIO],
-        name: str,
-        array_type: Optional[ArrayType] = None
+        source: Union[PathLike, BytesIO], name: str, array_type: ArrayType | None = None
     ) -> Array:
-        """
-        Load a single array from a zip file without loading the entire object.
-
-        Useful for large files where you only need one array.
-
-        Args:
-            source: Path to the zip file or BytesIO buffer
-            name: Array name (e.g., "normals" or "markerIndices.boundary")
-            array_type: Array backend to use ("numpy" or "jax"). If None (default),
-                       uses the array_type stored in the array's metadata.
-
-        Returns:
-            Decoded array (numpy or JAX)
-
-        Raises:
-            KeyError: If array not found in zip
-
-        Example:
-            normals = Mesh.load_array("mesh.zip", "normals")
-        """
+        """Load a single array from a zip file without loading the entire object."""
         if isinstance(source, BytesIO):
             source.seek(0)
-            handler = DataHandler.create(ZipBuffer(source.read()))
+            handler = DataHandler.create(BytesIO(source.read()))
         else:
-            with open(source, "rb") as f:
-                handler = DataHandler.create(ZipBuffer(f.read()))
+            handler = DataHandler.create(BytesIO(Path(source).read_bytes()))
         return ArrayUtils.load_array(handler, name, array_type)
 
     def convert_to(self: TPackable, array_type: ArrayType) -> TPackable:
-        """
-        Create a new Packable with all arrays converted to the specified type.
-
-        Args:
-            array_type: Target array backend ("numpy" or "jax")
-
-        Returns:
-            A new Packable with all arrays converted
-
-        Raises:
-            AssertionError: If JAX is requested but not available
-        """
+        """Create a new Packable with all arrays converted to the specified type."""
         data_copy = self.model_copy(deep=True)
 
         for field_name in data_copy.model_fields_set:
@@ -654,49 +529,3 @@ class Packable(BaseModel):
                 pass
 
         return data_copy
-
-    @staticmethod
-    def _reconstruct_model(data: Dict[str, Any]) -> Any:
-        """Reconstruct BaseModel from serialized dict with __model_class__/__model_module__."""
-        if not isinstance(data, dict):
-            return data
-
-        # Recursively process nested dicts first
-        processed = {k: Packable._reconstruct_model(v) if isinstance(v, dict) else v
-                     for k, v in data.items() if k not in ("__model_class__", "__model_module__")}
-
-        if "__model_class__" not in data:
-            return processed
-
-        try:
-            import importlib
-            module = importlib.import_module(data["__model_module__"])
-            model_class = getattr(module, data["__model_class__"])
-            return model_class(**processed)
-        except (ImportError, AttributeError):
-            return processed
-
-    @staticmethod
-    def _merge_field_data(data: Dict[str, Any], field_data: Dict[str, Any]) -> None:
-        """Merge metadata fields into data, reconstructing BaseModel instances."""
-        for key, value in field_data.items():
-            existing = data.get(key)
-            if not isinstance(value, dict):
-                data[key] = value
-            elif "__model_class__" in value:
-                # Single BaseModel: merge arrays then reconstruct
-                merged = {**value, **
-                          (existing if isinstance(existing, dict) else {})}
-                data[key] = Packable._reconstruct_model(merged)
-            elif isinstance(existing, dict):
-                # Check if dict of BaseModels
-                for subkey, subval in value.items():
-                    if isinstance(subval, dict) and "__model_class__" in subval:
-                        merged = {**subval, **existing.get(subkey, {})}
-                        existing[subkey] = Packable._reconstruct_model(merged)
-                    elif isinstance(subval, dict) and isinstance(existing.get(subkey), dict):
-                        Packable._merge_field_data(existing[subkey], subval)
-                    else:
-                        existing[subkey] = subval
-            else:
-                data[key] = Packable._reconstruct_model(value)

@@ -133,18 +133,24 @@ class SerializationUtils:
         return assets[checksum]
 
     @staticmethod
-    def extract_value(value: Any, assets: dict[str, bytes]) -> Any:
+    def extract_value(
+        value: Any,
+        assets: dict[str, bytes],
+        extensions: dict[str, str] | None = None,
+    ) -> Any:
         """Recursively extract a value, replacing arrays and Packables with refs.
 
         Args:
             value: Value to extract
             assets: Dict to populate with encoded assets
+            extensions: Optional dict to populate with file extensions for ResourceRefs
 
         Returns:
             Extracted value with $ref for arrays/Packables
         """
         # Import here to avoid circular imports
         from ..packable import Packable
+        from ..resource import ResourceRef
 
         if ArrayUtils.is_array(value):
             encoded = ArrayUtils.encode_array(value)
@@ -159,11 +165,26 @@ class SerializationUtils:
             assets[checksum] = encoded
             return {"$ref": checksum}
 
+        if isinstance(value, ResourceRef):
+            # Read file and store as asset - checksum is computed lazily by ResourceRef
+            file_data = value.read_bytes()
+            checksum = value.checksum  # Lazily computed from file data
+            assert checksum is not None, "ResourceRef must have a checksum after reading bytes"
+            assets[checksum] = file_data
+            result = {"$ref": checksum}
+            if value.ext:
+                result["ext"] = value.ext
+                if extensions is not None:
+                    extensions[checksum] = value.ext
+            return result
+
         if isinstance(value, dict):
-            return {k: SerializationUtils.extract_value(v, assets) for k, v in value.items()}
+            return {
+                k: SerializationUtils.extract_value(v, assets, extensions) for k, v in value.items()
+            }
 
         if isinstance(value, (list, tuple)):
-            result = [SerializationUtils.extract_value(v, assets) for v in value]
+            result = [SerializationUtils.extract_value(v, assets, extensions) for v in value]
             return result if isinstance(value, list) else tuple(result)
 
         if isinstance(value, BaseModel):
@@ -171,7 +192,9 @@ class SerializationUtils:
             for name in value.model_fields:
                 field_value = getattr(value, name, None)
                 if field_value is not None:
-                    extracted[name] = SerializationUtils.extract_value(field_value, assets)
+                    extracted[name] = SerializationUtils.extract_value(
+                        field_value, assets, extensions
+                    )
             return extracted
 
         return value

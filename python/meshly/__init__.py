@@ -13,47 +13,43 @@ meshoptimizer, including:
 7. CellTypeUtils for VTK cell type conversions and edge topology extraction
 """
 
-from .packable import (
-    Packable,
-    PackableMetadata,
-    SerializedPackableData,
-)
-
-from .mesh import (
-    Mesh,
-)
-
 from .array import (
-    EncodedArray,
-    ArrayMetadata,
-    ArrayUtils,
-    ArrayType,
     Array,
+    ArrayMetadata,
+    ArrayType,
+    ArrayUtils,
+    EncodedArray,
 )
-
 from .cell_types import (
     CellType,
-    VTKCellType,
     CellTypeUtils,
+    VTKCellType,
 )
-
-from .utils import (
-    ElementUtils,
-    MeshUtils,
-)
-
 from .data_handler import (
     AssetProvider,
     CachedAssetLoader,
     DataHandler,
 )
-
+from .mesh import (
+    Mesh,
+)
+from .packable import ExtractedAssets, LazyModel, Packable, PackableMetadata, SerializedPackableData
+from .resource import (
+    Resource,
+    ResourceRef,
+)
+from .utils import (
+    ElementUtils,
+    MeshUtils,
+)
 
 __all__ = [
     # Packable base class
     "Packable",
     "PackableMetadata",
     "SerializedPackableData",
+    "ExtractedAssets",
+    "LazyModel",
     "ArrayType",
     # Data handlers
     "AssetProvider",
@@ -70,6 +66,9 @@ __all__ = [
     "CellType",
     "VTKCellType",
     "CellTypeUtils",
+    # Resource handling
+    "Resource",
+    "ResourceRef",
     # Element utilities
     "ElementUtils",
     # Mesh operations

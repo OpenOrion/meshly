@@ -19,6 +19,9 @@ pip install meshly
 - **`DataHandler`**: Unified interface for reading and writing files or zip archives
 - **`CachedAssetLoader`**: Asset loader with disk cache for content-addressable storage
 - **`LazyModel`**: Lazy proxy that defers asset loading until field access
+- **`ResourceRef` / `Resource`**: File reference that serializes by content checksum
+- **`SerializedPackableData`**: Result of extracting a Packable (data + assets)
+- **`ExtractedAssets`**: Result of extracting assets from multiple values
 
 ### Key Capabilities
 
@@ -222,6 +225,88 @@ json.dumps(extracted.data)  # Works!
 # Reconstruct from data + assets (eager loading)
 rebuilt = Packable.reconstruct(SimulationResult, extracted.data, extracted.assets)
 assert rebuilt.time == 0.5
+```
+
+### Resource References for File Handling
+
+Use `ResourceRef` (or `Resource` alias) to include file paths as Pydantic fields that automatically serialize by content checksum:
+
+```python
+from meshly import Packable, Resource, ResourceRef
+from pydantic import BaseModel
+
+class SimulationCase(BaseModel):
+    name: str
+    geometry: Resource      # File path that gets serialized by checksum
+    config: Resource
+    description: str
+
+# Create with file paths
+case = SimulationCase(
+    name="wind_tunnel",
+    geometry="models/wing.stl",
+    config="configs/turbulent.json",
+    description="High-speed flow analysis"
+)
+
+# Extract automatically reads files and computes checksums
+extracted = Packable.extract(case)
+# extracted.data = {
+#     "name": "wind_tunnel",
+#     "geometry": {"$ref": "a1b2c3d4", "ext": ".stl"},
+#     "config": {"$ref": "e5f6g7h8", "ext": ".json"},
+#     "description": "High-speed flow analysis"
+# }
+# extracted.assets = {
+#     "a1b2c3d4": <stl file bytes>,
+#     "e5f6g7h8": <json file bytes>
+# }
+
+# Reconstruct creates ResourceRef instances with checksums
+case2 = Packable.reconstruct(SimulationCase, extracted.data, extracted.assets)
+assert isinstance(case2.geometry, ResourceRef)
+assert case2.geometry.checksum == "a1b2c3d4"
+assert case2.geometry.ext == ".stl"
+
+# ResourceRef can resolve paths from MESHLY_RESOURCE_PATH environment variable
+# (useful for remote execution where files are cached by checksum)
+path = case2.geometry.resolve_path()  # Finds file by checksum
+data = case2.geometry.read_bytes()    # Read file contents
+```
+
+### Extracting Assets from Multiple Values
+
+Use `extract_assets()` to extract all assets from multiple values at once - useful for collecting all dependencies before remote execution:
+
+```python
+from meshly import Packable
+import numpy as np
+
+# Example: extracting assets from function arguments
+geometry = ResourceRef(path="model.stl")
+initial_temp = np.array([300.0, 301.0, 302.0], dtype=np.float32)
+config = {"solver": "cfd", "timesteps": 100}
+
+# Extract all assets in one call
+extracted = Packable.extract_assets(geometry, initial_temp, config)
+# extracted.assets = {
+#     "checksum1": <stl file bytes>,
+#     "checksum2": <encoded temperature array>
+# }
+# extracted.extensions = {
+#     "checksum1": ".stl"
+# }
+
+# Works with any combination of arrays, Packables, ResourceRefs, BaseModels, dicts, lists
+class Pipeline(Packable):
+    steps: list[np.ndarray]
+
+pipeline = Pipeline(steps=[np.array([1, 2]), np.array([3, 4])])
+user_files = [ResourceRef(path="input1.dat"), ResourceRef(path="input2.dat")]
+
+# Extract from all of them
+all_assets = Packable.extract_assets(pipeline, user_files, geometry, initial_temp)
+# Automatically deduplicates identical content by checksum
 ```
 
 ### Lazy Loading with Callable Assets
@@ -533,6 +618,79 @@ class Packable(BaseModel):
     # Custom field encoding (override in subclasses)
     @classmethod
     def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]
+    
+    # Extract/Reconstruct for content-addressable storage
+    @staticmethod
+    def extract(obj: BaseModel) -> SerializedPackableData
+    @staticmethod
+    def reconstruct(model_class, data, assets, array_type=None) -> T | LazyModel[T]
+    
+    # Extract assets from multiple values
+    @staticmethod
+    def extract_assets(*values) -> ExtractedAssets
+    
+    # Checksum computation
+    @staticmethod
+    def compute_checksum(obj) -> str
+```
+
+### SerializedPackableData
+
+```python
+@dataclass
+class SerializedPackableData:
+    """Result of extracting a Packable for serialization."""
+    data: Dict[str, Any]           # Serializable dict with $ref for arrays/Packables
+    assets: Dict[str, bytes]       # Map of checksum -> encoded bytes
+```
+
+### ExtractedAssets
+
+```python
+@dataclass
+class ExtractedAssets:
+    """Result of extracting assets from values.
+    
+    Contains binary assets and their file extensions (for ResourceRefs).
+    """
+    assets: Dict[str, bytes]       # Map of checksum -> encoded bytes
+    extensions: Dict[str, str]     # Map of checksum -> file extension (e.g., '.stl')
+```
+
+### LazyModel
+
+```python
+class LazyModel(Generic[T]):
+    """Lazy proxy for a Pydantic BaseModel that defers asset loading.
+    
+    Returned by Packable.reconstruct() when assets is a callable or CachedAssetLoader.
+    """
+    def __getattr__(self, name: str) -> Any  # Loads field on first access
+    def resolve(self) -> T                    # Returns fully-loaded model
+    def __repr__(self) -> str                 # Shows loaded/pending fields
+```
+
+### ResourceRef (Resource)
+
+```python
+class ResourceRef(BaseModel):
+    """Reference to a file resource that serializes by content checksum.
+    
+    Use as a Pydantic field type for file paths. When extracted via Packable.extract(),
+    files are read and stored by checksum. When reconstructed, files can be retrieved
+    from a cache directory via MESHLY_RESOURCE_PATH environment variable.
+    """
+    path: Optional[str]                  # Original file path (if available)
+    ext: Optional[str]                   # File extension (e.g., '.stl')
+    
+    @cached_property
+    def checksum(self) -> Optional[str]  # Computed from file content
+    
+    def read_bytes(self) -> bytes        # Read file content
+    def resolve_path(self) -> Path       # Resolve file path (checks cache)
+    
+# Alias for convenience
+Resource = ResourceRef
 ```
 
 ### Mesh

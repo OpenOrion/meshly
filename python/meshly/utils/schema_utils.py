@@ -87,10 +87,19 @@ class SchemaUtils:
         # Handle $ref
         if isinstance(value, dict) and "$ref" in value:
             checksum = value["$ref"]
-            asset_bytes = SerializationUtils.get_asset(assets, checksum)
 
             expected_type = SchemaUtils.unwrap_optional(expected_type)
             origin = get_origin(expected_type)
+
+            # Check if it's a ResourceRef - don't unpack, just return the dict
+            # The ResourceRef validator will handle it
+            from ..resource import ResourceRef
+
+            if expected_type is ResourceRef:
+                return value
+
+            # Get asset bytes for Packable or array
+            asset_bytes = SerializationUtils.get_asset(assets, checksum)
 
             if isinstance(expected_type, type) and issubclass(expected_type, Packable):
                 return expected_type.decode(asset_bytes, array_type)
@@ -129,8 +138,7 @@ class SchemaUtils:
                 elem_type = Any
 
             result = [
-                SchemaUtils.resolve_value_with_type(v, elem_type, assets, array_type)
-                for v in value
+                SchemaUtils.resolve_value_with_type(v, elem_type, assets, array_type) for v in value
             ]
             return result if isinstance(value, list) else tuple(result)
 
@@ -215,8 +223,7 @@ class SchemaUtils:
                 args = get_args(expected_type)
                 elem_type = args[0] if args else Any
                 result = [
-                    SchemaUtils.merge_value_with_schema(v, elem_type, None)
-                    for v in metadata_value
+                    SchemaUtils.merge_value_with_schema(v, elem_type, None) for v in metadata_value
                 ]
                 return result if origin is list else tuple(result)
             return metadata_value

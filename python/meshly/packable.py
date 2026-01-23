@@ -55,6 +55,19 @@ class SerializedPackableData:
     """Map of checksum -> encoded bytes for all arrays"""
 
 
+@dataclass
+class ExtractedAssets:
+    """Result of extracting assets from values.
+
+    Contains the binary assets and their file extensions (for ResourceRefs).
+    """
+
+    assets: dict[str, bytes]
+    """Map of checksum -> encoded bytes"""
+    extensions: dict[str, str]
+    """Map of checksum -> file extension (e.g., '.stl')"""
+
+
 class LazyModel(Generic[TModel]):
     """Lazy proxy for a Pydantic BaseModel that defers asset loading until field access.
 
@@ -498,6 +511,35 @@ class Packable(BaseModel):
 
         resolved_data = SchemaUtils.resolve_refs_with_schema(model_class, data, assets, array_type)
         return model_class(**resolved_data)
+
+    @staticmethod
+    def extract_assets(*values: Any) -> ExtractedAssets:
+        """Extract all assets from one or more values.
+
+        Recursively finds all ResourceRefs, Packables, and arrays in the given values
+        and returns their assets with extensions.
+
+        This is useful for extracting assets from function arguments before remote execution,
+        ensuring all referenced files are available on the remote side.
+
+        Args:
+            *values: Any values to extract assets from (BaseModels, dicts, lists, tuples, etc.)
+
+        Returns:
+            ExtractedAssets with assets dict and extensions dict
+
+        Example:
+            # Extract assets from a Pipeline and a ResourceRef
+            extracted = Packable.extract_assets(pipeline, resource_ref)
+
+            # Extract assets from function args
+            extracted = Packable.extract_assets(*fn.args, *fn.kwargs.values())
+        """
+        assets: dict[str, bytes] = {}
+        extensions: dict[str, str] = {}
+        for value in values:
+            SerializationUtils.extract_value(value, assets, extensions)
+        return ExtractedAssets(assets=assets, extensions=extensions)
 
     def __reduce__(self):
         """Support for pickle serialization."""

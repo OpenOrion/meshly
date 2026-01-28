@@ -641,7 +641,9 @@ class Mesh(Packable):
 
         return result_mesh
 
-    def _create_metadata(self, field_data: Dict[str, Any]) -> MeshMetadata:
+    def _create_metadata(
+        self, field_data: Dict[str, Any], packable_refs: Dict[str, str] | None = None
+    ) -> MeshMetadata:
         """Create MeshMetadata with mesh size info for meshoptimizer decoding."""
         mesh_size = MeshSizeInfo(
             vertex_count=self.vertex_count,
@@ -653,6 +655,7 @@ class Mesh(Packable):
             class_name=self.__class__.__name__,
             module_name=self.__class__.__module__,
             field_data=field_data,
+            packable_refs=packable_refs or {},
             mesh_size=mesh_size,
             array_type=ArrayUtils.detect_array_type(self.vertices),
         )

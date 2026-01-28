@@ -605,11 +605,11 @@ class TestExtractReconstruct:
             np.testing.assert_array_almost_equal(vel2, original.velocity)
 
 
-class TestNestedPackableRejection:
-    """Test that direct Packable fields are rejected, but nested in dicts is allowed."""
+class TestNestedPackables:
+    """Test that nested Packable fields are supported."""
 
-    def test_direct_nested_packable_rejected(self):
-        """Test that a Packable field containing another Packable is rejected."""
+    def test_direct_nested_packable_encode_decode(self):
+        """Test that a Packable field containing another Packable can be saved and loaded."""
         
         class InnerPackable(Packable):
             label: str
@@ -624,8 +624,47 @@ class TestNestedPackableRejection:
             data=np.array([1.0, 2.0], dtype=np.float32)
         )
         
-        with pytest.raises(TypeError, match="Direct Packable fields are not allowed"):
-            OuterPackable(name="outer", inner=inner)
+        outer = OuterPackable(name="outer", inner=inner)
+        assert outer.inner is not None
+        assert outer.inner.label == "inner"
+        
+        # Test encode/decode roundtrip
+        encoded = outer.encode()
+        decoded = OuterPackable.decode(encoded)
+        
+        assert decoded.name == "outer"
+        assert decoded.inner is not None
+        assert decoded.inner.label == "inner"
+        np.testing.assert_array_almost_equal(decoded.inner.data, inner.data)
+
+    def test_nested_packable_save_load_zip(self):
+        """Test saving and loading nested Packables from zip file."""
+        
+        class InnerPackable(Packable):
+            label: str
+            data: np.ndarray
+        
+        class OuterPackable(Packable):
+            name: str
+            inner: Optional[InnerPackable] = None
+        
+        inner = InnerPackable(
+            label="inner",
+            data=np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        )
+        
+        original = OuterPackable(name="outer", inner=inner)
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "nested.zip")
+            original.save_to_zip(path)
+            
+            loaded = OuterPackable.load_from_zip(path)
+            
+            assert loaded.name == original.name
+            assert loaded.inner is not None
+            assert loaded.inner.label == original.inner.label
+            np.testing.assert_array_almost_equal(loaded.inner.data, original.inner.data)
 
     def test_dict_of_packables_allowed(self):
         """Test that Dict[str, Packable] is allowed (Packable inside typed dict)."""

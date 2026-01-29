@@ -195,6 +195,9 @@ class SerializationUtils:
                     extracted[name] = SerializationUtils.extract_value(
                         field_value, assets, extensions
                     )
+            # Include $module for nested BaseModel reconstruction
+            value_class = type(value)
+            extracted["$module"] = f"{value_class.__module__}.{value_class.__qualname__}"
             return extracted
 
         return value

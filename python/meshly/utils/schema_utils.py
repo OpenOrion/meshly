@@ -124,6 +124,20 @@ class SchemaUtils:
                 )
                 return expected_type(**resolved)
 
+            # Handle nested BaseModel with $module (for Dict[str, Any] cases)
+            if "$module" in value:
+                import importlib
+                module_path, class_name = value["$module"].rsplit(".", 1)
+                module = importlib.import_module(module_path)
+                model_class = getattr(module, class_name)
+                if isinstance(model_class, type) and issubclass(model_class, BaseModel):
+                    # Remove $module before resolving
+                    value_copy = {k: v for k, v in value.items() if k != "$module"}
+                    resolved = SchemaUtils.resolve_refs_with_schema(
+                        model_class, value_copy, assets, array_type
+                    )
+                    return model_class(**resolved)
+
             return value
 
         # Handle lists/tuples

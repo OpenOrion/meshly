@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
-from meshly import Packable, Resource, ResourceRef
+from meshly import Packable, ResourceRef
 from meshly.packable import ExtractedAssets
 
 
@@ -261,7 +261,7 @@ class TestExtractAssets:
 
         try:
             # Simulate function arguments
-            def simulate(geometry: Resource, initial_temp: np.ndarray, config: dict):
+            def simulate(geometry: ResourceRef, initial_temp: np.ndarray, config: dict):
                 pass
 
             # Create args

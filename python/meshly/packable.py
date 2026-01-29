@@ -47,6 +47,9 @@ class SerializedPackableData:
 
     Contains the serializable data dict with checksum references,
     plus the encoded assets (arrays as bytes).
+    
+    The data dict may contain a reserved key '$module' with the fully qualified
+    class name for automatic class resolution during reconstruction.
     """
 
     data: dict[str, Any]
@@ -443,8 +446,14 @@ class Packable(BaseModel):
     def extract(obj: BaseModel) -> SerializedPackableData:
         """Extract arrays and Packables from a BaseModel into serializable data and assets.
 
+        The module name is always included for potential class resolution during reconstruction,
+        but it's only used if explicitly opted-in via use_stored_class=True for security.
+
+        Args:
+            obj: BaseModel instance to extract
+
         Returns:
-            SerializedPackableData with data dict (refs for arrays) and assets dict
+            SerializedPackableData with data dict (refs for arrays), assets dict, and module name
         """
         if not isinstance(obj, BaseModel):
             raise TypeError(f"extract() requires a Pydantic BaseModel, got {type(obj).__name__}.")
@@ -464,6 +473,10 @@ class Packable(BaseModel):
             value = getattr(obj, field_name, None)
             if value is not None:
                 data[field_name] = SerializationUtils.extract_value(value, assets)
+
+        # Always include module name as reserved key for potential reconstruction
+        obj_class = type(obj)
+        data["$module"] = f"{obj_class.__module__}.{obj_class.__qualname__}"
 
         return SerializedPackableData(data=data, assets=assets)
 
@@ -496,17 +509,54 @@ class Packable(BaseModel):
 
     @staticmethod
     def reconstruct(
-        model_class: type[TModel],
-        data: dict[str, Any],
-        assets: AssetProvider,
+        model_class: type[TModel] | None,
+        data: dict[str, Any] | SerializedPackableData,
+        assets: AssetProvider | None = None,
         array_type: ArrayType | None = None,
+        use_stored_class: bool = False,
+        lazy: bool = False,
     ) -> Union[TModel, LazyModel[TModel]]:
         """Reconstruct a Pydantic BaseModel from extracted data and assets.
 
-        If assets is a dict, returns the actual model (eager loading).
-        If assets is a callable or CachedAssetLoader, returns a LazyModel proxy.
+        Args:
+            model_class: The class to reconstruct. Can be None if use_stored_class=True
+                        and '$module' key is present in the data.
+            data: Either a dict or SerializedPackableData containing the extracted data.
+            assets: Asset provider (dict, callable, or CachedAssetLoader). If data is
+                   SerializedPackableData and assets is None, uses data.assets.
+            array_type: Optional array type for conversion.
+            use_stored_class: If True, allows using '$module' key from data dict
+                            to resolve the class. Default is False for security.
+            lazy: If True, returns a LazyModel that defers asset loading until field access.
+                 Default is False for eager loading.
+
+        Returns:
+            Reconstructed model instance or LazyModel proxy depending on lazy parameter.
         """
-        if callable(assets) or isinstance(assets, CachedAssetLoader):
+        # Handle SerializedPackableData input
+        if isinstance(data, SerializedPackableData):
+            if assets is None:
+                assets = data.assets
+            data = data.data
+        
+        # Handle stored class from $module reserved key
+        if model_class is None and use_stored_class and "$module" in data:
+            # Dynamically import and resolve the class
+            import importlib
+            module_path, class_name = data["$module"].rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            model_class = getattr(module, class_name)
+
+        if model_class is None:
+            raise TypeError(
+                "model_class is required. To use stored class information, pass "
+                "use_stored_class=True and ensure '$module' key is present in the data."
+            )
+
+        if assets is None:
+            raise TypeError("assets is required when data is a dict")
+
+        if lazy:
             return LazyModel(model_class, data, assets, array_type)
 
         resolved_data = SchemaUtils.resolve_refs_with_schema(model_class, data, assets, array_type)

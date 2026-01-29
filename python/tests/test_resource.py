@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from meshly import Packable, Resource, ResourceRef
+from meshly import Packable, ResourceRef
 
 
 def test_resource_ref_from_path():

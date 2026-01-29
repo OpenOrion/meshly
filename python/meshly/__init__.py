@@ -35,7 +35,6 @@ from .mesh import (
 )
 from .packable import ExtractedAssets, LazyModel, Packable, PackableMetadata, SerializedPackableData
 from .resource import (
-    Resource,
     ResourceRef,
 )
 from .utils import (
@@ -67,7 +66,6 @@ __all__ = [
     "VTKCellType",
     "CellTypeUtils",
     # Resource handling
-    "Resource",
     "ResourceRef",
     # Element utilities
     "ElementUtils",

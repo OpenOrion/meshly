@@ -229,16 +229,16 @@ assert rebuilt.time == 0.5
 
 ### Resource References for File Handling
 
-Use `ResourceRef` (or `Resource` alias) to include file paths as Pydantic fields that automatically serialize by content checksum:
+Use `ResourceRef` to include file paths as Pydantic fields that automatically serialize by content checksum:
 
 ```python
-from meshly import Packable, Resource, ResourceRef
+from meshly import Packable, ResourceRef
 from pydantic import BaseModel
 
 class SimulationCase(BaseModel):
     name: str
-    geometry: Resource      # File path that gets serialized by checksum
-    config: Resource
+    geometry: ResourceRef   # File path that gets serialized by checksum
+    config: ResourceRef
     description: str
 
 # Create with file paths
@@ -670,7 +670,7 @@ class LazyModel(Generic[T]):
     def __repr__(self) -> str                 # Shows loaded/pending fields
 ```
 
-### ResourceRef (Resource)
+### ResourceRef
 
 ```python
 class ResourceRef(BaseModel):
@@ -683,14 +683,11 @@ class ResourceRef(BaseModel):
     path: Optional[str]                  # Original file path (if available)
     ext: Optional[str]                   # File extension (e.g., '.stl')
     
-    @cached_property
+    @property
     def checksum(self) -> Optional[str]  # Computed from file content
     
     def read_bytes(self) -> bytes        # Read file content
     def resolve_path(self) -> Path       # Resolve file path (checks cache)
-    
-# Alias for convenience
-Resource = ResourceRef
 ```
 
 ### Mesh

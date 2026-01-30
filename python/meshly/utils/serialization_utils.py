@@ -76,7 +76,16 @@ class SerializationUtils:
         if callable(assets):
             result = assets(checksum)
             if inspect.isawaitable(result):
-                result = asyncio.get_event_loop().run_until_complete(result)
+                try:
+                    loop = asyncio.get_running_loop()
+                    # We're inside a running event loop - create a new thread to run the coroutine
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, result)
+                        result = future.result()
+                except RuntimeError:
+                    # No running event loop, safe to use run_until_complete
+                    result = asyncio.get_event_loop().run_until_complete(result)
             return result
         if checksum not in assets:
             raise KeyError(f"Missing asset with checksum '{checksum}'")
@@ -183,18 +192,21 @@ class SerializationUtils:
                 k: SerializationUtils.extract_value(v, assets, extensions) for k, v in value.items()
             }
 
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, (list, tuple, set)):
             result = [SerializationUtils.extract_value(v, assets, extensions) for v in value]
-            return result if isinstance(value, list) else tuple(result)
+            if isinstance(value, tuple):
+                return tuple(result)
+            elif isinstance(value, set):
+                # Sets are converted to lists for JSON serialization
+                return result
+            return result
 
         if isinstance(value, BaseModel):
+            # Use Pydantic's model_dump to respect field exclusions and serializers
+            dumped = value.model_dump(mode='python')
             extracted = {}
-            for name in value.model_fields:
-                field_value = getattr(value, name, None)
-                if field_value is not None:
-                    extracted[name] = SerializationUtils.extract_value(
-                        field_value, assets, extensions
-                    )
+            for k, v in dumped.items():
+                extracted[k] = SerializationUtils.extract_value(v, assets, extensions)
             # Include $module for nested BaseModel reconstruction
             value_class = type(value)
             extracted["$module"] = f"{value_class.__module__}.{value_class.__qualname__}"

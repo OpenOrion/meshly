@@ -120,8 +120,11 @@ class ResourceRef(BaseModel):
             f"ResourceRef has no readable path. Path: {self.path}, Checksum: {self._explicit_checksum}, Ext: {self.ext}"
         )
 
-    def resolve_path(self) -> Path:
+    def resolve_path(self, resource_path: Optional[Path] = None) -> Path:
         """Get the file path for reading.
+
+        Args:
+            resource_path: Optional resource directory path to search for cached files
 
         Returns:
             Path object
@@ -137,19 +140,17 @@ class ResourceRef(BaseModel):
 
         # Try to find in resource cache by checksum
         cs = self._explicit_checksum or self.checksum
-        if cs:
-            # Check MESHLY_RESOURCE_PATH environment variable (set by container/server executor)
-            resource_path = os.environ.get("MESHLY_RESOURCE_PATH")
-            if resource_path:
-                # Include extension if available (e.g., checksum.stl)
-                filename = cs + (self.ext or "")
-                cache_path = Path(resource_path) / filename
+        if cs and resource_path:
+            # Try with extension first (e.g., checksum.stl)
+            if self.ext:
+                cache_path = resource_path / (cs + self.ext)
                 if cache_path.exists():
                     return cache_path
+            
+            # Try without extension (server may save as just checksum)
+            cache_path = resource_path / cs
+            if cache_path.exists():
+                return cache_path
 
         raise ValueError(f"ResourceRef has no path (checksum={cs})")
 
-
-# For convenience, export Resource as alias to ResourceRef
-# Users can use either Resource or ResourceRef as type annotation
-Resource = ResourceRef

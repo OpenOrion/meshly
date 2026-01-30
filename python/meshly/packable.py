@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Generic, TypeVar, Union
+from typing import Any, Generic, TypeVar, Union, cast
 
 from pydantic import BaseModel, Field
 
@@ -56,6 +56,39 @@ class SerializedPackableData:
     """Serializable dict with primitive fields and checksum refs for arrays"""
     assets: dict[str, bytes]
     """Map of checksum -> encoded bytes for all arrays"""
+
+    @property
+    def checksums(self) -> list[str]:
+        """Get list of all asset checksums."""
+        return list(self.assets.keys())
+
+    @staticmethod
+    def extract_checksums(data: dict[str, Any]) -> list[str]:
+        """Extract all $ref checksums from a serialized data dict.
+
+        Recursively walks the data structure to find all {"$ref": checksum} entries.
+
+        Args:
+            data: Serialized data dict with $ref references
+
+        Returns:
+            List of all unique checksums found
+        """
+        checksums: set[str] = set()
+
+        def _extract(obj: Any) -> None:
+            if isinstance(obj, dict):
+                if "$ref" in obj:
+                    checksums.add(obj["$ref"])
+                else:
+                    for v in obj.values():
+                        _extract(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _extract(item)
+
+        _extract(data)
+        return list(checksums)
 
 
 @dataclass
@@ -507,28 +540,26 @@ class Packable(BaseModel):
             f"got {type(obj).__name__}"
         )
 
-    @staticmethod
+    @classmethod
     def reconstruct(
-        model_class: type[TModel] | None,
+        cls,
         data: dict[str, Any] | SerializedPackableData,
         assets: AssetProvider | None = None,
         array_type: ArrayType | None = None,
-        use_stored_class: bool = False,
+        allowed_classes: list[type[BaseModel]] | None = None,
         lazy: bool = False,
-    ) -> Union[TModel, LazyModel[TModel]]:
+    ):
         """Reconstruct a Pydantic BaseModel from extracted data and assets.
 
         Args:
-            model_class: The class to reconstruct. Can be None if use_stored_class=True
-                        and '$module' key is present in the data.
             data: Either a dict or SerializedPackableData containing the extracted data.
             assets: Asset provider (dict, callable, or CachedAssetLoader). If data is
-                   SerializedPackableData and assets is None, uses data.assets.
+                    SerializedPackableData and assets is None, uses data.assets.
             array_type: Optional array type for conversion.
-            use_stored_class: If True, allows using '$module' key from data dict
-                            to resolve the class. Default is False for security.
+            allowed_classes: List of allowed BaseModel classes. If provided and '$module' key
+                            is present in data, will use the matching class if found.
             lazy: If True, returns a LazyModel that defers asset loading until field access.
-                 Default is False for eager loading.
+                    Default is False for eager loading.
 
         Returns:
             Reconstructed model instance or LazyModel proxy depending on lazy parameter.
@@ -539,18 +570,30 @@ class Packable(BaseModel):
                 assets = data.assets
             data = data.data
         
-        # Handle stored class from $module reserved key
-        if model_class is None and use_stored_class and "$module" in data:
-            # Dynamically import and resolve the class
-            import importlib
-            module_path, class_name = data["$module"].rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            model_class = getattr(module, class_name)
+        # Start with cls as the model class
+        model_class = cls if cls is not Packable else None
+        
+        # Try to resolve from $module if cls is base Packable or doesn't match stored module
+        if "$module" in data:
+            module_path = data["$module"]
+            cls_module_path = f"{cls.__module__}.{cls.__qualname__}"
+            
+            # If cls matches the stored module, use cls
+            if cls is not Packable and cls_module_path == module_path:
+                model_class = cls
+            # Otherwise, try allowed_classes fallback
+            elif allowed_classes:
+                for allowed_cls in allowed_classes:
+                    allowed_module_path = f"{allowed_cls.__module__}.{allowed_cls.__qualname__}"
+                    if allowed_module_path == module_path:
+                        model_class = allowed_cls
+                        break
 
         if model_class is None:
             raise TypeError(
-                "model_class is required. To use stored class information, pass "
-                "use_stored_class=True and ensure '$module' key is present in the data."
+                "Cannot determine model class. Either call on a specific subclass "
+                "(e.g., MyModel.reconstruct(...)) or pass allowed_classes with the "
+                "class types you trust and ensure '$module' key is present in the data."
             )
 
         if assets is None:

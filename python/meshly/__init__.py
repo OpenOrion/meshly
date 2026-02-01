@@ -68,8 +68,6 @@ __all__ = [
     "Array",
     "VertexBuffer",
     "IndexSequence",
-    "PackableRefMetadata",
-    "ResourceRefMetadata",
     "ArrayRefMetadata",
     "EncodedArray",
     "EncodingType",

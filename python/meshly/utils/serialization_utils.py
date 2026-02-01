@@ -6,7 +6,7 @@ from typing import Any, Union
 
 from pydantic import BaseModel
 
-from ..array import ArrayUtils, ResourceRefMetadata, PackableRefMetadata
+from ..array import ArrayRefMetadata, ArrayType, ArrayUtils, ResourceRefMetadata, PackableRefMetadata
 from ..constants import ExportConstants
 from ..data_handler import AssetProvider, CachedAssetLoader
 from .checksum_utils import ChecksumUtils
@@ -190,11 +190,16 @@ class SerializationUtils:
             return result
 
         if isinstance(value, BaseModel):
-            # Use Pydantic's model_dump to respect field exclusions and serializers
-            dumped = value.model_dump(mode='python')
+            # Iterate through actual field values to preserve type information
+            # (model_dump would lose Packable types, converting them to dicts)
             extracted = {}
-            for k, v in dumped.items():
-                extracted[k] = SerializationUtils.extract_value(v, assets, extensions)
+            for field_name in type(value).model_fields:
+                field_value = getattr(value, field_name, None)
+                if field_value is not None:
+                    # Use extract_field_value to respect type annotations
+                    extracted[field_name] = SerializationUtils.extract_field_value(
+                        value, field_name, field_value, assets, extensions
+                    )
             # Include $module for nested BaseModel reconstruction
             value_class = type(value)
             extracted["$module"] = f"{value_class.__module__}.{value_class.__qualname__}"

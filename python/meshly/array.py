@@ -7,11 +7,19 @@ encoding functions and storing/loading them as encoded data.
 import ctypes
 import json
 from io import BytesIO
-from typing import Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
 import numpy as np
 from meshoptimizer._loader import lib
-from pydantic import BaseModel, Field
+from meshoptimizer import (
+    encode_vertex_buffer,
+    encode_index_sequence,
+    decode_vertex_buffer,
+    decode_index_sequence,
+)
+from pydantic import BaseModel, Field, GetCoreSchemaHandler, GetJsonSchemaHandler
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema, core_schema
 
 from .common import PathLike
 from .data_handler import DataHandler
@@ -20,15 +28,111 @@ from .data_handler import DataHandler
 try:
     import jax.numpy as jnp
     HAS_JAX = True
-    JaxArray = Union[np.ndarray, jnp.ndarray]
 
 except ImportError:
     jnp = None
     HAS_JAX = False
-    JaxArray = np.ndarray
 
-Array = Union[np.ndarray, JaxArray]
 ArrayType = Literal["numpy", "jax"]
+
+# Encoding types for arrays (public API)
+EncodingType = Literal["array", "vertex_buffer", "index_sequence"]
+
+
+class _ArrayAnnotation:
+    """Pydantic annotation for numpy arrays with encoding hints.
+    
+    Used with Annotated to create typed array fields that generate
+    proper JSON schemas with encoding information.
+    """
+    
+    def __init__(self, encoding: EncodingType = "array"):
+        self.encoding = encoding
+    
+    def __get_pydantic_core_schema__(
+        self, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        """Return core schema that accepts numpy/jax arrays."""
+        return core_schema.is_instance_schema(np.ndarray)
+    
+    def __get_pydantic_json_schema__(
+        self, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Return JSON schema with type as the encoding."""
+        return {"type": self.encoding}
+    
+    def __hash__(self):
+        return hash(self.encoding)
+    
+    def __eq__(self, other):
+        return isinstance(other, _ArrayAnnotation) and self.encoding == other.encoding
+
+
+# Annotated array types for use in Pydantic models
+Array = Annotated[np.ndarray, _ArrayAnnotation("array")]
+"""Standard array encoding (meshoptimizer generic vertex buffer)."""
+
+VertexBuffer = Annotated[np.ndarray, _ArrayAnnotation("vertex_buffer")]
+"""Meshoptimizer vertex buffer encoding (optimized for 3D vertex data)."""
+
+IndexSequence = Annotated[np.ndarray, _ArrayAnnotation("index_sequence")]
+"""Meshoptimizer index sequence encoding (optimized for mesh indices)."""
+
+
+class ArrayRefMetadata(BaseModel):
+    """Metadata for array $ref objects in data.json.
+    
+    Contains all instance-specific information needed to decode an array.
+    The encoding type comes from schema.json, not from this metadata.
+    
+    Example $ref in data.json:
+        {"$ref": "abc123", "dtype": "float32", "shape": [100, 3], "vertex_count": 100, "vertex_size": 12}
+    """
+    
+    ref: Optional[str] = Field(None, alias="$ref", description="Asset checksum reference")
+    dtype: str = Field(..., description="NumPy dtype string (e.g., 'float32', 'uint32')")
+    shape: list[int] = Field(..., description="Array shape")
+    
+    # For standard array encoding
+    itemsize: Optional[int] = Field(None, description="Size of each item in bytes (for array encoding)")
+    
+    # For vertex_buffer encoding
+    vertex_count: Optional[int] = Field(None, description="Number of vertices (for vertex_buffer)")
+    vertex_size: Optional[int] = Field(None, description="Size of each vertex in bytes (for vertex_buffer)")
+    
+    # For index_sequence encoding
+    index_count: Optional[int] = Field(None, description="Number of indices (for index_sequence)")
+    
+    model_config = {"populate_by_name": True}
+
+
+class ResourceRefMetadata(BaseModel):
+    """Metadata for resource $ref objects in data.json.
+    
+    Resources are gzip-compressed file data.
+    
+    Example $ref in data.json:
+        {"$ref": "abc123", "name": "material.mtl"}
+    """
+    
+    ref: str = Field(..., alias="$ref", description="Asset checksum reference")
+    name: Optional[str] = Field(None, description="Original filename (e.g., 'material.mtl')")
+    
+    model_config = {"populate_by_name": True}
+
+
+class PackableRefMetadata(BaseModel):
+    """Metadata for self-contained packable $ref objects in data.json.
+    
+    Self-contained packables are encoded as zip files.
+    
+    Example $ref in data.json:
+        {"$ref": "abc123"}
+    """
+    
+    ref: str = Field(..., alias="$ref", description="Asset checksum reference")
+    
+    model_config = {"populate_by_name": True}
 
 
 class ArrayMetadata(BaseModel):
@@ -70,6 +174,44 @@ class EncodedArray(BaseModel):
 
 class ArrayUtils:
     """Utility class for encoding and decoding numpy arrays."""
+
+    @staticmethod
+    def get_array_encoding(annotation: Any) -> EncodingType:
+        """Extract encoding type from a type annotation.
+        
+        Args:
+            annotation: Type annotation (may be Annotated with _ArrayAnnotation)
+            
+        Returns:
+            The encoding type, or "array" as default
+        """
+        from typing import get_origin, get_args
+        import types
+        
+        # Handle Optional/Union - unwrap to find the array type
+        origin = get_origin(annotation)
+        if origin is Union or isinstance(annotation, types.UnionType):
+            args = get_args(annotation)
+            for arg in args:
+                if arg is not type(None):
+                    result = ArrayUtils.get_array_encoding(arg)
+                    if result != "array":
+                        return result
+                    # Check if it's an Annotated array
+                    if get_origin(arg) is Annotated:
+                        inner_args = get_args(arg)
+                        for inner in inner_args:
+                            if isinstance(inner, _ArrayAnnotation):
+                                return inner.encoding
+        
+        # Handle Annotated directly
+        if get_origin(annotation) is Annotated:
+            args = get_args(annotation)
+            for arg in args:
+                if isinstance(arg, _ArrayAnnotation):
+                    return arg.encoding
+        
+        return "array"
 
     @staticmethod
     def is_array(obj) -> bool:
@@ -197,27 +339,34 @@ class ArrayUtils:
         Encode a numpy array using meshoptimizer's vertex buffer encoding.
 
         Args:
-            array: numpy array to encode
+            array: numpy array to encode (must have dtype with itemsize >= 4)
 
         Returns:
             EncodedArray object containing the encoded data and metadata
+            
+        Raises:
+            ValueError: if array dtype has itemsize < 4
         """
 
         # Convert other arrays to numpy for encoding
         array = ArrayUtils.convert_array(array, "numpy")
 
+        # Ensure contiguous array
+        array = np.ascontiguousarray(array)
+
         # Store original shape and dtype
         original_shape = array.shape
         original_dtype = array.dtype
 
+        # meshoptimizer requires vertex_size % 4 == 0
+        if array.itemsize % 4 != 0:
+            raise ValueError(
+                f"Array dtype itemsize must be a multiple of 4, got {array.itemsize} "
+                f"(dtype={original_dtype}). Use float32, int32, float64, or int64."
+            )
+
         # Flatten the array if it's multi-dimensional
         flattened = array.reshape(-1)
-
-        # Convert to float32 if not already (meshoptimizer expects float32)
-        if array.dtype != np.float32:
-            flattened = flattened.astype(np.float32)
-
-        # Calculate parameters for encoding
         item_count = len(flattened)
         item_size = flattened.itemsize
 
@@ -248,7 +397,7 @@ class ArrayUtils:
             shape=list(original_shape),
             dtype=str(original_dtype),
             itemsize=item_size,
-            array_type=array_type
+            array_type=array_type,
         )
 
         return EncodedArray(
@@ -267,21 +416,22 @@ class ArrayUtils:
         Returns:
             Decoded numpy array
         """
-        # Calculate total number of items
-        total_items = np.prod(encoded_array.metadata.shape)
-
         # Create buffer for encoded data
         buffer_array = np.frombuffer(encoded_array.data, dtype=np.uint8)
 
-        # Create destination array for float32 data
-        float_count = total_items
-        destination = np.zeros(float_count, dtype=np.float32)
+        # Get original dtype
+        original_dtype = np.dtype(encoded_array.metadata.dtype)
+        
+        # Calculate total items based on shape
+        total_items = int(np.prod(encoded_array.metadata.shape))
+        
+        # Create destination array with original dtype
+        destination = np.zeros(total_items, dtype=original_dtype)
 
-        # Call C function
         result = lib.meshopt_decodeVertexBuffer(
             destination.ctypes.data_as(ctypes.c_void_p),
             total_items,
-            encoded_array.metadata.itemsize,
+            original_dtype.itemsize,
             buffer_array.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
             len(buffer_array)
         )
@@ -291,10 +441,6 @@ class ArrayUtils:
 
         # Reshape the array to its original shape
         reshaped = destination.reshape(encoded_array.metadata.shape)
-
-        # Convert back to original dtype if needed
-        if encoded_array.metadata.dtype != np.float32:
-            reshaped = reshaped.astype(encoded_array.metadata.dtype)
 
         return reshaped
 
@@ -412,3 +558,119 @@ class ArrayUtils:
                 handler = DataHandler.create(BytesIO(f.read()))
 
         return ArrayUtils.load_array(handler, "array", array_type)
+
+    # ============================================================
+    # Schema-based encoding/decoding for $ref objects
+    # ============================================================
+
+    @staticmethod
+    def encode_with_schema(
+        array: Array,
+        encoding_type: EncodingType = "array",
+        vertex_count: Optional[int] = None,
+    ) -> tuple[bytes, dict]:
+        """Encode an array and produce metadata for $ref.
+        
+        Returns raw encoded bytes (no header) and ArrayRefMetadata
+        to be included directly in the $ref object in data.json.
+        
+        Args:
+            array: Array to encode
+            encoding_type: Encoding type (array, vertex_buffer, index_sequence)
+            vertex_count: For index_sequence type, the number of vertices
+            
+        Returns:
+            Tuple of (raw encoded bytes, ArrayRefMetadata)
+        """
+        array_np = ArrayUtils.convert_array(array, "numpy")
+        
+        if encoding_type == "vertex_buffer":
+            if array_np.ndim == 1:
+                raise ValueError("Vertex buffer requires 2D array (N x components)")
+            v_count = array_np.shape[0]
+            v_size = array_np.itemsize * array_np.shape[1]
+            encoded_bytes = encode_vertex_buffer(array_np, v_count, v_size)
+            metadata = ArrayRefMetadata(
+                dtype=str(array_np.dtype),
+                shape=list(array_np.shape),
+                vertex_count=v_count,
+                vertex_size=v_size,
+            )
+            
+        elif encoding_type == "index_sequence":
+            if array_np.ndim != 1:
+                raise ValueError("Index sequence requires 1D array")
+            i_count = len(array_np)
+            v_count = vertex_count
+            if v_count is None:
+                v_count = int(array_np.max()) + 1 if len(array_np) > 0 else 0
+            encoded_bytes = encode_index_sequence(array_np, i_count, v_count)
+            metadata = ArrayRefMetadata(
+                dtype=str(array_np.dtype),
+                shape=list(array_np.shape),
+                index_count=i_count,
+                vertex_count=v_count,
+            )
+            
+        else:
+            # Standard meshoptimizer generic encoding - raw bytes, no header
+            encoded = ArrayUtils.encode_array(array_np)
+            encoded_bytes = encoded.data  # Raw bytes only
+            metadata = ArrayRefMetadata(
+                dtype=str(array_np.dtype),
+                shape=list(array_np.shape),
+                itemsize=encoded.metadata.itemsize,
+            )
+            
+        return encoded_bytes, metadata
+
+    @staticmethod
+    def decode_with_metadata(
+        data: bytes,
+        encoding: EncodingType,
+        metadata: "ArrayRefMetadata",
+        target_array_type: Optional[ArrayType] = None,
+    ) -> Array:
+        """Decode raw bytes using encoding type and metadata from $ref.
+        
+        Args:
+            data: Raw encoded bytes (no header)
+            encoding: Encoding type from schema.json
+            metadata: ArrayRefMetadata from data.json $ref object
+            target_array_type: Target array type (defaults to "numpy")
+            
+        Returns:
+            Decoded array
+        """
+        effective_type = target_array_type or "numpy"
+        
+        if encoding == "vertex_buffer":
+            if metadata.vertex_count is None or metadata.vertex_size is None:
+                raise ValueError("vertex_buffer missing vertex_count or vertex_size in metadata")
+            decoded = decode_vertex_buffer(metadata.vertex_count, metadata.vertex_size, data)
+            decoded = decoded.reshape(metadata.shape)
+            if str(decoded.dtype) != metadata.dtype:
+                decoded = decoded.astype(metadata.dtype)
+                
+        elif encoding == "index_sequence":
+            if metadata.index_count is None:
+                raise ValueError("index_sequence missing index_count in metadata")
+            index_size = np.dtype(metadata.dtype).itemsize
+            decoded = decode_index_sequence(metadata.index_count, index_size, data)
+            if str(decoded.dtype) != metadata.dtype:
+                decoded = decoded.astype(metadata.dtype)
+                
+        else:
+            # Standard encoding - reconstruct from raw bytes
+            itemsize = metadata.itemsize or 4
+            arr_metadata = ArrayMetadata(
+                shape=metadata.shape,
+                dtype=metadata.dtype,
+                itemsize=itemsize,
+                array_type=effective_type,
+            )
+            encoded = EncodedArray(data=data, metadata=arr_metadata)
+            decoded = ArrayUtils.decode_array(encoded)
+            return decoded  # Already correct type
+            
+        return ArrayUtils.convert_array(decoded, effective_type)

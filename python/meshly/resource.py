@@ -4,12 +4,23 @@ ResourceRef allows file paths to be used as Pydantic fields that automatically
 get serialized by checksum when extracted/reconstructed.
 """
 
-import os
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, GetJsonSchemaHandler, PrivateAttr, model_validator
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
+
+
+class _ResourceAnnotation:
+    """Pydantic annotation for resource references with custom JSON schema."""
+    
+    def __get_pydantic_json_schema__(
+        self, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Return JSON schema with type as 'resource'."""
+        return {"type": "resource"}
 
 
 class ResourceRef(BaseModel):
@@ -154,3 +165,7 @@ class ResourceRef(BaseModel):
 
         raise ValueError(f"ResourceRef has no path (checksum={cs})")
 
+
+# Annotated type alias for use in Pydantic models with proper JSON schema
+Resource = Annotated[ResourceRef, _ResourceAnnotation()]
+"""Resource reference with custom JSON schema type='resource'."""

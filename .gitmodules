@@ -1,0 +1,3 @@
+[submodule "python/meshoptimizer"]
+	path = python/meshoptimizer
+	url = git@github.com:OpenOrion/meshoptimizer.git

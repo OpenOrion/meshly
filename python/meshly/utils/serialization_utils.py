@@ -1,61 +1,19 @@
-"""Serialization utilities for packing/unpacking arrays and assets."""
+"""Serialization utilities for arrays and assets."""
 
 import asyncio
 import inspect
-import json
-from typing import Any
+from typing import Any, Union
 
 from pydantic import BaseModel
 
-from ..array import ArrayMetadata, ArrayType, ArrayUtils, EncodedArray
+from ..array import ArrayUtils, ResourceRefMetadata, PackableRefMetadata
+from ..constants import ExportConstants
 from ..data_handler import AssetProvider, CachedAssetLoader
 from .checksum_utils import ChecksumUtils
 
 
 class SerializationUtils:
     """Utility class for serialization operations."""
-
-    @staticmethod
-    def pack_array(encoded: EncodedArray) -> bytes:
-        """Pack an encoded array into bytes with metadata.
-
-        Format: [4 bytes metadata length][metadata json][array data]
-
-        Args:
-            encoded: EncodedArray with metadata and data
-
-        Returns:
-            Packed bytes
-        """
-        metadata_json = json.dumps(encoded.metadata.model_dump()).encode("utf-8")
-        return len(metadata_json).to_bytes(4, "little") + metadata_json + encoded.data
-
-    @staticmethod
-    def unpack_array(packed: bytes, array_type: ArrayType | None = None) -> Any:
-        """Unpack bytes back to an array.
-
-        Args:
-            packed: Packed bytes from pack_array
-            array_type: Target array type, or None to use stored type
-
-        Returns:
-            Decoded array (numpy or JAX)
-        """
-        metadata_len = int.from_bytes(packed[:4], "little")
-        metadata_json = packed[4 : 4 + metadata_len].decode("utf-8")
-        array_data = packed[4 + metadata_len :]
-
-        metadata_dict = json.loads(metadata_json)
-        metadata = ArrayMetadata(**metadata_dict)
-        encoded = EncodedArray(data=array_data, metadata=metadata)
-
-        decoded = ArrayUtils.decode_array(encoded)
-
-        if array_type is not None:
-            return ArrayUtils.convert_array(decoded, array_type)
-        elif metadata.array_type != "numpy":
-            return ArrayUtils.convert_array(decoded, metadata.array_type)
-        return decoded
 
     @staticmethod
     def get_asset(assets: AssetProvider, checksum: str) -> bytes:
@@ -109,7 +67,7 @@ class SerializationUtils:
             KeyError: If asset not found
         """
         if isinstance(assets, CachedAssetLoader):
-            cache_path = f"assets/{checksum}.bin"
+            cache_path = ExportConstants.asset_path(checksum)
 
             try:
                 return assets.cache.read_binary(cache_path)
@@ -145,7 +103,9 @@ class SerializationUtils:
     def extract_value(
         value: Any,
         assets: dict[str, bytes],
-        extensions: dict[str, str] | None = None,
+        extensions: Union[dict[str, str], None] = None,
+        encoding_type: Union[str, None] = None,
+        vertex_count: Union[int, None] = None,
     ) -> Any:
         """Recursively extract a value, replacing arrays and Packables with refs.
 
@@ -153,39 +113,67 @@ class SerializationUtils:
             value: Value to extract
             assets: Dict to populate with encoded assets
             extensions: Optional dict to populate with file extensions for ResourceRefs
+            encoding_type: Optional encoding hint for arrays (array, vertex_buffer, index_sequence)
+            vertex_count: For index_sequence type, the vertex count
 
         Returns:
-            Extracted value with $ref for arrays/Packables
+            Extracted value with $ref and flat metadata for arrays
         """
         # Import here to avoid circular imports
         from ..packable import Packable
         from ..resource import ResourceRef
 
         if ArrayUtils.is_array(value):
-            encoded = ArrayUtils.encode_array(value)
-            packed = SerializationUtils.pack_array(encoded)
-            checksum = ChecksumUtils.compute_bytes_checksum(packed)
-            assets[checksum] = packed
-            return {"$ref": checksum}
+            effective_type = encoding_type or "array"
+            encoded_bytes, metadata = ArrayUtils.encode_with_schema(
+                value, 
+                encoding_type=effective_type,
+                vertex_count=vertex_count,
+            )
+            checksum = ChecksumUtils.compute_bytes_checksum(encoded_bytes)
+            assets[checksum] = encoded_bytes
+            # Set ref on the metadata object
+            metadata.ref = checksum
+            return metadata.model_dump(by_alias=True, exclude_none=True)
 
         if isinstance(value, Packable):
-            encoded = value.encode()
-            checksum = ChecksumUtils.compute_bytes_checksum(encoded)
-            assets[checksum] = encoded
-            return {"$ref": checksum}
+            if value._self_contained:
+                # Self-contained: encode to zip, single $ref
+                encoded = value.encode()
+                checksum = ChecksumUtils.compute_bytes_checksum(encoded)
+                assets[checksum] = encoded
+                ref_metadata = PackableRefMetadata(ref=checksum)
+                return ref_metadata.model_dump(by_alias=True)
+            else:
+                # Expanded: recurse into fields like any BaseModel
+                dumped = value.model_dump(mode='python')
+                extracted = {}
+                for k, v in dumped.items():
+                    extracted[k] = SerializationUtils.extract_value(v, assets, extensions)
+                value_class = type(value)
+                extracted["$module"] = f"{value_class.__module__}.{value_class.__qualname__}"
+                return extracted
 
         if isinstance(value, ResourceRef):
-            # Read file and store as asset - checksum is computed lazily by ResourceRef
+            # Read file and store as gzip-compressed bytes
+            import gzip
+            from pathlib import Path
             file_data = value.read_bytes()
-            checksum = value.checksum  # Lazily computed from file data
+            checksum = value.checksum
             assert checksum is not None, "ResourceRef must have a checksum after reading bytes"
-            assets[checksum] = file_data
-            result = {"$ref": checksum}
-            if value.ext:
-                result["ext"] = value.ext
-                if extensions is not None:
-                    extensions[checksum] = value.ext
-            return result
+            
+            # Compress with gzip (better for arbitrary file data than meshoptimizer)
+            compressed = gzip.compress(file_data, compresslevel=6)
+            assets[checksum] = compressed
+            
+            # Get filename from path
+            name = Path(value.path).name if value.path else None
+            
+            # Store ref with metadata
+            ref_metadata = ResourceRefMetadata(ref=checksum, name=name)
+            if value.ext and extensions is not None:
+                extensions[checksum] = value.ext
+            return ref_metadata.model_dump(by_alias=True, exclude_none=True)
 
         if isinstance(value, dict):
             return {
@@ -213,3 +201,47 @@ class SerializationUtils:
             return extracted
 
         return value
+
+    @staticmethod
+    def extract_field_value(
+        model: "BaseModel",
+        field_name: str,
+        value: Any,
+        assets: dict[str, bytes],
+        extensions: Union[dict[str, str], None] = None,
+    ) -> Any:
+        """Extract a field value with encoding from the field's type annotation.
+        
+        Uses get_array_encoding() to extract encoding from Annotated types
+        (Array, VertexBuffer, IndexSequence).
+        
+        Args:
+            model: The model instance containing the field
+            field_name: Name of the field
+            value: Value to extract
+            assets: Dict to populate with encoded assets
+            extensions: Optional dict for ResourceRef extensions
+            
+        Returns:
+            Extracted value with $ref and metadata
+        """
+        if not ArrayUtils.is_array(value):
+            return SerializationUtils.extract_value(value, assets, extensions)
+        
+        # Get encoding from field's type annotation
+        # Use get_type_hints with include_extras=True to preserve Annotated metadata
+        import typing
+        model_class = type(model)
+        hints = typing.get_type_hints(model_class, include_extras=True)
+        encoding = ArrayUtils.get_array_encoding(hints.get(field_name)) if field_name in hints else "array"
+        
+        # For index_sequence, try to get vertex_count from the model
+        vertex_count = None
+        if encoding == "index_sequence" and hasattr(model, "vertex_count"):
+            vertex_count = model.vertex_count
+            
+        return SerializationUtils.extract_value(
+            value, assets, extensions, 
+            encoding_type=encoding,
+            vertex_count=vertex_count,
+        )

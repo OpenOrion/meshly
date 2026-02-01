@@ -1,12 +1,17 @@
 """Schema utilities for resolving Pydantic types and merging field data."""
 
-from typing import Any, Union, get_args, get_origin
+import types
+from typing import Annotated, Any, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
-from ..array import ArrayType
+from ..array import ArrayRefMetadata, ArrayType, ArrayUtils, EncodingType
 from ..data_handler import AssetProvider
+from .json_schema import JsonSchema, JsonSchemaProperty
 from .serialization_utils import SerializationUtils
+
+# Array types as they appear in schema.json
+ARRAY_SCHEMA_TYPES = {"array", "vertex_buffer", "index_sequence"}
 
 
 class SchemaUtils:
@@ -14,7 +19,7 @@ class SchemaUtils:
 
     @staticmethod
     def unwrap_optional(expected_type: Any) -> Any:
-        """Unwrap Optional[X] to X.
+        """Unwrap Optional[X] or X | None to X.
 
         Args:
             expected_type: Type annotation, possibly Optional
@@ -23,12 +28,33 @@ class SchemaUtils:
             Inner type if Optional, otherwise unchanged
         """
         origin = get_origin(expected_type)
-        if origin is Union:
+        # Handle both typing.Union and types.UnionType (X | Y syntax)
+        if origin is Union or isinstance(expected_type, types.UnionType):
             args = get_args(expected_type)
             non_none = [a for a in args if a is not type(None)]
             if len(non_none) == 1:
                 return non_none[0]
         return expected_type
+
+    @staticmethod
+    def get_field_encoding(model_class: type[BaseModel], field_name: str) -> EncodingType:
+        """Get the encoding type for a field from its type annotation.
+        
+        Uses get_array_encoding to extract encoding from Annotated types
+        (Array, VertexBuffer, IndexSequence).
+        
+        Args:
+            model_class: Pydantic model class
+            field_name: Name of the field
+            
+        Returns:
+            Encoding type (defaults to "array")
+        """
+        import typing
+        hints = typing.get_type_hints(model_class, include_extras=True)
+        if field_name in hints:
+            return ArrayUtils.get_array_encoding(hints[field_name])
+        return "array"
 
     @staticmethod
     def resolve_refs_with_schema(
@@ -54,8 +80,11 @@ class SchemaUtils:
             if field_name not in data:
                 continue
 
+            # Get encoding from schema for this field
+            encoding = SchemaUtils.get_field_encoding(model_class, field_name)
+
             result[field_name] = SchemaUtils.resolve_value_with_type(
-                data[field_name], field_info.annotation, assets, array_type
+                data[field_name], field_info.annotation, assets, array_type, encoding
             )
 
         return result
@@ -66,6 +95,7 @@ class SchemaUtils:
         expected_type: Any,
         assets: AssetProvider,
         array_type: ArrayType | None,
+        encoding: EncodingType = "array",
     ) -> Any:
         """Resolve a value using the expected type from Pydantic schema.
 
@@ -74,6 +104,7 @@ class SchemaUtils:
             expected_type: Expected type from schema
             assets: Asset provider
             array_type: Target array type
+            encoding: Encoding type from schema.json
 
         Returns:
             Resolved value
@@ -92,9 +123,14 @@ class SchemaUtils:
             origin = get_origin(expected_type)
 
             # Check if it's a ResourceRef - don't unpack, just return the dict
-            # The ResourceRef validator will handle it
             from ..resource import ResourceRef
 
+            # Handle Annotated types (like Resource = Annotated[ResourceRef, ...])
+            if origin is Annotated:
+                args = get_args(expected_type)
+                if args and args[0] is ResourceRef:
+                    return value
+            
             if expected_type is ResourceRef:
                 return value
 
@@ -104,7 +140,11 @@ class SchemaUtils:
             if isinstance(expected_type, type) and issubclass(expected_type, Packable):
                 return expected_type.decode(asset_bytes, array_type)
 
-            return SerializationUtils.unpack_array(asset_bytes, array_type)
+            # Decode array using encoding from schema + metadata from $ref
+            # The $ref object contains: {"$ref": checksum, "dtype": ..., "shape": ..., ...}
+            metadata_dict = {k: v for k, v in value.items() if k != "$ref"}
+            metadata = ArrayRefMetadata(**metadata_dict)
+            return ArrayUtils.decode_with_metadata(asset_bytes, encoding, metadata, array_type)
 
         # Handle nested dict
         if isinstance(value, dict):
@@ -113,8 +153,17 @@ class SchemaUtils:
 
             if origin is dict:
                 _, value_type = get_args(expected_type)
+                # Get encoding from the value type annotation (for dict[str, VertexBuffer] etc.)
+                value_encoding = ArrayUtils.get_array_encoding(value_type)
                 return {
-                    k: SchemaUtils.resolve_value_with_type(v, value_type, assets, array_type)
+                    k: SchemaUtils.resolve_value_with_type(v, value_type, assets, array_type, value_encoding)
+                    for k, v in value.items()
+                }
+
+            # Handle untyped dict - recursively resolve values with Any type
+            if expected_type is dict:
+                return {
+                    k: SchemaUtils.resolve_value_with_type(v, Any, assets, array_type, encoding)
                     for k, v in value.items()
                 }
 
@@ -243,3 +292,186 @@ class SchemaUtils:
             return metadata_value
 
         return metadata_value
+
+    # ========================================================================
+    # Schema-based resolution (using stored schema.json instead of class)
+    # ========================================================================
+
+    @staticmethod
+    def resolve_refs_with_json_schema(
+        schema: JsonSchema,
+        data: dict[str, Any],
+        assets: AssetProvider,
+        array_type: ArrayType | None,
+    ) -> dict[str, Any]:
+        """Resolve $ref references using validated JSON schema.
+        
+        This allows deserializing packables without having the original class.
+        
+        Args:
+            schema: Validated JsonSchema instance
+            data: Data dict with potential $ref values
+            assets: Asset provider
+            array_type: Target array type
+            
+        Returns:
+            Resolved data dict with arrays decoded
+        """
+        result = {}
+        
+        for field_name, value in data.items():
+            if field_name.startswith("$"):
+                # Skip metadata fields like $module
+                continue
+            
+            prop = schema.get_resolved_property(field_name)
+            encoding = schema.get_encoding(field_name)
+            
+            result[field_name] = SchemaUtils._resolve_value_with_property(
+                value, prop, schema, assets, array_type, encoding
+            )
+        
+        return result
+
+    @staticmethod
+    def _resolve_value_with_property(
+        value: Any,
+        prop: JsonSchemaProperty | None,
+        schema: JsonSchema,
+        assets: AssetProvider,
+        array_type: ArrayType | None,
+        encoding: EncodingType = "array",
+    ) -> Any:
+        """Resolve a value using JsonSchemaProperty.
+        
+        Args:
+            value: Value to resolve
+            prop: Schema property for this field (may be None)
+            schema: Root schema (for $defs lookups)
+            assets: Asset provider
+            array_type: Target array type
+            encoding: Encoding type from schema
+            
+        Returns:
+            Resolved value
+        """
+        if value is None:
+            return None
+        
+        if prop is None:
+            # No schema info - return as-is or try basic resolution
+            if isinstance(value, dict) and "$ref" in value:
+                # Try to decode as array with default encoding
+                checksum = value["$ref"]
+                asset_bytes = SerializationUtils.get_asset(assets, checksum)
+                metadata_dict = {k: v for k, v in value.items() if k != "$ref"}
+                metadata = ArrayRefMetadata(**metadata_dict)
+                return ArrayUtils.decode_with_metadata(asset_bytes, encoding, metadata, array_type)
+            return value
+        
+        # Resolve $ref in schema property
+        if prop.ref:
+            prop = schema.resolve_ref(prop.ref) or prop
+        
+        # Handle anyOf (Optional types)
+        if prop.anyOf:
+            inner = prop.get_inner_type()
+            if inner:
+                return SchemaUtils._resolve_value_with_property(
+                    value, inner, schema, assets, array_type, encoding
+                )
+            return value
+        
+        # Handle $ref in data (array/packable/resource reference)
+        if isinstance(value, dict) and "$ref" in value:
+            checksum = value["$ref"]
+            
+            # Get metadata (everything except $ref)
+            metadata_dict = {k: v for k, v in value.items() if k != "$ref"}
+            
+            # Check if this is a resource type - has ext field or gzip encoding
+            if prop.is_resource_type() or "ext" in metadata_dict or metadata_dict.get("encoding") == "gzip":
+                import gzip
+                asset_bytes = SerializationUtils.get_asset(assets, checksum)
+                ext = metadata_dict.get("ext", "")
+                
+                # Resource bytes are gzip compressed
+                if metadata_dict.get("encoding") == "gzip":
+                    resource_bytes = gzip.decompress(asset_bytes)
+                else:
+                    # Fallback for uncompressed resources (backwards compatibility)
+                    resource_bytes = asset_bytes
+                
+                return {"$ref": checksum, "ext": ext, "_bytes": resource_bytes}
+            
+            asset_bytes = SerializationUtils.get_asset(assets, checksum)
+            
+            # Check if this is an array type - must have array metadata (dtype, shape)
+            is_array = (
+                (prop.is_array_type() or encoding in ARRAY_SCHEMA_TYPES)
+                and "dtype" in metadata_dict
+                and "shape" in metadata_dict
+            )
+            
+            if is_array:
+                actual_encoding = prop.type if prop.is_array_type() else encoding
+                metadata = ArrayRefMetadata(**metadata_dict)
+                return ArrayUtils.decode_with_metadata(asset_bytes, actual_encoding, metadata, array_type)
+            
+            # Not an array - could be a nested Packable
+            # Recursively decode using schema
+            from ..packable import Packable
+            return Packable.decode_from_schema(asset_bytes, array_type)
+        
+        # Handle nested dict (object type)
+        if isinstance(value, dict):
+            if prop.type == "object":
+                # Check for additionalProperties (dict[str, X] pattern)
+                if prop.additionalProperties and isinstance(prop.additionalProperties, JsonSchemaProperty):
+                    item_prop = prop.additionalProperties
+                    # Resolve $ref if present
+                    if item_prop.ref:
+                        resolved = schema.resolve_ref(item_prop.ref)
+                        if resolved:
+                            item_prop = resolved
+                    item_encoding = item_prop.type if item_prop.is_array_type() else "array"
+                    return {
+                        k: SchemaUtils._resolve_value_with_property(
+                            v, item_prop, schema, assets, array_type, item_encoding
+                        )
+                        for k, v in value.items()
+                    }
+                
+                # Regular object with properties
+                if prop.properties:
+                    result = {}
+                    for k, v in value.items():
+                        if k.startswith("$"):
+                            continue
+                        nested_prop = prop.properties.get(k)
+                        nested_encoding = "array"
+                        if nested_prop and nested_prop.is_array_type():
+                            nested_encoding = nested_prop.type
+                        result[k] = SchemaUtils._resolve_value_with_property(
+                            v, nested_prop, schema, assets, array_type, nested_encoding
+                        )
+                    return result
+            
+            # Unknown dict - return as-is
+            return value
+        
+        # Handle lists
+        if isinstance(value, list):
+            item_prop = prop.items
+            item_encoding = "array"
+            if item_prop and item_prop.is_array_type():
+                item_encoding = item_prop.type
+            return [
+                SchemaUtils._resolve_value_with_property(
+                    v, item_prop, schema, assets, array_type, item_encoding
+                )
+                for v in value
+            ]
+        
+        # Primitive value
+        return value

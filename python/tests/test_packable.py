@@ -606,10 +606,10 @@ class TestExtractReconstruct:
 
 
 class TestNestedPackableRejection:
-    """Test that direct Packable fields are rejected, but nested in dicts is allowed."""
+    """Test nested Packable handling - now allowed with self_contained flag."""
 
-    def test_direct_nested_packable_rejected(self):
-        """Test that a Packable field containing another Packable is rejected."""
+    def test_direct_nested_packable_works(self):
+        """Test that a Packable field containing another Packable works."""
         
         class InnerPackable(Packable):
             label: str
@@ -624,8 +624,21 @@ class TestNestedPackableRejection:
             data=np.array([1.0, 2.0], dtype=np.float32)
         )
         
-        with pytest.raises(TypeError, match="Direct Packable fields are not allowed"):
-            OuterPackable(name="outer", inner=inner)
+        # Should now work - nested Packables are allowed
+        outer = OuterPackable(name="outer", inner=inner)
+        assert outer.name == "outer"
+        assert outer.inner.label == "inner"
+        np.testing.assert_array_equal(outer.inner.data, [1.0, 2.0])
+        
+        # Round-trip test
+        buffer = BytesIO()
+        outer.save_to_zip(buffer)
+        buffer.seek(0)
+        loaded = OuterPackable.load_from_zip(buffer)
+        
+        assert loaded.name == "outer"
+        assert loaded.inner.label == "inner"
+        np.testing.assert_array_almost_equal(loaded.inner.data, inner.data)
 
     def test_dict_of_packables_allowed(self):
         """Test that Dict[str, Packable] is allowed (Packable inside typed dict)."""
@@ -658,13 +671,17 @@ class TestNestedPackableRejection:
         
         container = ContainerPackable(name="container", items={"nested": inner})
         
-        # Extract should create refs for the nested Packable
+        # Extract expands non-self-contained Packables inline
         extracted = Packable.extract(container)
         
-        # The nested packable should be a ref (no $type - schema provides type info)
-        assert "$ref" in extracted.data["items"]["nested"]
+        # The nested Packable should be expanded (not a single $ref)
+        # with its arrays as $refs
+        nested_data = extracted.data["items"]["nested"]
+        assert nested_data["name"] == "inner"
+        assert "$ref" in nested_data["values"]  # Array is a ref
+        assert "$module" in nested_data  # Module info preserved
         
-        # Should have asset for the nested packable
+        # Should have asset for the array
         assert len(extracted.assets) >= 1
         
     def test_reconstruct_typed_dict_with_nested_packables(self):

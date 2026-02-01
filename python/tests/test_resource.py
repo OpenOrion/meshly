@@ -3,7 +3,6 @@
 import tempfile
 from pathlib import Path
 
-import pytest
 from pydantic import BaseModel, ConfigDict
 
 from meshly import Packable, ResourceRef
@@ -39,7 +38,7 @@ def test_resource_field_validation():
     """Test Resource field type validation."""
 
     class TestModel(BaseModel):
-        geometry: Resource
+        geometry: ResourceRef
 
     with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f:
         f.write(b"STL data")
@@ -72,7 +71,7 @@ def test_packable_extract_with_resource():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
+        geometry: ResourceRef
 
     with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f:
         f.write(b"STL geometry data")
@@ -102,7 +101,7 @@ def test_packable_reconstruct_with_resource():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
+        geometry: ResourceRef
 
     # Simulate serialized data
     data = {"name": "test", "geometry": {"$ref": "abc123", "ext": ".stl"}}
@@ -122,8 +121,8 @@ def test_resource_round_trip():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
-        config: Resource
+        geometry: ResourceRef
+        config: ResourceRef
 
     with (
         tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f1,
@@ -169,7 +168,7 @@ def test_lazy_model_with_resource_ref():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
+        geometry: ResourceRef
 
     # Simulate serialized data with ResourceRef
     data = {"name": "test_case", "geometry": {"$ref": "abc123", "ext": ".stl"}}
@@ -213,8 +212,8 @@ def test_lazy_model_resolve_with_resource_ref():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
-        config: Resource
+        geometry: ResourceRef
+        config: ResourceRef
 
     data = {
         "name": "wind_tunnel",
@@ -241,7 +240,7 @@ def test_resource_ref_in_nested_dict_eager_loading():
 
     class ExperimentCase(BaseModel):
         name: str
-        files: dict[str, Resource]
+        files: dict[str, ResourceRef]
 
     data = {
         "name": "exp1",
@@ -276,7 +275,7 @@ def test_resource_ref_in_list_eager_loading():
 
     class BatchJob(BaseModel):
         name: str
-        input_files: list[Resource]
+        input_files: list[ResourceRef]
 
     data = {
         "name": "batch1",
@@ -308,7 +307,7 @@ def test_mixed_resource_and_array_lazy_loading():
         model_config = ConfigDict(arbitrary_types_allowed=True)
 
         name: str
-        geometry: Resource
+        geometry: ResourceRef
         initial_conditions: np.ndarray
 
     # Create original data
@@ -365,7 +364,7 @@ def test_cached_asset_loader_with_resource_ref():
 
     class DataPackage(BaseModel):
         name: str
-        model_file: Resource
+        model_file: ResourceRef
 
     with (
         tempfile.TemporaryDirectory() as tmpdir,

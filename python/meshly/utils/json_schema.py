@@ -85,9 +85,9 @@ class JsonSchemaProperty(BaseModel):
         return False
     
     def is_resource_type(self) -> bool:
-        """Check if this is a resource type (ResourceRef)."""
-        # Direct resource type or ResourceRef schema
-        return self.type == "resource" or self.title == "ResourceRef"
+        """Check if this is a resource type (Resource)."""
+        # Direct resource type or Resource schema
+        return self.type == "resource" or self.title == "Resource"
     
     def is_optional(self) -> bool:
         """Check if this property is optional (anyOf with null)."""

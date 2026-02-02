@@ -15,14 +15,13 @@ from typing import TYPE_CHECKING, Any, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from meshly.array import ArrayUtils, ArrayEncoding, PackableRefMetadata
+from meshly.array import ArrayUtils, ArrayEncoding
 from meshly.common import AssetProvider
-from meshly.resource import ResourceRefMetadata
 from meshly.utils.checksum_utils import ChecksumUtils
 
 if TYPE_CHECKING:
     from meshly.packable import Packable
-    from meshly.resource import ResourceRef
+    from meshly.resource import Resource
 
 
 # =============================================================================
@@ -109,7 +108,7 @@ class SerializationUtils:
         """Encode an array and return ExtractedResult with $ref dict and asset."""
         encoded = ArrayUtils.encode_array(value, encoding)
         checksum = ChecksumUtils.compute_bytes_checksum(encoded.data)
-        ref_metadata = encoded.metadata.model_copy(update={"ref": checksum})
+        ref_metadata = encoded.info.model_copy(update={"ref": checksum})
         ref_dict = ref_metadata.model_dump(by_alias=True, exclude_none=True)
         return ExtractedResult(value=ref_dict, assets={checksum: encoded.data})
 
@@ -117,7 +116,7 @@ class SerializationUtils:
     def extract_value(value: object) -> ExtractedResult:
         """Recursively extract a value, replacing Packables and nested structures with refs."""
         from meshly.packable import Packable
-        from meshly.resource import ResourceRef
+        from meshly.resource import Resource
 
         # Arrays at top level: encode with default "array" encoding
         if ArrayUtils.is_array(value):
@@ -128,7 +127,7 @@ class SerializationUtils:
             return SerializationUtils._extract_subpackable(value)
 
         # Resources: gzip compress file data
-        if isinstance(value, ResourceRef):
+        if isinstance(value, Resource):
             return SerializationUtils._extract_resource(value)
 
         # Dicts: recursively extract values
@@ -164,11 +163,13 @@ class SerializationUtils:
     @staticmethod
     def _extract_subpackable(value: "Packable") -> ExtractedResult:
         """Extract a Packable - either self-contained or expanded."""
+        from meshly.packable import PackableRefInfo
+        
         # Self-contained: encode entire packable as zip bytes
         if value.is_contained:
             encoded = value.encode()
             checksum = ChecksumUtils.compute_bytes_checksum(encoded)
-            ref_dict = PackableRefMetadata(ref=checksum).model_dump(by_alias=True)
+            ref_dict = PackableRefInfo(ref=checksum).model_dump(by_alias=True)
             return ExtractedResult(value=ref_dict, assets={checksum: encoded})
         
         # Expanded: recursively extract each field with $module metadata
@@ -181,16 +182,11 @@ class SerializationUtils:
         )
 
     @staticmethod
-    def _extract_resource(value: "ResourceRef") -> ExtractedResult:
+    def _extract_resource(value: "Resource") -> ExtractedResult:
         """Extract a ResourceRef - gzip compress and store by checksum."""
-        file_data = value.read_bytes()
         checksum = value.checksum
-        assert checksum is not None, "ResourceRef must have a checksum after reading bytes"
-
-        compressed = gzip.compress(file_data, compresslevel=6)
-        name = Path(value.path).name if value.path else None
-        ref_dict = ResourceRefMetadata(ref=checksum, name=name).model_dump(by_alias=True, exclude_none=True)
-        
+        compressed = gzip.compress(value.data, compresslevel=6)
+        ref_dict = value.model_dump(by_alias=True, exclude_defaults=True)
         return ExtractedResult(value=ref_dict, assets={checksum: compressed})
 
     @staticmethod

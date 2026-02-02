@@ -20,10 +20,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from meshly.array import ArrayType, ArrayUtils
-from meshly.common import AssetProvider, PathLike
+from meshly.common import AssetProvider, PathLike, RefInfo
 from meshly.constants import ExportConstants
 from meshly.utils.schema_utils import SchemaUtils
 from meshly.utils.serialization_utils import SerializationUtils
@@ -31,6 +31,11 @@ from meshly.utils.json_schema import JsonSchema
 from meshly.utils.dynamic_model import DynamicModelBuilder, LazyDynamicModel
 
 TModel = TypeVar("TModel", bound=BaseModel)
+
+
+class PackableRefInfo(RefInfo):
+    """Ref model for self-contained packable $ref (encoded as zip)."""
+    ref: str = Field(..., alias="$ref")
 
 
 @dataclass

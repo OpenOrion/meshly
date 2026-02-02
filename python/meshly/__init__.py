@@ -15,13 +15,12 @@ meshoptimizer, including:
 
 from meshly.array import (
     Array,
-    ArrayMetadata,
+    ArrayRefInfo,
     ArrayType,
     ArrayUtils,
     EncodedArray,
     ArrayEncoding,
     IndexSequence,
-    PackableRefMetadata,
     VertexBuffer,
 )
 from meshly.cell_types import (
@@ -34,14 +33,13 @@ from meshly.common import (
 )
 from meshly.constants import ExportConstants
 from meshly.mesh import Mesh
-from meshly.packable import ExtractedAssets, Packable, SerializedPackableData
+from meshly.packable import ExtractedAssets, Packable, PackableRefInfo, SerializedPackableData
 from meshly.utils.dynamic_model import LazyDynamicModel
-from meshly.resource import Resource, ResourceRef, ResourceRefMetadata
+from meshly.resource import Resource
 from meshly.utils import ElementUtils, MeshUtils
 
 __all__ = [
-    "PackableRefMetadata",
-    "ResourceRefMetadata",
+    "PackableRefInfo",
 
     # Packable base class
     "Packable",
@@ -59,7 +57,7 @@ __all__ = [
     "IndexSequence",
     "EncodedArray",
     "ArrayEncoding",
-    "ArrayMetadata",
+    "ArrayRefInfo",
     "ArrayUtils",
 
     # Cell type utilities
@@ -68,7 +66,6 @@ __all__ = [
     "CellTypeUtils",
     # Resource handling
     "Resource",
-    "ResourceRef",
     # File format constants
     "ExportConstants",
     # Element utilities

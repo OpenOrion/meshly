@@ -10,9 +10,9 @@ from typing import Annotated, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
-from meshly.array import ArrayMetadata, ArrayType, ArrayUtils, EncodedArray
+from meshly.array import ArrayRefInfo, ArrayType, ArrayUtils, EncodedArray
 from meshly.common import AssetProvider
-from meshly.resource import ResourceRef
+from meshly.resource import Resource
 from meshly.utils.json_schema import JsonSchema, JsonSchemaProperty
 from meshly.utils.serialization_utils import SerializationUtils
 
@@ -41,11 +41,11 @@ class SchemaUtils:
     @staticmethod
     def _is_resource_ref(t: type) -> bool:
         """Check if type is ResourceRef or Annotated[ResourceRef, ...]."""
-        if t is ResourceRef:
+        if t is Resource:
             return True
         if get_origin(t) is Annotated:
             args = get_args(t)
-            return bool(args and args[0] is ResourceRef)
+            return bool(args and args[0] is Resource)
         return False
 
     @staticmethod
@@ -114,10 +114,13 @@ class SchemaUtils:
 
         expected_type = SchemaUtils._unwrap_optional(expected_type)
 
-        # $ref in data - decode array, packable, or return as-is for resources
+        # $ref in data - decode array, packable, or resource
         if isinstance(value, dict) and "$ref" in value:
+            # ResourceRef - decompress and create
             if SchemaUtils._is_resource_ref(expected_type):
-                return value
+                asset_bytes = SerializationUtils.get_asset(assets, value["$ref"])
+                data = gzip.decompress(asset_bytes)
+                return Resource(data=data, ext=value.get("ext", ""), name=value.get("name", ""))
             if isinstance(expected_type, type) and issubclass(expected_type, Packable):
                 return expected_type.decode(
                     SerializationUtils.get_asset(assets, value["$ref"]), array_type
@@ -126,7 +129,7 @@ class SchemaUtils:
             return ArrayUtils.decode_array(
                 EncodedArray(
                     data=SerializationUtils.get_asset(assets, value["$ref"]),
-                    metadata=ArrayMetadata(**{k: v for k, v in value.items() if k != "$ref"}),
+                    info=ArrayRefInfo(**{k: v for k, v in value.items() if k != "$ref"}),
                 ),
                 ArrayUtils.get_array_encoding(expected_type),
                 array_type,
@@ -193,11 +196,11 @@ class SchemaUtils:
             metadata = {k: v for k, v in value.items() if k != "$ref"}
             asset_bytes = SerializationUtils.get_asset(assets, checksum)
 
-            # Resource
-            is_resource = (prop and prop.is_resource_type()) or "ext" in metadata or metadata.get("encoding") == "gzip"
+            # Resource - assets from _extract_resource are always gzip compressed
+            is_resource = (prop and prop.is_resource_type()) or "ext" in metadata
             if is_resource:
-                data = gzip.decompress(asset_bytes) if metadata.get("encoding") == "gzip" else asset_bytes
-                return {"$ref": checksum, "ext": metadata.get("ext", ""), "_bytes": data}
+                data = gzip.decompress(asset_bytes)
+                return Resource(data=data, ext=metadata.get("ext", ""), name=metadata.get("name", ""))
 
             # Array
             if "dtype" in metadata and "shape" in metadata:
@@ -205,7 +208,7 @@ class SchemaUtils:
                 return ArrayUtils.decode_array(
                     EncodedArray(
                         data=asset_bytes, 
-                        metadata=ArrayMetadata(**{k: v for k, v in value.items() if k != "$ref"})
+                        info=ArrayRefInfo(**{k: v for k, v in value.items() if k != "$ref"})
                     ), 
                     encoding,
                     array_type,

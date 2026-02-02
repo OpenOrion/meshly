@@ -3,7 +3,7 @@ Array encoding utilities for meshly.
 
 This module provides:
 - Type annotations: Array, VertexBuffer, IndexSequence for Pydantic models
-- Metadata models: ArrayRefMetadata, ArrayMetadata for serialization
+- Metadata model: ArrayRefModel for $ref serialization
 - ArrayUtils: Encoding/decoding arrays using meshoptimizer compression
 
 Encoding Types:
@@ -27,7 +27,7 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
 from meshoptimizer import encode_vertex_buffer, encode_index_sequence
 
-from meshly.common import PathLike
+from meshly.common import PathLike, RefInfo
 
 
 # =============================================================================
@@ -106,34 +106,27 @@ IndexSequence = Annotated[np.ndarray, _ArrayAnnotation("index_sequence")]
 # Metadata Models (for $ref serialization)
 # =============================================================================
 
-class PackableRefMetadata(BaseModel):
-    """Metadata for self-contained packable $ref (encoded as zip)."""
-    ref: str = Field(..., alias="$ref")
-    model_config = {"populate_by_name": True}
-
-
-class ArrayMetadata(BaseModel):
+class ArrayRefInfo(RefInfo):
     """Metadata for encoded arrays (stored in zip files and $ref in data.json).
     
     Example $ref: {"$ref": "abc123", "dtype": "float32", "shape": [100, 3]}
     """
+    # $ref (for data.json serialization)
+    ref: Optional[str] = Field(None, alias="$ref")
+    
     # Core fields (always present)
     shape: list[int]
     dtype: str
     itemsize: int
     
-    # Optional $ref (for data.json serialization)
-    ref: Optional[str] = Field(None, alias="$ref")
-    
     # Encoding fields
-    pad_bytes: Optional[int] = None    
-    model_config = {"populate_by_name": True}
+    pad_bytes: Optional[int] = None
 
 
 class EncodedArray(BaseModel):
     """Encoded array data with metadata."""
     data: bytes
-    metadata: ArrayMetadata
+    info: ArrayRefInfo
 
     class Config:
         arbitrary_types_allowed = True
@@ -277,7 +270,7 @@ class ArrayUtils:
             data = encode_vertex_buffer(array_np, vertex_count, vertex_size)
             return EncodedArray(
                 data=bytes(data),
-                metadata=ArrayMetadata(
+                info=ArrayRefInfo(
                     shape=original_shape,
                     dtype=original_dtype,
                     itemsize=array_np.dtype.itemsize,
@@ -292,7 +285,7 @@ class ArrayUtils:
             data = encode_index_sequence(array_np, index_count, int(array_np.max()) + 1 if index_count > 0 else 0)
             return EncodedArray(
                 data=bytes(data),
-                metadata=ArrayMetadata(
+                info=ArrayRefInfo(
                     shape=original_shape,
                     dtype=original_dtype,
                     itemsize=array_np.dtype.itemsize,
@@ -332,7 +325,7 @@ class ArrayUtils:
 
         return EncodedArray(
             data=bytes(buffer[:result_size]),
-            metadata=ArrayMetadata(
+            info=ArrayRefInfo(
                 shape=original_shape,
                 dtype=original_dtype,
                 itemsize=array_np.dtype.itemsize,
@@ -357,7 +350,7 @@ class ArrayUtils:
         Returns:
             Decoded array (numpy or JAX)
         """
-        metadata = encoded_array.metadata
+        metadata = encoded_array.info
         
         # Vertex buffer: 2D array optimized encoding
         if encoding == "vertex_buffer":
@@ -443,7 +436,7 @@ class ArrayUtils:
         zf.writestr(info, encoded_array.data)
         
         info = zipfile.ZipInfo(f"arrays/{array_path}/metadata.json", date_time=date_time)
-        zf.writestr(info, json.dumps(encoded_array.metadata.model_dump(), indent=2, sort_keys=True))
+        zf.writestr(info, json.dumps(encoded_array.info.model_dump(), indent=2, sort_keys=True))
 
     @staticmethod
     def load_array(
@@ -474,7 +467,7 @@ class ArrayUtils:
         try:
             metadata_text = zf.read(meta_path).decode("utf-8")
             metadata_dict = json.loads(metadata_text)
-            metadata = ArrayMetadata(**metadata_dict)
+            metadata = ArrayRefInfo(**metadata_dict)
 
             encoded_bytes = zf.read(bin_path)
         except KeyError as e:
@@ -482,7 +475,7 @@ class ArrayUtils:
 
         encoded_array = EncodedArray(
             data=encoded_bytes,
-            metadata=metadata
+            info=metadata
         )
 
         return ArrayUtils.decode_array(encoded_array, encoding, array_type)

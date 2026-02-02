@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from meshly.array import ArrayType
 from meshly.common import AssetProvider
+from meshly.resource import Resource
 from meshly.utils.json_schema import JsonSchema, JsonSchemaProperty
 from meshly.utils.schema_utils import SchemaUtils
 
@@ -167,7 +168,13 @@ class DynamicModelBuilder:
             if is_required:
                 return (np.ndarray, ...)
             return (Union[np.ndarray, None], None)
-        
+
+        # Handle resource types
+        if prop.is_resource_type():
+            if is_required:
+                return (Resource, ...)
+            return (Union[Resource, None], None)
+
         # Handle standard JSON schema types
         if prop.type == "string":
             return (str, ...) if is_required else (Union[str, None], None)

@@ -211,14 +211,14 @@ result = SimulationResult(
 extracted = result.extract()
 # extracted.metadata.data = {"time": 0.5, "temperature": {"$ref": "abc123...", ...}, ...}
 # extracted.assets = {"abc123...": <bytes>, "def456...": <bytes>}
-# extracted.metadata.schema = {...}  # JSON Schema with encoding info
+# extracted.metadata.json_schema = {...}  # JSON Schema with encoding info
 
 # Data is JSON-serializable
 import json
-json.dumps(extracted.data)  # Works!
+json.dumps(extracted.metadata.data)  # Works!
 
 # Reconstruct from data + assets (eager loading)
-rebuilt = Packable.reconstruct(SimulationResult, extracted.data, extracted.assets)
+rebuilt = Packable.reconstruct(SimulationResult, extracted.metadata.data, extracted.assets)
 assert rebuilt.time == 0.5
 ```
 
@@ -524,6 +524,18 @@ class ArrayUtils:
     @staticmethod
     def reconstruct(extracted: ExtractedArray, array_type: ArrayType = "numpy") -> np.ndarray
     
+    # Zip file I/O
+    @staticmethod
+    def save_to_zip(array: Array, destination, name: str = "array") -> None
+    @staticmethod
+    def load_from_zip(source, name: str = "array", array_type: ArrayType = "numpy") -> Array
+    
+    # Zip file helpers (for use within zipfile contexts)
+    @staticmethod
+    def save_array(zf: ZipFile, name: str, extracted: ExtractedArray) -> None
+    @staticmethod
+    def decode(zf: ZipFile, name: str, encoding: ArrayEncoding, array_type: ArrayType = "numpy") -> Array
+    
     # Array type utilities
     @staticmethod
     def is_array(obj) -> bool
@@ -551,15 +563,16 @@ class Packable(BaseModel):
     def convert_to(self, array_type: ArrayType) -> T
     
     # Extract/Encode (instance methods)
-    def extract(self, include_computed: bool = True) -> ExtractedPackable
+    def extract(self) -> ExtractedPackable  # Cached for efficiency
     def encode(self) -> bytes  # Calls extract() internally
+    def get_checksum(self) -> str  # SHA256 checksum of encoded bytes
     
     # Decode/Reconstruct
     @classmethod
     def decode(cls, buf: bytes, array_type="numpy") -> T  # Decodes and reconstructs
     @staticmethod
     def reconstruct(
-        model_class: type[T] | JsonSchema,  # Class or schema for dynamic models
+        model_class: type[T] | list[type[T]] | JsonSchema,  # Class, list of classes, or schema
         data: dict[str, Any],
         assets: AssetProvider = {},
         array_type: ArrayType = "numpy",
@@ -573,7 +586,7 @@ class Packable(BaseModel):
 class PackableMetadata(BaseModel):
     """JSON-serializable metadata containing data and schema."""
     data: Dict[str, Any]           # Serializable dict with $ref for arrays/Packables
-    schema: Dict[str, Any]         # JSON Schema with encoding info
+    json_schema: Dict[str, Any]    # JSON Schema with encoding info
     
     @staticmethod
     def extract_checksums(data: dict) -> list[str]  # Extract checksums from data dict

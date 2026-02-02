@@ -167,8 +167,8 @@ class SerializationUtils:
         
         # Self-contained: encode entire packable as zip bytes
         if value.is_contained:
+            checksum = value.checksum  # Uses cached_property
             encoded = value.encode()
-            checksum = ChecksumUtils.compute_bytes_checksum(encoded)
             ref_dict = PackableRefInfo(ref=checksum).model_dump(by_alias=True)
             return ExtractedResult(value=ref_dict, assets={checksum: encoded})
         

@@ -15,15 +15,17 @@ as a single zip blob reference instead.
 
 import json
 import zipfile
+from functools import cached_property
 from io import BytesIO
 from pathlib import Path
-from typing import Any, ClassVar, TypeVar, Union
+from typing import Any, ClassVar, Optional, TypeVar, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from meshly.array import ArrayType, ArrayUtils
 from meshly.common import AssetProvider, PathLike, RefInfo
 from meshly.constants import ExportConstants
+from meshly.utils.checksum_utils import ChecksumUtils
 from meshly.utils.schema_utils import SchemaUtils
 from meshly.utils.serialization_utils import SerializationUtils
 from meshly.utils.json_schema import JsonSchema
@@ -45,7 +47,7 @@ class PackableMetadata(BaseModel):
     """
     
     data: dict[str, Any] = Field(..., description="Serializable dict with primitive fields and checksum refs for arrays")
-    schema: dict[str, Any] = Field(..., description="JSON Schema with encoding info")
+    json_schema: dict[str, Any] = Field(..., description="JSON Schema with encoding info")
 
     @staticmethod
     def extract_checksums(data: dict[str, Any]) -> list[str]:
@@ -126,30 +128,38 @@ class Packable(BaseModel):
     """If True, this Packable extracts as a single zip blob reference.
     If False (default), fields are expanded with $refs for individual arrays."""
 
+    _cached_extract: Optional["ExtractedPackable"] = PrivateAttr(default=None)
+    """Cached result of extract() to avoid recomputation."""
+
     class Config:
         arbitrary_types_allowed = True
 
-    def extract(self, include_computed: bool = True) -> "ExtractedPackable":
+    def extract(self) -> "ExtractedPackable":
         """Extract arrays and Packables from this model into serializable data and assets.
         
-        Args:
-            include_computed: If True, includes @computed_field properties in output.
+        Results are cached for efficiency. Subsequent calls return the cached result.
         
         Returns:
             ExtractedPackable with metadata (data + schema) and binary assets.
         """
+        if self._cached_extract is not None:
+            return self._cached_extract
+        
         extracted_result = SerializationUtils.extract_basemodel(
             self, 
-            include_computed=include_computed
+            include_computed=True
         )
 
-        return ExtractedPackable(
+        assert isinstance(extracted_result.value, dict), "Extracted value must be a dict for Packable models"
+
+        self._cached_extract = ExtractedPackable(
             metadata=PackableMetadata(
                 data=extracted_result.value,
-                schema=type(self).model_json_schema()
+                json_schema=type(self).model_json_schema()
             ),
             assets=extracted_result.assets,
         )
+        return self._cached_extract
 
     def encode(self) -> bytes:
         """Encode this Packable to bytes (zip format).
@@ -165,9 +175,9 @@ class Packable(BaseModel):
         
         with zipfile.ZipFile(destination, "w") as zf:
             # Write JSON Schema with encoding info (if available)
-            if extracted.metadata.schema is not None:
+            if extracted.metadata.json_schema is not None:
                 info = zipfile.ZipInfo(ExportConstants.SCHEMA_FILE, date_time=ExportConstants.EXPORT_TIME)
-                zf.writestr(info, json.dumps(extracted.metadata.schema, indent=2, sort_keys=True))
+                zf.writestr(info, json.dumps(extracted.metadata.json_schema, indent=2, sort_keys=True))
 
             # Write data as JSON
             info = zipfile.ZipInfo(ExportConstants.DATA_FILE, date_time=ExportConstants.EXPORT_TIME)
@@ -179,6 +189,11 @@ class Packable(BaseModel):
                 zf.writestr(info, extracted.assets[checksum])
 
         return destination.getvalue()
+
+    @cached_property
+    def checksum(self) -> str:
+        """SHA256 checksum of this Packable's encoded bytes (cached)."""
+        return ChecksumUtils.compute_bytes_checksum(self.encode())
 
     @classmethod
     def decode(
@@ -226,8 +241,8 @@ class Packable(BaseModel):
 
     @staticmethod
     def reconstruct(
-        model_class: Union[type[TModel], JsonSchema, None],
-        data: Union[dict[str, Any]],
+        model_class: Union[type[TModel], list[type[TModel]], JsonSchema, None],
+        data: dict[str, Any],
         assets: AssetProvider = {},
         array_type: ArrayType = "numpy",
         is_lazy: bool = False,
@@ -235,8 +250,9 @@ class Packable(BaseModel):
         """Reconstruct a Pydantic BaseModel from extracted data and assets.
 
         Args:
-            model_class: The Pydantic model class to reconstruct, or a JsonSchema
-                        for schema-based decoding (builds a dynamic model).
+            model_class: The Pydantic model class to reconstruct, a list of model classes
+                        (will match against $module in data), or a JsonSchema for 
+                        schema-based decoding (builds a dynamic model).
             data: Either a dict containing the extracted data.
             assets: Asset provider (dict or callable).
             array_type: Optional array type for conversion.
@@ -254,13 +270,35 @@ class Packable(BaseModel):
             
             # Lazy loading with schema (dynamic model)
             lazy_dynamic = Packable.reconstruct(schema, data, fetch_asset_fn, is_lazy=True)
+            
+            # Multiple model classes - matches $module field
+            model = Packable.reconstruct([ModelA, ModelB], data, assets)
         """
 
         # Schema-based decoding (builds dynamic model)
         if isinstance(model_class, JsonSchema):
             return DynamicModelBuilder.instantiate(model_class, data, assets, array_type, is_lazy)
 
-        assert issubclass(model_class, BaseModel), "model_class must be a Pydantic BaseModel subclass"
+        # List of model classes - find matching class by $module
+        if isinstance(model_class, list):
+            module_name = data.get("$module")
+            if not module_name:
+                raise ValueError(
+                    "Cannot reconstruct with list of model classes: data does not contain $module field"
+                )
+            for cls in model_class:
+                cls_module = f"{cls.__module__}.{cls.__qualname__}"
+                if cls_module == module_name:
+                    model_class = cls
+                    break
+            else:
+                available = [f"{c.__module__}.{c.__qualname__}" for c in model_class]
+                raise ValueError(
+                    f"No matching model class found for $module='{module_name}'. "
+                    f"Available classes: {available}"
+                )
+
+        assert model_class is not None, "model_class must be provided for reconstruction"
         
         # For typed model classes, generate schema and use DynamicModelBuilder for lazy loading
         if is_lazy:

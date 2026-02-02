@@ -6,7 +6,7 @@ triangulation, checksums, serialization, and schema operations.
 """
 
 from .checksum_utils import ChecksumUtils
-from .dynamic_model import DynamicModelBuilder
+from .dynamic_model import DynamicModelBuilder, LazyDynamicModel
 from .element_utils import ElementUtils, TriangulationUtils
 from .json_schema import JsonSchema, JsonSchemaProperty
 from .mesh_utils import MeshUtils
@@ -19,6 +19,7 @@ __all__ = [
     "ElementUtils",
     "JsonSchema",
     "JsonSchemaProperty",
+    "LazyDynamicModel",
     "MeshUtils",
     "SchemaUtils",
     "SerializationUtils",

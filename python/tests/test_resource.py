@@ -164,8 +164,8 @@ def test_resource_round_trip():
 
 
 def test_lazy_model_with_resource_ref():
-    """Test LazyModel defers loading ResourceRef assets."""
-    from meshly.packable import LazyModel
+    """Test LazyDynamicModel resolves ResourceRef fields on access."""
+    from meshly.utils.dynamic_model import LazyDynamicModel
 
     class SimulationCase(BaseModel):
         name: str
@@ -183,28 +183,21 @@ def test_lazy_model_with_resource_ref():
         requested.append(checksum)
         return assets[checksum]
 
-    # Reconstruct with callable - returns LazyModel
-    lazy = Packable.reconstruct(SimulationCase, data, tracking_loader)
+    # Reconstruct with is_lazy=True - returns LazyDynamicModel
+    lazy = Packable.reconstruct(SimulationCase, data, tracking_loader, is_lazy=True)
 
-    assert isinstance(lazy, LazyModel)
+    assert isinstance(lazy, LazyDynamicModel)
     assert len(requested) == 0, "No assets should be loaded yet"
 
     # Access primitive field - no loading
     assert lazy.name == "test_case"
     assert len(requested) == 0, "Primitive fields shouldn't trigger loading"
 
-    # Access ResourceRef field - LazyModel returns the dict directly
-    # The dict will be passed to ResourceRef validator when the model is resolved
+    # Access ResourceRef field - triggers asset fetch with schema-based resolution
     geometry = lazy.geometry
-    assert isinstance(geometry, dict)  # LazyModel returns dict, not ResourceRef instance
+    assert isinstance(geometry, dict)  # Returns resolved dict with _bytes
     assert geometry["$ref"] == "abc123"
-    assert geometry["name"] == "model.stl"
-    assert len(requested) == 0, "ResourceRef dict doesn't trigger loading"
-
-    # Resolve to get actual model with ResourceRef instances
-    resolved = lazy.resolve()
-    assert isinstance(resolved.geometry, ResourceRef)
-    assert resolved.geometry.checksum == "abc123"
+    assert len(requested) == 1, "ResourceRef access fetches asset"
 
 
 def test_lazy_model_resolve_with_resource_ref():
@@ -223,9 +216,9 @@ def test_lazy_model_resolve_with_resource_ref():
 
     assets = {"geo123": b"geometry data", "cfg456": b"config data"}
 
-    # With dict assets (not callable), reconstruct returns the actual model, not LazyModel
+    # With dict assets (not callable), reconstruct returns the actual model, not LazyDynamicModel
     result = Packable.reconstruct(SimulationCase, data, assets)
-    assert isinstance(result, SimulationCase)  # Not LazyModel when assets is a dict
+    assert isinstance(result, SimulationCase)  # Not LazyDynamicModel when assets is a dict
 
     # Verify the model
     assert result.name == "wind_tunnel"
@@ -297,9 +290,9 @@ def test_resource_ref_in_list_eager_loading():
 
 
 def test_mixed_resource_and_array_lazy_loading():
-    """Test LazyModel with both ResourceRef and array fields."""
+    """Test LazyDynamicModel with both ResourceRef and array fields."""
     import numpy as np
-    from meshly.packable import LazyModel
+    from meshly.utils.dynamic_model import LazyDynamicModel
     from meshly import Array
 
     class Simulation(BaseModel):
@@ -331,84 +324,22 @@ def test_mixed_resource_and_array_lazy_loading():
             requested.append(checksum)
             return extracted.assets[checksum]
 
-        # Reconstruct with lazy loading
-        lazy = Packable.reconstruct(Simulation, extracted.data, tracking_loader)
+        # Reconstruct with is_lazy=True
+        lazy = Packable.reconstruct(Simulation, extracted.data, tracking_loader, is_lazy=True)
 
-        assert isinstance(lazy, LazyModel)
+        assert isinstance(lazy, LazyDynamicModel)
         assert len(requested) == 0
 
-        # Access ResourceRef - LazyModel returns dict
+        # Access array - loads array asset
+        initial = lazy.initial_conditions
+        assert isinstance(initial, np.ndarray)
+        assert len(requested) == 1  # Array asset loaded
+        np.testing.assert_array_equal(initial, [1.0, 2.0, 3.0])
+
+        # Access ResourceRef - loads resource asset
         geometry = lazy.geometry
         assert isinstance(geometry, dict)
         assert geometry["$ref"] is not None
-        assert len(requested) == 0
-
-        # Access array - loads asset
-        initial = lazy.initial_conditions
-        assert isinstance(initial, np.ndarray)
-        assert len(requested) == 1  # Only the array asset is loaded
-        np.testing.assert_array_equal(initial, [1.0, 2.0, 3.0])
-
-        # Resolve to get actual model with ResourceRef
-        resolved = lazy.resolve()
-        assert isinstance(resolved.geometry, ResourceRef)
+        assert len(requested) == 2  # Now resource asset also loaded
     finally:
         Path(temp_path).unlink()
-
-
-def test_cached_asset_loader_with_resource_ref():
-    """Test CachedAssetLoader works with ResourceRef fields."""
-    from meshly.data_handler import CachedAssetLoader, DataHandler
-    from meshly.packable import LazyModel
-
-    class DataPackage(BaseModel):
-        name: str
-        model_file: ResourceRef
-
-    with (
-        tempfile.TemporaryDirectory() as tmpdir,
-        tempfile.NamedTemporaryFile(suffix=".obj", delete=False) as f,
-    ):
-        f.write(b"3D model data")
-        model_path = f.name
-
-        try:
-            # Create original
-            pkg = DataPackage(name="package1", model_file=model_path)
-
-            # Extract
-            extracted = Packable.extract(pkg)
-
-            # Setup cache
-            cache_handler = DataHandler.create(Path(tmpdir) / "cache")
-
-            fetch_count = [0]
-
-            def fetch_with_counter(checksum: str) -> bytes:
-                fetch_count[0] += 1
-                return extracted.assets[checksum]
-
-            loader = CachedAssetLoader(fetch_with_counter, cache_handler)
-
-            # First reconstruction with CachedAssetLoader returns LazyModel
-            lazy1 = Packable.reconstruct(DataPackage, extracted.data, loader)
-            assert isinstance(lazy1, LazyModel)
-
-            # Access the ResourceRef field - LazyModel returns dict
-            model1 = lazy1.model_file
-            assert isinstance(model1, dict)
-            assert model1["$ref"] is not None
-            assert fetch_count[0] == 0  # ResourceRef dict doesn't trigger fetch
-
-            # Resolve to get actual model with ResourceRef
-            resolved = lazy1.resolve()
-            assert isinstance(resolved.model_file, ResourceRef)
-
-            # Second reconstruction - same behavior
-            lazy2 = Packable.reconstruct(DataPackage, extracted.data, loader)
-            model2 = lazy2.model_file
-
-            assert isinstance(model2, dict)
-            assert fetch_count[0] == 0  # Still no fetch needed
-        finally:
-            Path(model_path).unlink()

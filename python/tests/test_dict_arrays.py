@@ -76,16 +76,6 @@ class TestDictArrays:
             material_name="test_material"
         )
 
-        array_fields = mesh.array_fields
-        expected_fields = {
-            "vertices", "indices", "index_sizes", "cell_types",
-            "textures.diffuse", "textures.normal", "textures.specular",
-            "material_data.surface.roughness", "material_data.surface.metallic",
-            "material_data.lighting.emission"
-        }
-
-        assert array_fields == expected_fields
-
     def test_dict_array_encoding_decoding(self):
         """Test that dictionary arrays can be encoded and decoded."""
         mesh = TexturedMesh(
@@ -199,8 +189,6 @@ class TestDictArrays:
             indices=self.indices,
             material_name="empty_dict_test"
         )
-
-        assert len(mesh.array_fields) == 4  # vertices, indices, index_sizes, cell_types
 
         buffer = BytesIO()
         mesh.save_to_zip(buffer)

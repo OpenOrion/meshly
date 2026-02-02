@@ -1,231 +1,241 @@
-"""Schema utilities for resolving Pydantic types and merging field data."""
+"""Schema utilities for resolving $ref values during deserialization."""
 
-from typing import Any, Union, get_args, get_origin
+from __future__ import annotations
+
+import gzip
+import importlib
+import types
+import typing
+from typing import Annotated, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
-from ..array import ArrayType
-from ..data_handler import AssetProvider
-from .serialization_utils import SerializationUtils
+from meshly.array import ArrayMetadata, ArrayType, ArrayUtils, EncodedArray
+from meshly.common import AssetProvider
+from meshly.resource import ResourceRef
+from meshly.utils.json_schema import JsonSchema, JsonSchemaProperty
+from meshly.utils.serialization_utils import SerializationUtils
+
+# JSON-compatible value type
+JsonValue = Union[str, int, float, bool, None, dict, list]
 
 
 class SchemaUtils:
-    """Utility class for Pydantic schema operations."""
+    """Utilities for resolving $ref values during deserialization."""
+
+    # -------------------------------------------------------------------------
+    # Type helpers
+    # -------------------------------------------------------------------------
 
     @staticmethod
-    def unwrap_optional(expected_type: Any) -> Any:
-        """Unwrap Optional[X] to X.
-
-        Args:
-            expected_type: Type annotation, possibly Optional
-
-        Returns:
-            Inner type if Optional, otherwise unchanged
-        """
-        origin = get_origin(expected_type)
-        if origin is Union:
-            args = get_args(expected_type)
+    def _unwrap_optional(t: type) -> type:
+        """Unwrap Optional[X] or X | None to get X."""
+        origin = get_origin(t)
+        if origin is Union or isinstance(t, types.UnionType):
+            args = get_args(t)
             non_none = [a for a in args if a is not type(None)]
             if len(non_none) == 1:
                 return non_none[0]
-        return expected_type
+        return t
 
     @staticmethod
-    def resolve_refs_with_schema(
+    def _is_resource_ref(t: type) -> bool:
+        """Check if type is ResourceRef or Annotated[ResourceRef, ...]."""
+        if t is ResourceRef:
+            return True
+        if get_origin(t) is Annotated:
+            args = get_args(t)
+            return bool(args and args[0] is ResourceRef)
+        return False
+
+    @staticmethod
+    def _load_class(module_path: str) -> Union[type, None]:
+        """Load a class from 'package.module.ClassName'."""
+        path, name = module_path.rsplit(".", 1)
+        return getattr(importlib.import_module(path), name, None)
+
+    # -------------------------------------------------------------------------
+    # Public: Resolution entry points
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def resolve_from_class(
         model_class: type[BaseModel],
-        data: dict[str, Any],
+        data: dict[str, JsonValue],
         assets: AssetProvider,
-        array_type: ArrayType | None,
-    ) -> dict[str, Any]:
-        """Resolve $ref references using Pydantic schema for type information.
-
-        Args:
-            model_class: Pydantic model class with field definitions
-            data: Data dict with potential $ref values
-            assets: Asset provider
-            array_type: Target array type
-
-        Returns:
-            Resolved data dict
-        """
-        result = {}
+        array_type: ArrayType = "numpy",
+    ) -> dict[str, object]:
+        """Resolve $ref values using Pydantic model type hints."""
+        hints = typing.get_type_hints(model_class, include_extras=True)
+        result: dict[str, object] = {}
 
         for field_name, field_info in model_class.model_fields.items():
             if field_name not in data:
                 continue
-
-            result[field_name] = SchemaUtils.resolve_value_with_type(
-                data[field_name], field_info.annotation, assets, array_type
+            field_type = hints.get(field_name, field_info.annotation)
+            result[field_name] = SchemaUtils._resolve_with_type(
+                data[field_name], field_type, assets, array_type
             )
 
         return result
 
     @staticmethod
-    def resolve_value_with_type(
-        value: Any,
-        expected_type: Any,
+    def resolve_from_schema(
+        schema: JsonSchema,
+        data: dict[str, JsonValue],
         assets: AssetProvider,
-        array_type: ArrayType | None,
-    ) -> Any:
-        """Resolve a value using the expected type from Pydantic schema.
+        array_type: ArrayType = "numpy",
+    ) -> dict[str, object]:
+        """Resolve $ref values using JSON schema."""
+        result: dict[str, object] = {}
+        for field_name, value in data.items():
+            if field_name.startswith("$"):
+                continue
+            prop = schema.get_resolved_property(field_name)
+            result[field_name] = SchemaUtils._resolve_with_prop(value, prop, schema, assets, array_type)
+        return result
 
-        Args:
-            value: Value to resolve
-            expected_type: Expected type from schema
-            assets: Asset provider
-            array_type: Target array type
+    # -------------------------------------------------------------------------
+    # Private: Type-based resolution (Pydantic models)
+    # -------------------------------------------------------------------------
 
-        Returns:
-            Resolved value
-        """
-        # Import here to avoid circular imports
-        from ..packable import Packable
+    @staticmethod
+    def _resolve_with_type(
+        value: JsonValue,
+        expected_type: type,
+        assets: AssetProvider,
+        array_type: ArrayType = "numpy",
+    ) -> object:
+        """Resolve a value using Pydantic type information."""
+        from meshly.packable import Packable
 
         if value is None:
             return None
 
-        # Handle $ref
+        expected_type = SchemaUtils._unwrap_optional(expected_type)
+
+        # $ref in data - decode array, packable, or return as-is for resources
         if isinstance(value, dict) and "$ref" in value:
-            checksum = value["$ref"]
-
-            expected_type = SchemaUtils.unwrap_optional(expected_type)
-            origin = get_origin(expected_type)
-
-            # Check if it's a ResourceRef - don't unpack, just return the dict
-            # The ResourceRef validator will handle it
-            from ..resource import ResourceRef
-
-            if expected_type is ResourceRef:
+            if SchemaUtils._is_resource_ref(expected_type):
                 return value
-
-            # Get asset bytes for Packable or array
-            asset_bytes = SerializationUtils.get_asset(assets, checksum)
-
             if isinstance(expected_type, type) and issubclass(expected_type, Packable):
-                return expected_type.decode(asset_bytes, array_type)
-
-            return SerializationUtils.unpack_array(asset_bytes, array_type)
-
-        # Handle nested dict
-        if isinstance(value, dict):
-            expected_type = SchemaUtils.unwrap_optional(expected_type)
-            origin = get_origin(expected_type)
-
-            if origin is dict:
-                _, value_type = get_args(expected_type)
-                return {
-                    k: SchemaUtils.resolve_value_with_type(v, value_type, assets, array_type)
-                    for k, v in value.items()
-                }
-
-            if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
-                resolved = SchemaUtils.resolve_refs_with_schema(
-                    expected_type, value, assets, array_type
+                return expected_type.decode(
+                    SerializationUtils.get_asset(assets, value["$ref"]), array_type
                 )
-                return expected_type(**resolved)
+            # Array - get encoding from type annotation
+            return ArrayUtils.decode_array(
+                EncodedArray(
+                    data=SerializationUtils.get_asset(assets, value["$ref"]),
+                    metadata=ArrayMetadata(**{k: v for k, v in value.items() if k != "$ref"}),
+                ),
+                ArrayUtils.get_array_encoding(expected_type),
+                array_type,
+            )
 
-            return value
-
-        # Handle lists/tuples
-        if isinstance(value, (list, tuple)):
-            expected_type = SchemaUtils.unwrap_optional(expected_type)
+        # Nested dict
+        if isinstance(value, dict):
             origin = get_origin(expected_type)
+            # dict[str, X]
+            if origin is dict:
+                _, val_type = get_args(expected_type)
+                return {k: SchemaUtils._resolve_with_type(v, val_type, assets, array_type) for k, v in value.items()}
+            # BaseModel
+            if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
+                resolved = SchemaUtils.resolve_from_class(expected_type, value, assets, array_type)
+                return expected_type(**resolved)
+            # $module: dynamic class
+            if "$module" in value:
+                cls = SchemaUtils._load_class(value["$module"])
+                if cls and isinstance(cls, type) and issubclass(cls, BaseModel):
+                    resolved = SchemaUtils.resolve_from_class(
+                        cls, {k: v for k, v in value.items() if k != "$module"}, assets, array_type
+                    )
+                    return cls(**resolved)
+            # Untyped dict
+            return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
 
-            if origin in (list, tuple):
-                args = get_args(expected_type)
-                elem_type = args[0] if args else Any
-            else:
-                elem_type = Any
-
-            result = [
-                SchemaUtils.resolve_value_with_type(v, elem_type, assets, array_type) for v in value
-            ]
+        # List/tuple
+        if isinstance(value, (list, tuple)):
+            origin = get_origin(expected_type)
+            elem_type = get_args(expected_type)[0] if origin in (list, tuple) and get_args(expected_type) else object
+            result = [SchemaUtils._resolve_with_type(v, elem_type, assets, array_type) for v in value]
             return result if isinstance(value, list) else tuple(result)
 
         return value
 
-    @staticmethod
-    def merge_field_data_with_schema(
-        model_class: type[BaseModel],
-        data: dict[str, Any],
-        field_data: dict[str, Any],
-    ) -> None:
-        """Merge metadata field_data into data using Pydantic schema.
-
-        Args:
-            model_class: Pydantic model class
-            data: Target data dict (modified in place)
-            field_data: Source field data from metadata
-        """
-        for key, value in field_data.items():
-            if key not in model_class.model_fields:
-                data[key] = value
-                continue
-
-            field_type = model_class.model_fields[key].annotation
-            data[key] = SchemaUtils.merge_value_with_schema(value, field_type, data.get(key))
+    # -------------------------------------------------------------------------
+    # Private: Schema-based resolution (JSON schema)
+    # -------------------------------------------------------------------------
 
     @staticmethod
-    def merge_value_with_schema(
-        metadata_value: Any,
-        expected_type: Any,
-        existing_value: Any,
-    ) -> Any:
-        """Merge a metadata value with existing data using the schema type.
+    def _resolve_with_prop(
+        value: JsonValue,
+        prop: Union[JsonSchemaProperty, None],
+        schema: JsonSchema,
+        assets: AssetProvider,
+        array_type: ArrayType = "numpy",
+    ) -> object:
+        """Resolve a value using JSON schema property."""
+        from meshly.packable import Packable
 
-        Args:
-            metadata_value: Value from metadata
-            expected_type: Expected type from schema
-            existing_value: Existing value in data dict
+        if value is None:
+            return None
 
-        Returns:
-            Merged value
-        """
-        if metadata_value is None:
-            return existing_value
+        # Resolve schema $ref and unwrap Optional
+        if prop and prop.ref:
+            prop = schema.resolve_ref(prop.ref) or prop
+        if prop and prop.anyOf:
+            prop = prop.get_inner_type() or prop
 
-        expected_type = SchemaUtils.unwrap_optional(expected_type)
-        origin = get_origin(expected_type)
+        # $ref in data
+        if isinstance(value, dict) and "$ref" in value:
+            checksum = value["$ref"]
+            metadata = {k: v for k, v in value.items() if k != "$ref"}
+            asset_bytes = SerializationUtils.get_asset(assets, checksum)
 
-        # Handle dict type
-        if origin is dict:
-            _, value_type = get_args(expected_type)
-            if isinstance(metadata_value, dict) and isinstance(existing_value, dict):
-                result = dict(existing_value)
-                for k, v in metadata_value.items():
-                    result[k] = SchemaUtils.merge_value_with_schema(
-                        v, value_type, existing_value.get(k)
-                    )
-                return result
-            elif isinstance(metadata_value, dict):
+            # Resource
+            is_resource = (prop and prop.is_resource_type()) or "ext" in metadata or metadata.get("encoding") == "gzip"
+            if is_resource:
+                data = gzip.decompress(asset_bytes) if metadata.get("encoding") == "gzip" else asset_bytes
+                return {"$ref": checksum, "ext": metadata.get("ext", ""), "_bytes": data}
+
+            # Array
+            if "dtype" in metadata and "shape" in metadata:
+                encoding = prop.type if prop and prop.is_array_type() else "array"
+                return ArrayUtils.decode_array(
+                    EncodedArray(
+                        data=asset_bytes, 
+                        metadata=ArrayMetadata(**{k: v for k, v in value.items() if k != "$ref"})
+                    ), 
+                    encoding,
+                    array_type,
+                )
+
+            # Packable
+            return Packable.decode(asset_bytes, array_type)
+
+        # No schema info - fallback
+        if prop is None:
+            return value
+
+        # Nested dict
+        if isinstance(value, dict) and prop.type == "object":
+            # dict[str, X] via additionalProperties
+            if prop.additionalProperties and isinstance(prop.additionalProperties, JsonSchemaProperty):
+                item_prop = prop.additionalProperties
+                if item_prop.ref:
+                    item_prop = schema.resolve_ref(item_prop.ref) or item_prop
+                return {k: SchemaUtils._resolve_with_prop(v, item_prop, schema, assets, array_type) for k, v in value.items()}
+            # Named properties
+            if prop.properties:
                 return {
-                    k: SchemaUtils.merge_value_with_schema(v, value_type, None)
-                    for k, v in metadata_value.items()
+                    k: SchemaUtils._resolve_with_prop(v, prop.properties.get(k), schema, assets, array_type)
+                    for k, v in value.items() if not k.startswith("$")
                 }
-            return metadata_value
+            return value
 
-        # Handle BaseModel type
-        if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
-            if isinstance(metadata_value, dict):
-                if isinstance(existing_value, dict):
-                    merged = dict(existing_value)
-                    SchemaUtils.merge_field_data_with_schema(expected_type, merged, metadata_value)
-                    return expected_type(**merged)
-                else:
-                    data = {}
-                    SchemaUtils.merge_field_data_with_schema(expected_type, data, metadata_value)
-                    return expected_type(**data)
-            return metadata_value
+        # List
+        if isinstance(value, list):
+            return [SchemaUtils._resolve_with_prop(v, prop.items, schema, assets, array_type) for v in value]
 
-        # Handle list type
-        if origin in (list, tuple):
-            if isinstance(metadata_value, (list, tuple)):
-                args = get_args(expected_type)
-                elem_type = args[0] if args else Any
-                result = [
-                    SchemaUtils.merge_value_with_schema(v, elem_type, None) for v in metadata_value
-                ]
-                return result if origin is list else tuple(result)
-            return metadata_value
-
-        return metadata_value
+        return value

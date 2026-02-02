@@ -12,10 +12,10 @@ The Mesh class inherits from Packable and adds:
 - Marker support for boundary conditions and regions
 """
 
-from .utils import ElementUtils, TriangulationUtils, MeshUtils
-from .cell_types import CellTypeUtils, VTKCellType
-from .array import Array, ArrayUtils, VertexBuffer, IndexSequence
-from .packable import Packable
+from meshly.array import Array, ArrayUtils, IndexSequence, VertexBuffer
+from meshly.cell_types import CellTypeUtils, VTKCellType
+from meshly.packable import Packable
+from meshly.utils import ElementUtils, MeshUtils, TriangulationUtils
 from meshoptimizer import (
     optimize_vertex_cache as meshopt_optimize_vertex_cache,
     optimize_overdraw as meshopt_optimize_overdraw,
@@ -52,7 +52,7 @@ class Mesh(Packable):
     types (VertexBuffer, IndexSequence).
     """
 
-    _self_contained: ClassVar[bool] = True
+    is_contained: ClassVar[bool] = True
     """Mesh extracts as a single zip blob when nested in other Packables."""
 
     # ============================================================

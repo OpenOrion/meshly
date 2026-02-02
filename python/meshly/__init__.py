@@ -13,43 +13,31 @@ meshoptimizer, including:
 7. CellTypeUtils for VTK cell type conversions and edge topology extraction
 """
 
-from .array import (
+from meshly.array import (
     Array,
     ArrayMetadata,
-    ArrayRefMetadata,
     ArrayType,
     ArrayUtils,
     EncodedArray,
-    EncodingType,
+    ArrayEncoding,
     IndexSequence,
     PackableRefMetadata,
     VertexBuffer,
-
 )
-from .cell_types import (
+from meshly.cell_types import (
     CellType,
     CellTypeUtils,
     VTKCellType,
 )
-from .data_handler import (
+from meshly.common import (
     AssetProvider,
-    CachedAssetLoader,
-    DataHandler,
 )
-from .mesh import (
-    Mesh,
-)
-from .packable import ExtractedAssets, LazyModel, Packable, SerializedPackableData
-from .resource import (
-    Resource,
-    ResourceRef,
-    ResourceRefMetadata
-)
-from .constants import ExportConstants
-from .utils import (
-    ElementUtils,
-    MeshUtils,
-)
+from meshly.constants import ExportConstants
+from meshly.mesh import Mesh
+from meshly.packable import ExtractedAssets, Packable, SerializedPackableData
+from meshly.utils.dynamic_model import LazyDynamicModel
+from meshly.resource import Resource, ResourceRef, ResourceRefMetadata
+from meshly.utils import ElementUtils, MeshUtils
 
 __all__ = [
     "PackableRefMetadata",
@@ -59,21 +47,18 @@ __all__ = [
     "Packable",
     "SerializedPackableData",
     "ExtractedAssets",
-    "LazyModel",
+    "LazyDynamicModel",
     "ArrayType",
-    # Data handlers
+    # Asset providers
     "AssetProvider",
-    "CachedAssetLoader",
-    "DataHandler",
     # Mesh classes
     "Mesh",
     # Array types and utilities
     "Array",
     "VertexBuffer",
     "IndexSequence",
-    "ArrayRefMetadata",
     "EncodedArray",
-    "EncodingType",
+    "ArrayEncoding",
     "ArrayMetadata",
     "ArrayUtils",
 

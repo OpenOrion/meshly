@@ -4,12 +4,40 @@ ResourceRef allows file paths to be used as Pydantic fields that automatically
 get serialized by checksum when extracted/reconstructed.
 """
 
-import os
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, GetJsonSchemaHandler, PrivateAttr, model_validator
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
+
+from meshly.utils.checksum_utils import ChecksumUtils
+
+
+class ResourceRefMetadata(BaseModel):
+    """Metadata for resource $ref objects in data.json.
+    
+    Resources are gzip-compressed file data.
+    
+    Example $ref in data.json:
+        {"$ref": "abc123", "name": "material.mtl"}
+    """
+    
+    ref: str = Field(..., alias="$ref", description="Asset checksum reference")
+    name: Optional[str] = Field(None, description="Original filename (e.g., 'material.mtl')")
+    
+    model_config = {"populate_by_name": True}
+
+
+class _ResourceAnnotation:
+    """Pydantic annotation for resource references with custom JSON schema."""
+    
+    def __get_pydantic_json_schema__(
+        self, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Return JSON schema with type as 'resource'."""
+        return {"type": "resource"}
 
 
 class ResourceRef(BaseModel):
@@ -87,7 +115,6 @@ class ResourceRef(BaseModel):
             return self._explicit_checksum
 
         if self.path and Path(self.path).exists():
-            from .utils.checksum_utils import ChecksumUtils
 
             data = Path(self.path).read_bytes()
             return ChecksumUtils.compute_bytes_checksum(data)
@@ -120,8 +147,11 @@ class ResourceRef(BaseModel):
             f"ResourceRef has no readable path. Path: {self.path}, Checksum: {self._explicit_checksum}, Ext: {self.ext}"
         )
 
-    def resolve_path(self) -> Path:
+    def resolve_path(self, resource_path: Optional[Path] = None) -> Path:
         """Get the file path for reading.
+
+        Args:
+            resource_path: Optional resource directory path to search for cached files
 
         Returns:
             Path object
@@ -129,27 +159,19 @@ class ResourceRef(BaseModel):
         Raises:
             ValueError: If no path available
         """
-        # First try the original path if it exists on this system
-        if self.path:
-            p = Path(self.path)
-            if p.exists():
-                return p
+        if self.path and Path(self.path).exists():
+            return Path(self.path)
 
-        # Try to find in resource cache by checksum
         cs = self._explicit_checksum or self.checksum
-        if cs:
-            # Check MESHLY_RESOURCE_PATH environment variable (set by container/server executor)
-            resource_path = os.environ.get("MESHLY_RESOURCE_PATH")
-            if resource_path:
-                # Include extension if available (e.g., checksum.stl)
-                filename = cs + (self.ext or "")
-                cache_path = Path(resource_path) / filename
+        if cs and resource_path:
+            for suffix in [self.ext or "", ""]:
+                cache_path = resource_path / (cs + suffix)
                 if cache_path.exists():
                     return cache_path
 
         raise ValueError(f"ResourceRef has no path (checksum={cs})")
 
 
-# For convenience, export Resource as alias to ResourceRef
-# Users can use either Resource or ResourceRef as type annotation
-Resource = ResourceRef
+# Annotated type alias for use in Pydantic models with proper JSON schema
+Resource = Annotated[ResourceRef, _ResourceAnnotation()]
+"""Resource reference with custom JSON schema type='resource'."""

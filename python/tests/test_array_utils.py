@@ -20,7 +20,7 @@ class TestArrayUtils:
     def test_encode_decode_array_1d(self):
         """Test encoding and decoding a 1D array."""
         encoded = ArrayUtils.encode_array(self.array_1d)
-        decoded = ArrayUtils.decode_array(encoded)
+        decoded = ArrayUtils.decode_array(encoded, "array")
 
         np.testing.assert_allclose(decoded, self.array_1d, rtol=1e-5)
         assert len(encoded.data) < self.array_1d.nbytes
@@ -28,7 +28,7 @@ class TestArrayUtils:
     def test_encode_decode_array_2d(self):
         """Test encoding and decoding a 2D array."""
         encoded = ArrayUtils.encode_array(self.array_2d)
-        decoded = ArrayUtils.decode_array(encoded)
+        decoded = ArrayUtils.decode_array(encoded, "array")
 
         np.testing.assert_allclose(decoded, self.array_2d, rtol=1e-5)
         assert len(encoded.data) < self.array_2d.nbytes
@@ -36,7 +36,7 @@ class TestArrayUtils:
     def test_encode_decode_array_3d(self):
         """Test encoding and decoding a 3D array."""
         encoded = ArrayUtils.encode_array(self.array_3d)
-        decoded = ArrayUtils.decode_array(encoded)
+        decoded = ArrayUtils.decode_array(encoded, "array")
 
         np.testing.assert_allclose(decoded, self.array_3d, rtol=1e-5)
         assert len(encoded.data) < self.array_3d.nbytes
@@ -44,7 +44,7 @@ class TestArrayUtils:
     def test_encode_decode_array_int(self):
         """Test encoding and decoding an integer array."""
         encoded = ArrayUtils.encode_array(self.array_int)
-        decoded = ArrayUtils.decode_array(encoded)
+        decoded = ArrayUtils.decode_array(encoded, "array")
 
         np.testing.assert_allclose(decoded, self.array_int, rtol=1e-5)
         assert len(encoded.data) < self.array_int.nbytes
@@ -54,7 +54,7 @@ class TestArrayUtils:
         """Test that encoding and decoding preserves array shape."""
         array = np.random.random(shape).astype(np.float32)
         encoded = ArrayUtils.encode_array(array)
-        decoded = ArrayUtils.decode_array(encoded)
+        decoded = ArrayUtils.decode_array(encoded, "array")
 
         assert decoded.shape == shape
         np.testing.assert_allclose(decoded, array, rtol=1e-5)
@@ -70,7 +70,7 @@ class TestArrayUtils:
 
         for test_array in test_arrays:
             encoded = ArrayUtils.encode_array(test_array)
-            decoded = ArrayUtils.decode_array(encoded)
+            decoded = ArrayUtils.decode_array(encoded, "array")
 
             np.testing.assert_allclose(decoded, test_array, rtol=1e-5)
             assert decoded.shape == test_array.shape

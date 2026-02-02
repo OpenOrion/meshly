@@ -11,7 +11,7 @@ import pytest
 from typing import Optional, List, Dict, Any
 from pydantic import Field, ValidationError
 
-from meshly import Mesh
+from meshly import Mesh, Array
 from meshly.cell_types import VTKCellType
 
 
@@ -156,8 +156,8 @@ class TestPydanticMesh:
 
 class CustomMesh(Mesh):
     """A custom mesh class for testing."""
-    normals: np.ndarray = Field(..., description="Vertex normals")
-    colors: Optional[np.ndarray] = Field(None, description="Vertex colors")
+    normals: Array = Field(..., description="Vertex normals")
+    colors: Optional[Array] = Field(None, description="Vertex colors")
     material_name: str = Field("default", description="Material name")
     tags: List[str] = Field(default_factory=list, description="Tags for the mesh")
     properties: Dict[str, Any] = Field(default_factory=dict, description="Additional properties")

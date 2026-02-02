@@ -7,30 +7,25 @@ This module provides:
 3. Mesh operations via MeshUtils utility class
 
 The Mesh class inherits from Packable and adds:
-- Specialized meshoptimizer encoding for vertices and indices
+- Specialized meshoptimizer encoding for vertices and indices via Annotated types
 - Mesh operations: triangulate, optimize, simplify
 - Marker support for boundary conditions and regions
 """
 
-from .utils import ElementUtils, TriangulationUtils, MeshUtils
-from .data_handler import DataHandler
-from .cell_types import CellTypeUtils, VTKCellType
-from .array import ArrayUtils, ArrayType, Array
-from .packable import Packable, PackableMetadata, CustomFieldConfig
+from meshly.array import Array, ArrayUtils, IndexSequence, VertexBuffer
+from meshly.cell_types import CellTypeUtils, VTKCellType
+from meshly.packable import Packable
+from meshly.utils import ElementUtils, MeshUtils, TriangulationUtils
 from meshoptimizer import (
-    encode_vertex_buffer,
-    encode_index_sequence,
-    decode_vertex_buffer,
-    decode_index_sequence,
     optimize_vertex_cache as meshopt_optimize_vertex_cache,
     optimize_overdraw as meshopt_optimize_overdraw,
     optimize_vertex_fetch as meshopt_optimize_vertex_fetch,
     simplify as meshopt_simplify,
 )
 from typing import (
+    ClassVar,
     Dict,
     Optional,
-    Type,
     Any,
     TypeVar,
     List,
@@ -38,28 +33,11 @@ from typing import (
     Union,
 )
 import numpy as np
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 
 # Type variable for the Mesh class
 T = TypeVar("T", bound="Mesh")
-
-
-class MeshSizeInfo(BaseModel):
-    """Mesh size information for meshoptimizer encoding/decoding."""
-    vertex_count: int = Field(..., description="Number of vertices")
-    vertex_size: int = Field(..., description="Size of each vertex in bytes")
-    index_count: Optional[int] = Field(None, description="Number of indices")
-    index_size: int = Field(
-        default=4, description="Size of each index in bytes")
-
-
-class MeshMetadata(PackableMetadata):
-    """Metadata for a Mesh saved to zip, extending PackableMetadata with mesh-specific info."""
-    mesh_size: MeshSizeInfo = Field(...,
-                                    description="Mesh size information for decoding")
-    array_type: ArrayType = Field(
-        default="numpy", description="Array backend type for vertices/indices")
 
 
 class Mesh(Packable):
@@ -69,77 +47,25 @@ class Mesh(Packable):
     Users can inherit from this class to define custom mesh types with additional
     numpy array attributes that will be automatically encoded/decoded.
 
-    Inherits from Packable for automatic array serialization. Mesh adds
-    specialized handling for vertices and indices using meshoptimizer encoding.
+    Inherits from Packable for automatic array serialization. Mesh uses
+    specialized meshoptimizer encoding for vertices and indices via Annotated
+    types (VertexBuffer, IndexSequence).
     """
 
-    # ============================================================
-    # Custom field encoders/decoders for meshoptimizer
-    # ============================================================
-
-    @staticmethod
-    def _encode_vertices(vertices: Array, mesh: "Mesh") -> bytes:
-        """Encode vertices using meshoptimizer."""
-        return encode_vertex_buffer(
-            vertices,
-            mesh.vertex_count,
-            vertices.itemsize * vertices.shape[1],
-        )
-
-    @staticmethod
-    def _decode_vertices(encoded_bytes: bytes, metadata: MeshMetadata, array_type: Optional[ArrayType]) -> Array:
-        """Decode vertices using meshoptimizer."""
-        mesh_size = metadata.mesh_size
-        effective_type = array_type or metadata.array_type
-        vertices = decode_vertex_buffer(
-            mesh_size.vertex_count, mesh_size.vertex_size, encoded_bytes
-        )
-        return ArrayUtils.convert_array(vertices, effective_type)
-
-    @staticmethod
-    def _encode_indices(indices: Array, mesh: "Mesh") -> bytes:
-        """Encode indices using meshoptimizer."""
-        return encode_index_sequence(indices, mesh.index_count, mesh.vertex_count)
-
-    @staticmethod
-    def _decode_indices(encoded_bytes: bytes, metadata: MeshMetadata, array_type: Optional[ArrayType]) -> Array:
-        """Decode indices using meshoptimizer."""
-        mesh_size = metadata.mesh_size
-        effective_type = array_type or metadata.array_type
-        indices = decode_index_sequence(
-            mesh_size.index_count, mesh_size.index_size, encoded_bytes
-        )
-        return ArrayUtils.convert_array(indices, effective_type)
-
-    @classmethod
-    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
-        """Custom field configurations for mesh-specific encoding/decoding."""
-        return {
-            'vertices': CustomFieldConfig(
-                file_name='vertices',
-                encode=Mesh._encode_vertices,
-                decode=Mesh._decode_vertices,
-                optional=False
-            ),
-            'indices': CustomFieldConfig(
-                file_name='indices',
-                encode=Mesh._encode_indices,
-                decode=Mesh._decode_indices,
-                optional=True
-            ),
-        }
+    is_contained: ClassVar[bool] = True
+    """Mesh extracts as a single zip blob when nested in other Packables."""
 
     # ============================================================
-    # Field definitions
+    # Field definitions with encoding specified via Annotated types
     # ============================================================
 
-    vertices: Array = Field(
+    vertices: VertexBuffer = Field(
         ...,
         description="Vertex data as a numpy or JAX array",
     )
-    indices: Optional[Union[Array, List[Any]]] = Field(
+    indices: Optional[Union[IndexSequence, List[Any]]] = Field(
         None,
-        description="Index data as a flattened 1D numpy/JAX array or list of polygons",
+        description="Index data as a flattened 1D numpy/JAX array",
     )
     index_sizes: Optional[Union[Array, List[int]]] = None
     """
@@ -640,24 +566,3 @@ class Mesh(Packable):
             num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
 
         return result_mesh
-
-    def _create_metadata(self, field_data: Dict[str, Any]) -> MeshMetadata:
-        """Create MeshMetadata with mesh size info for meshoptimizer decoding."""
-        mesh_size = MeshSizeInfo(
-            vertex_count=self.vertex_count,
-            vertex_size=self.vertices.itemsize * self.vertices.shape[1],
-            index_count=self.index_count if self.indices is not None else None,
-            index_size=self.indices.itemsize if self.indices is not None else 4,
-        )
-        return MeshMetadata(
-            class_name=self.__class__.__name__,
-            module_name=self.__class__.__module__,
-            field_data=field_data,
-            mesh_size=mesh_size,
-            array_type=ArrayUtils.detect_array_type(self.vertices),
-        )
-
-    @classmethod
-    def load_metadata(cls, handler: DataHandler, metadata_cls: Type[PackableMetadata] = None) -> MeshMetadata:
-        """Load MeshMetadata from handler."""
-        return super().load_metadata(handler, MeshMetadata)

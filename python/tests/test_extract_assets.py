@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
-from meshly import Packable, Resource, ResourceRef
+from meshly import Packable, ResourceRef
 from meshly.packable import ExtractedAssets
 
 
@@ -69,6 +69,8 @@ class TestExtractAssets:
 
     def test_extract_assets_from_resource_ref(self):
         """Test extracting assets from ResourceRef."""
+        import gzip
+
         with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f:
             f.write(b"STL geometry data")
             temp_path = f.name
@@ -84,7 +86,8 @@ class TestExtractAssets:
             assert len(extracted.extensions) == 1
 
             checksum = list(extracted.assets.keys())[0]
-            assert extracted.assets[checksum] == b"STL geometry data"
+            # Resources are stored gzip-compressed
+            assert gzip.decompress(extracted.assets[checksum]) == b"STL geometry data"
             assert extracted.extensions[checksum] == ".stl"
         finally:
             Path(temp_path).unlink()
@@ -261,7 +264,7 @@ class TestExtractAssets:
 
         try:
             # Simulate function arguments
-            def simulate(geometry: Resource, initial_temp: np.ndarray, config: dict):
+            def simulate(geometry: ResourceRef, initial_temp: np.ndarray, config: dict):
                 pass
 
             # Create args

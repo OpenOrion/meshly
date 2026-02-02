@@ -16,9 +16,15 @@ meshoptimizer, including:
 from .array import (
     Array,
     ArrayMetadata,
+    ArrayRefMetadata,
     ArrayType,
     ArrayUtils,
     EncodedArray,
+    EncodingType,
+    IndexSequence,
+    PackableRefMetadata,
+    VertexBuffer,
+
 )
 from .cell_types import (
     CellType,
@@ -33,20 +39,24 @@ from .data_handler import (
 from .mesh import (
     Mesh,
 )
-from .packable import ExtractedAssets, LazyModel, Packable, PackableMetadata, SerializedPackableData
+from .packable import ExtractedAssets, LazyModel, Packable, SerializedPackableData
 from .resource import (
     Resource,
     ResourceRef,
+    ResourceRefMetadata
 )
+from .constants import ExportConstants
 from .utils import (
     ElementUtils,
     MeshUtils,
 )
 
 __all__ = [
+    "PackableRefMetadata",
+    "ResourceRefMetadata",
+
     # Packable base class
     "Packable",
-    "PackableMetadata",
     "SerializedPackableData",
     "ExtractedAssets",
     "LazyModel",
@@ -59,9 +69,14 @@ __all__ = [
     "Mesh",
     # Array types and utilities
     "Array",
+    "VertexBuffer",
+    "IndexSequence",
+    "ArrayRefMetadata",
     "EncodedArray",
+    "EncodingType",
     "ArrayMetadata",
     "ArrayUtils",
+
     # Cell type utilities
     "CellType",
     "VTKCellType",
@@ -69,6 +84,8 @@ __all__ = [
     # Resource handling
     "Resource",
     "ResourceRef",
+    # File format constants
+    "ExportConstants",
     # Element utilities
     "ElementUtils",
     # Mesh operations

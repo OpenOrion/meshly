@@ -261,7 +261,7 @@ class ZipHandler(DataHandler):
             return [
                 Path(p.filename)
                 for p in self.zip_file.infolist()
-                if str(Path(p.filename).parent) == self.resolved_path(subpath)
+                if str(Path(p.filename).parent) == str(self.resolved_path(subpath))
             ]
 
     def exists(self, subpath: PathLike) -> bool:

@@ -5,13 +5,13 @@ import numpy as np
 from io import BytesIO
 from typing import Optional
 
-from meshly import Mesh
+from meshly import Mesh, Array
 from meshly.packable import Packable
 
 
 class NormalsMesh(Mesh):
     """Custom mesh with normals for testing."""
-    normals: Optional[np.ndarray] = None
+    normals: Optional[Array] = None
 
 
 class TestLoadArray:

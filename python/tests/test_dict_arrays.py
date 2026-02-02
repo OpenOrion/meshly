@@ -13,13 +13,13 @@ from io import BytesIO
 from typing import Dict, Any
 from pydantic import Field
 
-from meshly import Mesh
+from meshly import Mesh, Array
 
 
 class TexturedMesh(Mesh):
     """A custom mesh class with dictionary fields containing numpy arrays."""
 
-    textures: Dict[str, np.ndarray] = Field(
+    textures: Dict[str, Array] = Field(
         default_factory=dict,
         description="Dictionary of texture arrays"
     )

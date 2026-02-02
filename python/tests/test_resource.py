@@ -3,10 +3,9 @@
 import tempfile
 from pathlib import Path
 
-import pytest
 from pydantic import BaseModel, ConfigDict
 
-from meshly import Packable, Resource, ResourceRef
+from meshly import Packable, ResourceRef
 
 
 def test_resource_ref_from_path():
@@ -39,7 +38,7 @@ def test_resource_field_validation():
     """Test Resource field type validation."""
 
     class TestModel(BaseModel):
-        geometry: Resource
+        geometry: ResourceRef
 
     with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f:
         f.write(b"STL data")
@@ -69,10 +68,11 @@ def test_resource_field_validation():
 
 def test_packable_extract_with_resource():
     """Test that Packable.extract() handles ResourceRef correctly."""
+    import gzip
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
+        geometry: ResourceRef
 
     with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f:
         f.write(b"STL geometry data")
@@ -86,13 +86,15 @@ def test_packable_extract_with_resource():
 
         assert extracted.data["name"] == "test"
         assert "$ref" in extracted.data["geometry"]
-        assert "ext" in extracted.data["geometry"]
-        assert extracted.data["geometry"]["ext"] == ".stl"
+        # name contains the filename (from which ext can be derived)
+        assert "name" in extracted.data["geometry"]
+        assert extracted.data["geometry"]["name"].endswith(".stl")
 
-        # Should have the file data in assets
+        # Should have the gzip-compressed file data in assets
         checksum = extracted.data["geometry"]["$ref"]
         assert checksum in extracted.assets
-        assert extracted.assets[checksum] == b"STL geometry data"
+        # Data is gzip compressed
+        assert gzip.decompress(extracted.assets[checksum]) == b"STL geometry data"
     finally:
         Path(temp_path).unlink()
 
@@ -102,10 +104,10 @@ def test_packable_reconstruct_with_resource():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
+        geometry: ResourceRef
 
-    # Simulate serialized data
-    data = {"name": "test", "geometry": {"$ref": "abc123", "ext": ".stl"}}
+    # Simulate serialized data - name contains the filename
+    data = {"name": "test", "geometry": {"$ref": "abc123", "name": "model.stl"}}
     assets = {"abc123": b"STL geometry data"}
 
     # Reconstruct should create ResourceRef with checksum
@@ -114,7 +116,6 @@ def test_packable_reconstruct_with_resource():
     assert case.name == "test"
     assert isinstance(case.geometry, ResourceRef)
     assert case.geometry.checksum == "abc123"
-    assert case.geometry.ext == ".stl"
 
 
 def test_resource_round_trip():
@@ -122,8 +123,8 @@ def test_resource_round_trip():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
-        config: Resource
+        geometry: ResourceRef
+        config: ResourceRef
 
     with (
         tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f1,
@@ -156,8 +157,7 @@ def test_resource_round_trip():
         assert isinstance(case2.config, ResourceRef)
         assert case2.geometry.checksum is not None
         assert case2.config.checksum is not None
-        assert case2.geometry.ext == ".stl"
-        assert case2.config.ext == ".json"
+        # Extensions can be derived from the name field in the serialized data
     finally:
         Path(geom_path).unlink()
         Path(config_path).unlink()
@@ -169,10 +169,10 @@ def test_lazy_model_with_resource_ref():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
+        geometry: ResourceRef
 
-    # Simulate serialized data with ResourceRef
-    data = {"name": "test_case", "geometry": {"$ref": "abc123", "ext": ".stl"}}
+    # Simulate serialized data with ResourceRef - use name instead of ext
+    data = {"name": "test_case", "geometry": {"$ref": "abc123", "name": "model.stl"}}
 
     assets = {"abc123": b"STL geometry data"}
 
@@ -198,14 +198,13 @@ def test_lazy_model_with_resource_ref():
     geometry = lazy.geometry
     assert isinstance(geometry, dict)  # LazyModel returns dict, not ResourceRef instance
     assert geometry["$ref"] == "abc123"
-    assert geometry["ext"] == ".stl"
+    assert geometry["name"] == "model.stl"
     assert len(requested) == 0, "ResourceRef dict doesn't trigger loading"
 
     # Resolve to get actual model with ResourceRef instances
     resolved = lazy.resolve()
     assert isinstance(resolved.geometry, ResourceRef)
     assert resolved.geometry.checksum == "abc123"
-    assert resolved.geometry.ext == ".stl"
 
 
 def test_lazy_model_resolve_with_resource_ref():
@@ -213,13 +212,13 @@ def test_lazy_model_resolve_with_resource_ref():
 
     class SimulationCase(BaseModel):
         name: str
-        geometry: Resource
-        config: Resource
+        geometry: ResourceRef
+        config: ResourceRef
 
     data = {
         "name": "wind_tunnel",
-        "geometry": {"$ref": "geo123", "ext": ".stl"},
-        "config": {"$ref": "cfg456", "ext": ".json"},
+        "geometry": {"$ref": "geo123", "name": "model.stl"},
+        "config": {"$ref": "cfg456", "name": "config.json"},
     }
 
     assets = {"geo123": b"geometry data", "cfg456": b"config data"}
@@ -241,13 +240,13 @@ def test_resource_ref_in_nested_dict_eager_loading():
 
     class ExperimentCase(BaseModel):
         name: str
-        files: dict[str, Resource]
+        files: dict[str, ResourceRef]
 
     data = {
         "name": "exp1",
         "files": {
-            "mesh": {"$ref": "mesh123", "ext": ".msh"},
-            "texture": {"$ref": "tex456", "ext": ".png"},
+            "mesh": {"$ref": "mesh123", "name": "mesh.msh"},
+            "texture": {"$ref": "tex456", "name": "texture.png"},
         },
     }
 
@@ -267,8 +266,6 @@ def test_resource_ref_in_nested_dict_eager_loading():
     assert isinstance(files["texture"], ResourceRef)
     assert files["mesh"].checksum == "mesh123"
     assert files["texture"].checksum == "tex456"
-    assert files["mesh"].ext == ".msh"
-    assert files["texture"].ext == ".png"
 
 
 def test_resource_ref_in_list_eager_loading():
@@ -276,11 +273,11 @@ def test_resource_ref_in_list_eager_loading():
 
     class BatchJob(BaseModel):
         name: str
-        input_files: list[Resource]
+        input_files: list[ResourceRef]
 
     data = {
         "name": "batch1",
-        "input_files": [{"$ref": "file1", "ext": ".dat"}, {"$ref": "file2", "ext": ".dat"}],
+        "input_files": [{"$ref": "file1", "name": "input1.dat"}, {"$ref": "file2", "name": "input2.dat"}],
     }
 
     assets = {"file1": b"data1", "file2": b"data2"}
@@ -303,13 +300,14 @@ def test_mixed_resource_and_array_lazy_loading():
     """Test LazyModel with both ResourceRef and array fields."""
     import numpy as np
     from meshly.packable import LazyModel
+    from meshly import Array
 
     class Simulation(BaseModel):
         model_config = ConfigDict(arbitrary_types_allowed=True)
 
         name: str
-        geometry: Resource
-        initial_conditions: np.ndarray
+        geometry: ResourceRef
+        initial_conditions: Array
 
     # Create original data
     with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as f:
@@ -365,7 +363,7 @@ def test_cached_asset_loader_with_resource_ref():
 
     class DataPackage(BaseModel):
         name: str
-        model_file: Resource
+        model_file: ResourceRef
 
     with (
         tempfile.TemporaryDirectory() as tmpdir,

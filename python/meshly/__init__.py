@@ -36,6 +36,7 @@ from meshly.mesh import Mesh
 from meshly.packable import ExtractedPackable, Packable, PackableMetadata, PackableRefInfo
 from meshly.utils.dynamic_model import LazyModel
 from meshly.resource import Resource
+from meshly.asset_store import AssetStore
 from meshly.utils import ElementUtils, MeshUtils
 
 __all__ = [
@@ -47,6 +48,8 @@ __all__ = [
     "ExtractedPackable",
     "LazyModel",
     "ArrayType",
+    # Asset store
+    "AssetStore",
     # Asset providers
     "AssetProvider",
     # Mesh classes

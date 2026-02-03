@@ -15,6 +15,7 @@ pip install meshly
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
 - **`ArrayUtils`**: Utility class for extracting/reconstructing individual arrays
+- **`AssetStore`**: File-based asset store for persistent storage with deduplication
 - **`LazyModel`**: Lazy proxy that defers asset loading until field access
 - **`Resource`**: Binary data reference that serializes by content checksum
 - **`ExtractedPackable`**: Result of extracting a Packable (data + assets + schema)
@@ -31,6 +32,7 @@ pip install meshly
 - Automatic encoding/decoding of numpy array attributes via `Array`, `VertexBuffer`, `IndexSequence` type annotations
 - Custom subclasses with additional array fields are automatically serialized
 - **Extract/Reconstruct API** for content-addressable storage with deduplication
+- **AssetStore** for file-based persistent storage with automatic deduplication
 - **JSON Schema** generation and schema-based decoding for cross-language compatibility
 - **Lazy loading** with `LazyModel` for deferred asset resolution
 - **Nested Packables** supported - `is_contained` class variable controls serialization strategy
@@ -347,6 +349,49 @@ extracted2 = result2.extract()
 assert extracted1.metadata.data["temperature"]["$ref"] == extracted2.metadata.data["temperature"]["$ref"]
 ```
 
+### File-Based Asset Store
+
+Use `AssetStore` for persistent file-based storage with automatic deduplication:
+
+```python
+from meshly import AssetStore, Mesh
+
+# Create a store with separate paths for assets and metadata
+store = AssetStore(
+    assets_path="/data/assets",      # Binary blobs stored by checksum
+    metadata_path="/data/runs"       # Metadata stored at user paths
+)
+
+# Save a packable (auto-generates path from content checksum)
+path = mesh.save(store)
+
+# Or save with explicit path for organization
+mesh.save(store, "experiment_001/geometry")
+result.save(store, "experiment_001/result")
+
+# Load from store
+loaded = Mesh.load(store, path)
+result = SimulationResult.load(store, "experiment_001/result")
+
+# Lazy loading supported
+lazy = Mesh.load(store, path, is_lazy=True)
+```
+
+Directory structure:
+```
+assets_path/
+    <checksum1>.bin
+    <checksum2>.bin
+metadata_path/
+    experiment_001/
+        geometry/
+            data.json
+            schema.json
+        result/
+            data.json
+            schema.json
+```
+
 ## Architecture
 
 ### Class Hierarchy
@@ -367,6 +412,7 @@ IndexSequence  → Optimized for mesh indices
 
 The `Packable` base class provides:
 - `save_to_zip()` / `load_from_zip()` - File I/O with compression
+- `save()` / `load()` - File-based asset store with deduplication
 - `extract()` / `encode()` - Instance methods for serialization
 - `decode()` / `reconstruct()` - Static methods for deserialization
 - `convert_to()` - Convert arrays between numpy and JAX
@@ -559,6 +605,11 @@ class Packable(BaseModel):
     @classmethod
     def load_from_zip(cls, source, array_type="numpy") -> T
     
+    # Asset Store I/O
+    def save(self, store: AssetStore, path: str = None) -> str  # Returns path
+    @classmethod
+    def load(cls, store: AssetStore, path: str, array_type="numpy", is_lazy=False) -> T
+    
     # Array conversion
     def convert_to(self, array_type: ArrayType) -> T
     
@@ -639,6 +690,29 @@ class Resource(BaseModel):
     
     @staticmethod
     def from_path(path: str | Path) -> Resource  # Create from file path
+```
+
+### AssetStore
+
+```python
+class AssetStore:
+    """File-based asset store for Packable serialization.
+    
+    Assets (binary blobs) are stored by their SHA256 checksum, enabling deduplication.
+    Metadata is stored at user-specified paths in a separate directory.
+    """
+    
+    def __init__(self, assets_path: PathLike, metadata_path: PathLike = None)
+    
+    # Asset operations (by checksum)
+    def asset_exists(self, checksum: str) -> bool
+    def save_asset(self, data: bytes, checksum: str) -> Path
+    def load_asset(self, checksum: str) -> bytes
+    
+    # Metadata operations (by path)
+    def exists(self, path: str) -> bool
+    def load_data(self, path: str) -> dict | None
+    def load_schema(self, path: str) -> dict | None
 ```
 
 ### Mesh

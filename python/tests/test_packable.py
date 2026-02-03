@@ -290,14 +290,14 @@ class TestExtractReconstruct:
             values=np.array([1.0, 2.0, 3.0], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         
         # Data should have the primitive field
-        assert extracted.data["name"] == "test"
+        assert extracted.metadata.data["name"] == "test"
         
         # Array should be replaced with ref (no $type - we use schema)
-        assert "$ref" in extracted.data["values"]
-        checksum = extracted.data["values"]["$ref"]
+        assert "$ref" in extracted.metadata.data["values"]
+        checksum = extracted.metadata.data["values"]["$ref"]
         
         # Assets should contain the encoded array
         assert checksum in extracted.assets
@@ -310,8 +310,8 @@ class TestExtractReconstruct:
             values=np.array([4.0, 5.0, 6.0], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
-        reconstructed = Packable.reconstruct(SimpleData, extracted.data, extracted.assets)
+        extracted = original.extract()
+        reconstructed = Packable.reconstruct(SimpleData, extracted.metadata.data, extracted.assets)
         
         assert reconstructed.name == original.name
         np.testing.assert_array_almost_equal(reconstructed.values, original.values)
@@ -324,20 +324,20 @@ class TestExtractReconstruct:
             velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         
         # Should have 2 assets (2 arrays)
         assert len(extracted.assets) == 2
         
         # Primitive field should be preserved
-        assert extracted.data["time"] == 0.5
+        assert extracted.metadata.data["time"] == 0.5
         
         # Arrays should be refs
-        assert "$ref" in extracted.data["temperature"]
-        assert "$ref" in extracted.data["velocity"]
+        assert "$ref" in extracted.metadata.data["temperature"]
+        assert "$ref" in extracted.metadata.data["velocity"]
         
         # Reconstruct
-        reconstructed = Packable.reconstruct(SimulationResult, extracted.data, extracted.assets)
+        reconstructed = Packable.reconstruct(SimulationResult, extracted.metadata.data, extracted.assets)
         
         assert reconstructed.time == pytest.approx(original.time)
         np.testing.assert_array_almost_equal(reconstructed.temperature, original.temperature)
@@ -351,10 +351,10 @@ class TestExtractReconstruct:
             velocity=np.array([[0.0]], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         
         # Should be able to serialize to JSON
-        json_str = json.dumps(extracted.data)
+        json_str = json.dumps(extracted.metadata.data)
         assert isinstance(json_str, str)
         
         # And deserialize back
@@ -368,16 +368,6 @@ class TestExtractReconstruct:
         with pytest.raises(KeyError, match="Missing asset"):
             Packable.reconstruct(SimpleData, data, {})
 
-    def test_extract_requires_basemodel(self):
-        """Test extract() requires a Pydantic BaseModel, not plain dict."""
-        data = {
-            "name": "test",
-            "positions": np.array([[0, 0, 0], [1, 1, 1]], dtype=np.float32),
-        }
-        
-        with pytest.raises(TypeError, match="requires a Pydantic BaseModel"):
-            Packable.extract(data)
-
     def test_reconstruct_with_callable_returns_lazy_model(self):
         """Test that reconstruct() with callable returns LazyModel for lazy loading."""
         from meshly.utils.dynamic_model import LazyModel
@@ -388,7 +378,7 @@ class TestExtractReconstruct:
             velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         
         # Track which assets were requested
         requested_checksums = []
@@ -402,7 +392,7 @@ class TestExtractReconstruct:
         
         # Reconstruct using callable with is_lazy=True - returns LazyModel
         lazy = Packable.reconstruct(
-            SimulationResult, extracted.data, lazy_loader, is_lazy=True
+            SimulationResult, extracted.metadata.data, lazy_loader, is_lazy=True
         )
         
         # Should be a LazyModel, not loaded yet
@@ -439,7 +429,7 @@ class TestExtractReconstruct:
             velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         requested_checksums = []
         
         def tracking_loader(checksum: str) -> bytes:
@@ -448,7 +438,7 @@ class TestExtractReconstruct:
         
         # Create lazy model with is_lazy=True - NO assets should be loaded yet
         lazy = Packable.reconstruct(
-            SimulationResult, extracted.data, tracking_loader, is_lazy=True
+            SimulationResult, extracted.metadata.data, tracking_loader, is_lazy=True
         )
         assert len(requested_checksums) == 0, "No assets should be loaded on creation"
         
@@ -478,11 +468,11 @@ class TestExtractReconstruct:
             velocity=np.array([[0.0]], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         
         # Use callable with is_lazy=True to get LazyModel
         lazy = Packable.reconstruct(
-            SimulationResult, extracted.data, lambda c: extracted.assets[c], is_lazy=True
+            SimulationResult, extracted.metadata.data, lambda c: extracted.assets[c], is_lazy=True
         )
         
         # Resolve to get actual model (dynamic model with same fields)
@@ -505,9 +495,9 @@ class TestExtractReconstruct:
             velocity=np.array([[1.0]], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         lazy = Packable.reconstruct(
-            SimulationResult, extracted.data, lambda c: extracted.assets[c], is_lazy=True
+            SimulationResult, extracted.metadata.data, lambda c: extracted.assets[c], is_lazy=True
         )
         
         repr_str = repr(lazy)
@@ -526,9 +516,9 @@ class TestExtractReconstruct:
             values=np.array([1.0], dtype=np.float32)
         )
         
-        extracted = Packable.extract(original)
+        extracted = original.extract()
         lazy = Packable.reconstruct(
-            SimpleData, extracted.data, lambda c: extracted.assets[c], is_lazy=True
+            SimpleData, extracted.metadata.data, lambda c: extracted.assets[c], is_lazy=True
         )
         
         with pytest.raises(AttributeError, match="read-only"):
@@ -601,11 +591,11 @@ class TestNestedPackableRejection:
         container = ContainerPackable(name="container", items={"nested": inner})
         
         # Extract expands non-self-contained Packables inline
-        extracted = Packable.extract(container)
+        extracted = container.extract()
         
         # The nested Packable should be expanded (not a single $ref)
         # with its arrays as $refs
-        nested_data = extracted.data["items"]["nested"]
+        nested_data = extracted.metadata.data["items"]["nested"]
         assert nested_data["name"] == "inner"
         assert "$ref" in nested_data["values"]  # Array is a ref
         assert "$module" in nested_data  # Module info preserved
@@ -628,8 +618,8 @@ class TestNestedPackableRejection:
         container = ContainerPackable(name="container", items={"nested": inner})
         
         # Extract and reconstruct
-        extracted = Packable.extract(container)
-        reconstructed = Packable.reconstruct(ContainerPackable, extracted.data, extracted.assets)
+        extracted = container.extract()
+        reconstructed = Packable.reconstruct(ContainerPackable, extracted.metadata.data, extracted.assets)
         
         assert reconstructed.name == "container"
         assert isinstance(reconstructed.items["nested"], SimpleData)

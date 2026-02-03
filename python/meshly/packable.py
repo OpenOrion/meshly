@@ -11,6 +11,10 @@ Packables can be nested. By default, nested Packables are "expanded" during
 extraction (their fields become part of the parent's data dict with $refs for
 arrays). Set `is_contained = True` on a Packable class to make it extract
 as a single zip blob reference instead.
+
+Serialization options:
+- save_to_zip() / load_from_zip(): Single self-contained zip file
+- save() / load(): File-based asset store with deduplication
 """
 
 import json
@@ -18,7 +22,7 @@ import zipfile
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path
-from typing import Any, ClassVar, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, TypeVar, Union
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -30,6 +34,9 @@ from meshly.utils.schema_utils import SchemaUtils
 from meshly.utils.serialization_utils import SerializationUtils
 from meshly.utils.json_schema import JsonSchema
 from meshly.utils.dynamic_model import DynamicModelBuilder, LazyModel
+
+if TYPE_CHECKING:
+    from meshly.asset_store import AssetStore
 
 TModel = TypeVar("TModel", bound=BaseModel)
 
@@ -329,6 +336,97 @@ class Packable(BaseModel):
             destination.write(encoded)
         else:
             Path(destination).write_bytes(encoded)
+
+    def save(
+        self,
+        store: "AssetStore",
+        path: Optional[str] = None,
+    ) -> str:
+        """Save this Packable to an asset store.
+        
+        Extracts the Packable and saves assets to the store's asset directory,
+        with metadata saved to the specified path.
+        
+        Args:
+            store: AssetStore to save to
+            path: Relative path for the metadata. If None, uses the content checksum.
+            
+        Returns:
+            The path where the Packable was saved
+            
+        Example:
+            from meshly import AssetStore
+            
+            store = AssetStore("/path/to/assets")
+            
+            # Save with auto-generated checksum path
+            path = my_mesh.save(store)
+            
+            # Save with explicit path
+            settings.save(store, f"{checksum}/settings")
+            result.save(store, f"{checksum}/result")
+        """
+        import json
+        
+        extracted = self.extract()
+        result_path = path or self.checksum
+        
+        # Save all assets
+        for asset_checksum, asset_bytes in extracted.assets.items():
+            store.save_asset(asset_bytes, asset_checksum)
+        
+        # Create metadata directory
+        meta_dir = store.metadata_dir(result_path)
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save data.json
+        data_path = meta_dir / store.DATA_FILE
+        data_path.write_text(
+            json.dumps(extracted.metadata.data, indent=2, sort_keys=True)
+        )
+        
+        # Save schema.json
+        if extracted.metadata.json_schema:
+            schema_path = meta_dir / store.SCHEMA_FILE
+            schema_path.write_text(
+                json.dumps(extracted.metadata.json_schema, indent=2, sort_keys=True)
+            )
+        
+        return result_path
+
+    @classmethod
+    def load(
+        cls,
+        store: "AssetStore",
+        path: str,
+        array_type: ArrayType = "numpy",
+        is_lazy: bool = False,
+    ):
+        """Load a Packable from an asset store by path.
+        
+        Args:
+            store: AssetStore to load from
+            path: Relative path for the metadata
+            array_type: Target array backend type ("numpy" or "jax")
+            is_lazy: If True, returns a lazy proxy that defers asset loading
+            
+        Returns:
+            Reconstructed Packable instance, or None if not found
+            
+        Example:
+            from meshly import AssetStore, Mesh
+            
+            store = AssetStore("/path/to/assets")
+            mesh = Mesh.load(store, "abc123")
+            
+            # Load from specific path
+            result = Result.load(store, f"{checksum}/result")
+        """
+        data = store.load_data(path)
+        if data is None:
+            return None
+        
+        return cls.reconstruct(cls, data, store.load_asset, array_type, is_lazy)
 
     def __reduce__(self):
         """Support for pickle serialization."""

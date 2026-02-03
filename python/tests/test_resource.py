@@ -47,7 +47,7 @@ def test_resource_ref_checksum():
 
 
 def test_packable_extract_with_resource():
-    """Test that Packable.extract() handles ResourceRef correctly."""
+    """Test that extract() handles ResourceRef correctly."""
 
     class SimulationCase(Packable):
         name: str
@@ -61,15 +61,15 @@ def test_packable_extract_with_resource():
         case = SimulationCase(name="test", geometry=Resource.from_path(temp_path))
 
         # Extract should convert ResourceRef to $ref with checksum
-        extracted = Packable.extract(case)
+        extracted = case.extract()
 
-        assert extracted.data["name"] == "test"
-        assert "$ref" in extracted.data["geometry"]
-        assert "ext" in extracted.data["geometry"]
-        assert extracted.data["geometry"]["ext"] == ".stl"
+        assert extracted.metadata.data["name"] == "test"
+        assert "$ref" in extracted.metadata.data["geometry"]
+        assert "ext" in extracted.metadata.data["geometry"]
+        assert extracted.metadata.data["geometry"]["ext"] == ".stl"
 
         # Should have the gzip-compressed file data in assets
-        checksum = extracted.data["geometry"]["$ref"]
+        checksum = extracted.metadata.data["geometry"]["$ref"]
         assert checksum in extracted.assets
         # Data is gzip compressed
         assert gzip.decompress(extracted.assets[checksum]) == b"STL geometry data"
@@ -123,16 +123,16 @@ def test_resource_round_trip():
         )
 
         # Extract
-        extracted = Packable.extract(case1)
+        extracted = case1.extract()
 
         # Verify extraction
-        assert extracted.data["name"] == "wind_tunnel"
-        assert "$ref" in extracted.data["geometry"]
-        assert "$ref" in extracted.data["config"]
+        assert extracted.metadata.data["name"] == "wind_tunnel"
+        assert "$ref" in extracted.metadata.data["geometry"]
+        assert "$ref" in extracted.metadata.data["config"]
         assert len(extracted.assets) == 2
 
         # Reconstruct
-        case2 = Packable.reconstruct(SimulationCase, extracted.data, extracted.assets)
+        case2 = Packable.reconstruct(SimulationCase, extracted.metadata.data, extracted.assets)
 
         # Verify reconstruction
         assert case2.name == "wind_tunnel"
@@ -307,7 +307,7 @@ def test_mixed_resource_and_array_lazy_loading():
         )
 
         # Extract
-        extracted = Packable.extract(original)
+        extracted = original.extract()
 
         # Track asset requests
         requested = []
@@ -317,7 +317,7 @@ def test_mixed_resource_and_array_lazy_loading():
             return extracted.assets[checksum]
 
         # Reconstruct with is_lazy=True
-        lazy = Packable.reconstruct(Simulation, extracted.data, tracking_loader, is_lazy=True)
+        lazy = Packable.reconstruct(Simulation, extracted.metadata.data, tracking_loader, is_lazy=True)
 
         assert isinstance(lazy, LazyModel)
         assert len(requested) == 0

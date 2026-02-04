@@ -1,29 +1,10 @@
 import JSZip from 'jszip'
-import { MeshoptDecoder } from "meshoptimizer"
 import * as THREE from 'three'
-import { ArrayType } from './array'
-import { CustomFieldConfig, Packable, PackableMetadata } from './packable'
+import { ArrayUtils, TypedArray } from './array'
+import { ExportConstants } from './constants'
+import { JsonSchema, JsonSchemaUtils } from './json-schema'
+import { isArrayRef, isRefObject, Packable } from './packable'
 
-
-/**
- * Size metadata for a mesh
- */
-export interface MeshSize {
-  vertex_count: number
-  vertex_size: number
-  index_count: number | null
-  index_size: number
-}
-
-
-/**
- * Mesh-specific metadata extending PackableMetadata
- */
-export interface MeshMetadata extends PackableMetadata {
-  mesh_size: MeshSize
-  /** Array backend type for vertices/indices (for Python compatibility) */
-  array_type?: ArrayType
-}
 
 /**
  * Interface representing mesh data that can be passed to the Mesh constructor
@@ -59,22 +40,17 @@ export interface MeshData {
   /**
    * Flattened marker node indices
    */
-  markerIndices?: Record<string, Uint32Array>
+  markers?: Record<string, Uint32Array>
 
   /**
-   * Offset indices to reconstruct individual marker elements
+   * Sizes of each marker element
    */
-  markerOffsets?: Record<string, Uint32Array>
+  markerSizes?: Record<string, Uint32Array>
 
   /**
    * VTK cell types for each marker element
    */
-  markerTypes?: Record<string, Uint8Array>
-
-  /**
-   * Optional markers as list of lists, auto-converted to flattened structure
-   */
-  markers?: Record<string, number[][]>
+  markerCellTypes?: Record<string, Uint32Array>
 }
 
 /**
@@ -82,6 +58,8 @@ export interface MeshData {
  * 
  * Extends Packable to provide mesh-specific decoding for vertices and indices
  * using meshoptimizer's vertex and index buffer decompression.
+ * 
+ * Uses the new format: metadata/data.json + metadata/schema.json + assets/{checksum}.bin
  * 
  * @example
  * ```typescript
@@ -99,89 +77,158 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   declare indexSizes?: Uint32Array
   declare cellTypes?: Uint32Array
   declare dim?: number
-  declare markerIndices?: Record<string, Uint32Array>
-  declare markerOffsets?: Record<string, Uint32Array>
-  declare markerTypes?: Record<string, Uint8Array>
-  declare markers?: Record<string, number[][]>
+  declare markers?: Record<string, Uint32Array>
+  declare markerSizes?: Record<string, Uint32Array>
+  declare markerCellTypes?: Record<string, Uint32Array>
 
   // ============================================================
-  // Custom field decoders for meshoptimizer
-  // ============================================================
-
-  /**
-   * Decode vertices using meshoptimizer
-   */
-  private static _decodeVertices(data: Uint8Array, metadata: MeshMetadata): Float32Array {
-    const meshSize = metadata.mesh_size
-    const verticesUint8 = new Uint8Array(meshSize.vertex_count * meshSize.vertex_size)
-    MeshoptDecoder.decodeVertexBuffer(
-      verticesUint8,
-      meshSize.vertex_count,
-      meshSize.vertex_size,
-      data
-    )
-    return new Float32Array(verticesUint8.buffer)
-  }
-
-  /**
-   * Decode indices using meshoptimizer
-   */
-  private static _decodeIndices(data: Uint8Array, metadata: MeshMetadata): Uint32Array {
-    const meshSize = metadata.mesh_size
-    const indicesUint8 = new Uint8Array(meshSize.index_count! * meshSize.index_size)
-    MeshoptDecoder.decodeIndexSequence(
-      indicesUint8,
-      meshSize.index_count!,
-      meshSize.index_size,
-      data
-    )
-    return new Uint32Array(indicesUint8.buffer)
-  }
-
-  /**
-   * Custom field configurations for mesh-specific decoding
-   */
-  protected static override getCustomFields(): Record<string, CustomFieldConfig<unknown, MeshMetadata>> {
-    return {
-      vertices: {
-        fileName: 'vertices',
-        decode: (data, metadata) => Mesh._decodeVertices(data, metadata),
-        optional: false
-      },
-      indices: {
-        fileName: 'indices',
-        decode: (data, metadata) => Mesh._decodeIndices(data, metadata),
-        optional: true
-      }
-    }
-  }
-
-  // ============================================================
-  // Override decode to use MeshMetadata
+  // Decode from zip
   // ============================================================
 
   /**
-   * Decode a Mesh from zip data
+   * Decode a Mesh from zip data.
+   * 
+   * Expects format: metadata/data.json + metadata/schema.json + assets/{checksum}.bin
    */
   static override async decode(zipData: ArrayBuffer | Uint8Array): Promise<Mesh> {
     const zip = await JSZip.loadAsync(zipData)
-    const metadata = await Packable.loadMetadata<MeshMetadata>(zip)
-    const customFieldNames = Mesh.getCustomFieldNames()
+    // Read data.json
+    const dataFile = zip.file(ExportConstants.DATA_FILE)
+    if (!dataFile) {
+      throw new Error(`${ExportConstants.DATA_FILE} not found in zip file`)
+    }
+    const dataText = await dataFile.async("text")
+    const data: Record<string, unknown> = JSON.parse(dataText)
 
-    const data: Record<string, unknown> = {}
-
-    // Decode custom fields (vertices, indices)
-    await Mesh.decodeCustomFields(zip, metadata, data)
-
-    // Load standard arrays
-    await Mesh.loadStandardArrays(zip, data, customFieldNames)
-
-    // Merge non-array fields from metadata
-    if (metadata.field_data) {
-      Mesh._mergeFieldData(data, metadata.field_data)
+    // Read schema.json (optional but recommended)
+    let schema: JsonSchema | undefined
+    const schemaFile = zip.file(ExportConstants.SCHEMA_FILE)
+    if (schemaFile) {
+      const schemaText = await schemaFile.async("text")
+      schema = JSON.parse(schemaText)
     }
 
-    return new Mesh(data as unknown as MeshData)
+    // Build assets dict from files in assets/ directory
+    const assets: Record<string, Uint8Array> = {}
+    for (const filePath of Object.keys(zip.files)) {
+      if (filePath.startsWith(ExportConstants.ASSETS_DIR + "/") &&
+        filePath.endsWith(ExportConstants.ASSET_EXT)) {
+        const checksum = ExportConstants.checksumFromPath(filePath)
+        const file = zip.file(filePath)
+        if (file) {
+          assets[checksum] = await file.async("uint8array")
+        }
+      }
+    }
+
+    // Reconstruct using schema-aware method
+    const result: Record<string, unknown> = {}
+
+    for (const [key, value] of Object.entries(data)) {
+      if (key.startsWith("$")) continue
+
+      // Get encoding from schema
+      const encoding = schema ? JsonSchemaUtils.getEncoding(schema, key) : "array"
+      const schemaProp = schema ? JsonSchemaUtils.getResolvedProperty(schema, key) : undefined
+
+      result[key] = await Mesh._resolveField(value, assets, encoding, schema, schemaProp)
+    }
+
+    // Map Python field names to TypeScript names for known mesh fields
+    const meshData: MeshData = {
+      vertices: result.vertices as Float32Array,
+      indices: result.indices as Uint32Array | undefined,
+      indexSizes: (result.index_sizes || result.indexSizes) as Uint32Array | undefined,
+      cellTypes: (result.cell_types || result.cellTypes) as Uint32Array | undefined,
+      dim: result.dim as number | undefined,
+      markers: Mesh._convertMarkers(result.markers as Record<string, unknown> | undefined),
+      markerSizes: Mesh._convertMarkers(result.marker_sizes as Record<string, unknown> | undefined),
+      markerCellTypes: Mesh._convertMarkers(result.marker_cell_types as Record<string, unknown> | undefined),
+    }
+
+    // Pass through additional fields from subclasses (e.g., TexturedMesh)
+    const knownMeshFields = new Set([
+      'vertices', 'indices', 'index_sizes', 'indexSizes', 'cell_types', 'cellTypes',
+      'dim', 'markers', 'marker_sizes', 'markerSizes', 'marker_cell_types', 'markerCellTypes'
+    ])
+    for (const [key, value] of Object.entries(result)) {
+      if (!knownMeshFields.has(key) && !key.startsWith('$')) {
+        (meshData as unknown as Record<string, unknown>)[key] = value
+      }
+    }
+
+    return new Mesh(meshData)
+  }
+
+  /**
+   * Resolve a field value, handling $ref references
+   */
+  private static async _resolveField(
+    value: unknown,
+    assets: Record<string, Uint8Array>,
+    encoding: string,
+    schema?: JsonSchema,
+    schemaProp?: unknown
+  ): Promise<unknown> {
+    if (value === null || value === undefined) {
+      return value
+    }
+
+    // Handle $ref references
+    if (isRefObject(value)) {
+      const bytes = assets[value.$ref]
+      if (!bytes) {
+        throw new Error(`Asset not found: ${value.$ref}`)
+      }
+
+      // Check if it's an array ref (has shape and dtype)
+      if (isArrayRef(value)) {
+        return ArrayUtils.reconstruct({ data: bytes, info: value, encoding: encoding as "array" | "vertex_buffer" | "index_sequence" })
+      }
+
+      // Otherwise it's a nested Packable (stored as a zip file)
+      // Check if bytes start with PK (zip magic)
+      if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4B) {
+        // Recursively decode the nested Packable
+        return Packable.decode(bytes)
+      }
+
+      // Unknown ref type - return raw bytes
+      return bytes
+    }
+
+    // Handle nested objects (like markers dict)
+    if (typeof value === "object" && !Array.isArray(value)) {
+      const result: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (k.startsWith("$")) continue
+        result[k] = await Mesh._resolveField(v, assets, "array", schema, undefined)
+      }
+      return result
+    }
+
+    // Handle arrays
+    if (Array.isArray(value)) {
+      return Promise.all(value.map(v => Mesh._resolveField(v, assets, "array", schema, undefined)))
+    }
+
+    return value
+  }
+
+  /**
+   * Convert markers from Record<string, unknown> to Record<string, Uint32Array>
+   */
+  private static _convertMarkers(markers: Record<string, unknown> | undefined): Record<string, Uint32Array> | undefined {
+    if (!markers) return undefined
+    const result: Record<string, Uint32Array> = {}
+    for (const [key, value] of Object.entries(markers)) {
+      if (value instanceof Uint32Array) {
+        result[key] = value
+      } else if (ArrayBuffer.isView(value)) {
+        result[key] = new Uint32Array((value as TypedArray).buffer)
+      }
+    }
+    return Object.keys(result).length > 0 ? result : undefined
   }
 
   // ============================================================
@@ -250,26 +297,17 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
    * Extract a submesh containing only elements referenced by a specific marker.
    */
   extractByMarker(markerName: string): Mesh {
-    if (!this.markerIndices || !(markerName in this.markerIndices)) {
-      const availableMarkers = this.markerIndices ? Object.keys(this.markerIndices).join(', ') : 'none'
+    if (!this.markers || !(markerName in this.markers)) {
+      const availableMarkers = this.markers ? Object.keys(this.markers).join(', ') : 'none'
       throw new Error(`Marker '${markerName}' not found. Available markers: ${availableMarkers}`)
     }
 
-    const markerIndices = this.markerIndices[markerName]
-    const markerOffsets = this.markerOffsets?.[markerName]
-    const markerTypes = this.markerTypes?.[markerName]
+    const markerIndices = this.markers[markerName]
+    const markerSizes = this.markerSizes?.[markerName]
+    const markerCellTypes = this.markerCellTypes?.[markerName]
 
-    if (!markerOffsets || !markerTypes) {
-      throw new Error(`Marker '${markerName}' is missing offset or type information`)
-    }
-
-    // Convert offsets to sizes
-    const markerSizes = new Uint32Array(markerOffsets.length)
-    for (let i = 0; i < markerOffsets.length - 1; i++) {
-      markerSizes[i] = markerOffsets[i + 1] - markerOffsets[i]
-    }
-    if (markerOffsets.length > 0) {
-      markerSizes[markerOffsets.length - 1] = markerIndices.length - markerOffsets[markerOffsets.length - 1]
+    if (!markerSizes || !markerCellTypes) {
+      throw new Error(`Marker '${markerName}' is missing sizes or cell type information`)
     }
 
     // Find all unique vertex indices
@@ -306,17 +344,11 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
       remappedIndices[i] = left
     }
 
-    // Convert markerTypes from Uint8Array to Uint32Array
-    const cellTypes = new Uint32Array(markerTypes.length)
-    for (let i = 0; i < markerTypes.length; i++) {
-      cellTypes[i] = markerTypes[i]
-    }
-
     return new Mesh({
       vertices: extractedVertices,
       indices: remappedIndices,
       indexSizes: markerSizes,
-      cellTypes: cellTypes,
+      cellTypes: markerCellTypes,
       dim: this.dim
     })
   }

@@ -126,6 +126,7 @@ class AssetStore:
             Path where asset was saved
         """
         path = self.asset_file(checksum)
+        path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             path.write_bytes(data)
         return path
@@ -187,4 +188,4 @@ class AssetStore:
         return (self.metadata_dir(path) / self.DATA_FILE).exists()
     
     def __repr__(self) -> str:
-        return f"AssetStore({self.base_path!r})"
+        return f"AssetStore(assets_path={self.assets_path!r}, metadata_path={self.metadata_path!r})"

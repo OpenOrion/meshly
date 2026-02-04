@@ -14,22 +14,28 @@ pip install meshly
 
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
-- **`CustomFieldConfig`**: Configuration for custom field encoding/decoding
-- **`ArrayUtils`**: Utility class for encoding/decoding individual arrays
-- **`DataHandler`**: Unified interface for reading and writing files or zip archives
-- **`CachedAssetLoader`**: Asset loader with disk cache for content-addressable storage
+- **`ArrayUtils`**: Utility class for extracting/reconstructing individual arrays
+- **`AssetStore`**: File-based asset store for persistent storage with deduplication
 - **`LazyModel`**: Lazy proxy that defers asset loading until field access
-- **`ResourceRef` / `Resource`**: File reference that serializes by content checksum
-- **`SerializedPackableData`**: Result of extracting a Packable (data + assets)
-- **`ExtractedAssets`**: Result of extracting assets from multiple values
+- **`Resource`**: Binary data reference that serializes by content checksum
+- **`ExtractedPackable`**: Result of extracting a Packable (data + assets + schema)
+- **`ExtractedArray`**: Result of extracting an array (data + metadata + encoding)
+
+### Array Type Annotations
+
+- **`Array`**: Generic array type with meshoptimizer compression
+- **`VertexBuffer`**: Optimized encoding for 3D vertex data (N × components)
+- **`IndexSequence`**: Optimized encoding for mesh indices (1D array)
 
 ### Key Capabilities
 
-- Automatic encoding/decoding of numpy array attributes, including nested dictionaries
+- Automatic encoding/decoding of numpy array attributes via `Array`, `VertexBuffer`, `IndexSequence` type annotations
 - Custom subclasses with additional array fields are automatically serialized
-- Custom field encoding via `_get_custom_fields()` override
 - **Extract/Reconstruct API** for content-addressable storage with deduplication
+- **AssetStore** for file-based persistent storage with automatic deduplication
+- **JSON Schema** generation and schema-based decoding for cross-language compatibility
 - **Lazy loading** with `LazyModel` for deferred asset resolution
+- **Nested Packables** supported - `is_contained` class variable controls serialization strategy
 - Enhanced polygon support with `index_sizes` and VTK-compatible `cell_types`
 - Mesh markers for boundary conditions, material regions, and geometric features
 - Mesh operations: triangulate, optimize, simplify, combine, extract
@@ -48,11 +54,11 @@ from meshly import ArrayUtils
 # Create an array
 data = np.random.randn(1000, 3).astype(np.float32)
 
-# Save to zip
-ArrayUtils.save_to_zip(data, "array.zip")
+# Extract to ExtractedArray (with meshoptimizer compression)
+extracted = ArrayUtils.extract(data)
 
-# Load from zip
-loaded = ArrayUtils.load_from_zip("array.zip")
+# Reconstruct back to numpy array
+reconstructed = ArrayUtils.reconstruct(extracted)
 ```
 
 ### Basic Mesh Usage
@@ -84,20 +90,21 @@ decoded = Mesh.decode(encoded)
 
 ### Custom Mesh Subclasses
 
-Create custom mesh types with additional array attributes:
+Create custom mesh types with additional array attributes using `Array` type annotation:
 
 ```python
 from pydantic import Field
 from typing import Optional
+from meshly import Mesh, Array
 
 class TexturedMesh(Mesh):
     """Mesh with texture coordinates and material data."""
-    texture_coords: np.ndarray = Field(..., description="UV coordinates")
-    normals: Optional[np.ndarray] = Field(None, description="Vertex normals")
+    texture_coords: Array = Field(..., description="UV coordinates")
+    normals: Optional[Array] = Field(None, description="Vertex normals")
     material_name: str = Field("default", description="Material name")
     
     # Nested dictionaries with arrays are automatically handled
-    material_data: dict[str, dict[str, np.ndarray]] = Field(default_factory=dict)
+    material_data: dict[str, dict[str, Array]] = Field(default_factory=dict)
 
 # All array fields are automatically encoded/decoded
 mesh = TexturedMesh(
@@ -116,38 +123,26 @@ mesh.save_to_zip("textured.zip")
 loaded = TexturedMesh.load_from_zip("textured.zip")
 ```
 
-### Custom Field Encoding
+### Array Type Annotations
 
-For fields that need special encoding (like meshoptimizer for vertices/indices), override `_get_custom_fields()`:
+Use specialized array types for optimized encoding:
 
 ```python
-from meshly import Packable, CustomFieldConfig
-from typing import Dict
+from meshly import Packable, Array, VertexBuffer, IndexSequence
+from pydantic import Field
 
-class CompressedData(Packable):
-    """Example with custom field encoding."""
-    data: np.ndarray
+class OptimizedMesh(Packable):
+    """Mesh with optimized array encodings."""
     
-    @staticmethod
-    def _encode_data(data: np.ndarray, instance: "CompressedData") -> bytes:
-        # Custom encoding logic
-        return custom_compress(data)
+    # VertexBuffer: optimized for 3D vertex data
+    vertices: VertexBuffer = Field(..., description="Vertex positions")
     
-    @staticmethod
-    def _decode_data(encoded: bytes, metadata, array_type) -> np.ndarray:
-        # Custom decoding logic
-        return custom_decompress(encoded)
+    # IndexSequence: optimized for mesh indices
+    indices: IndexSequence = Field(..., description="Triangle indices")
     
-    @classmethod
-    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]:
-        return {
-            'data': CustomFieldConfig(
-                file_name='data',
-                encode=cls._encode_data,
-                decode=cls._decode_data,
-                optional=False
-            ),
-        }
+    # Array: generic compression for other data
+    normals: Array = Field(..., description="Vertex normals")
+    uvs: Array = Field(..., description="Texture coordinates")
 ```
 
 ### Dict of Pydantic BaseModel Objects
@@ -156,14 +151,15 @@ You can also use dictionaries containing Pydantic `BaseModel` instances with num
 
 ```python
 from pydantic import BaseModel, ConfigDict, Field
+from meshly import Array
 
 class MaterialProperties(BaseModel):
     """Material with numpy arrays - automatically serialized."""
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
     name: str
-    diffuse: np.ndarray
-    specular: np.ndarray
+    diffuse: Array
+    specular: Array
     shininess: float = 32.0
 
 class SceneMesh(Mesh):
@@ -199,13 +195,13 @@ loaded = SceneMesh.load_from_zip("scene.zip")
 For content-addressable storage with deduplication, use the `extract()` and `reconstruct()` static methods:
 
 ```python
-from meshly import Packable
+from meshly import Packable, Array
 
 class SimulationResult(Packable):
     """Simulation data with arrays."""
     time: float
-    temperature: np.ndarray
-    velocity: np.ndarray
+    temperature: Array
+    velocity: Array
 
 result = SimulationResult(
     time=0.5,
@@ -213,116 +209,101 @@ result = SimulationResult(
     velocity=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 )
 
-# Extract to serializable data + assets
-extracted = Packable.extract(result)
-# extracted.data = {"time": 0.5, "temperature": {"$ref": "abc123..."}, "velocity": {"$ref": "def456..."}}
+# Extract to serializable data + assets + schema (instance method)
+extracted = result.extract()
+# extracted.metadata.data = {"time": 0.5, "temperature": {"$ref": "abc123...", ...}, ...}
 # extracted.assets = {"abc123...": <bytes>, "def456...": <bytes>}
+# extracted.metadata.json_schema = {...}  # JSON Schema with encoding info
 
 # Data is JSON-serializable
 import json
-json.dumps(extracted.data)  # Works!
+json.dumps(extracted.metadata.data)  # Works!
 
 # Reconstruct from data + assets (eager loading)
-rebuilt = Packable.reconstruct(SimulationResult, extracted.data, extracted.assets)
+rebuilt = Packable.reconstruct(SimulationResult, extracted.metadata.data, extracted.assets)
 assert rebuilt.time == 0.5
 ```
 
-### Resource References for File Handling
+### Nested Packables
 
-Use `ResourceRef` (or `Resource` alias) to include file paths as Pydantic fields that automatically serialize by content checksum:
+Packables can contain other Packables. By default, nested Packables are "expanded" (their fields inlined with `$refs` for arrays). Set `is_contained = True` to make a Packable serialize as a single zip blob:
 
 ```python
-from meshly import Packable, Resource, ResourceRef
-from pydantic import BaseModel
+from typing import ClassVar
+from meshly import Packable, Mesh, Array
 
-class SimulationCase(BaseModel):
+# Self-contained: extracts as a single $ref (zip blob)
+class Mesh(Packable):
+    is_contained: ClassVar[bool] = True
+    vertices: Array
+    faces: Array
+
+# Default: fields are expanded inline
+class SimulationResult(Packable):
+    time: float
+    mesh: Mesh  # Will be a single $ref since Mesh.is_contained = True
+    temperature: Array  # Will be its own $ref
+```
+
+### Resource References for Binary Data
+
+Use `Resource` to include binary data that serializes by checksum:
+
+```python
+from meshly import Packable, Resource
+
+class SimulationCase(Packable):
     name: str
-    geometry: Resource      # File path that gets serialized by checksum
+    geometry: Resource   # Binary data serialized by checksum
     config: Resource
-    description: str
 
-# Create with file paths
+# Create from file paths
 case = SimulationCase(
     name="wind_tunnel",
-    geometry="models/wing.stl",
-    config="configs/turbulent.json",
-    description="High-speed flow analysis"
+    geometry=Resource.from_path("models/wing.stl"),
+    config=Resource.from_path("configs/turbulent.json"),
 )
 
-# Extract automatically reads files and computes checksums
-extracted = Packable.extract(case)
-# extracted.data = {
+# Or create from bytes directly
+case = SimulationCase(
+    name="wind_tunnel",
+    geometry=Resource(data=stl_bytes, ext=".stl"),
+    config=Resource(data=json_bytes, ext=".json"),
+)
+
+# Extract automatically computes checksums (instance method)
+extracted = case.extract()
+# extracted.metadata.data = {
 #     "name": "wind_tunnel",
 #     "geometry": {"$ref": "a1b2c3d4", "ext": ".stl"},
 #     "config": {"$ref": "e5f6g7h8", "ext": ".json"},
-#     "description": "High-speed flow analysis"
 # }
 # extracted.assets = {
-#     "a1b2c3d4": <stl file bytes>,
-#     "e5f6g7h8": <json file bytes>
+#     "a1b2c3d4": <gzip-compressed stl bytes>,
+#     "e5f6g7h8": <gzip-compressed json bytes>,
 # }
 
-# Reconstruct creates ResourceRef instances with checksums
-case2 = Packable.reconstruct(SimulationCase, extracted.data, extracted.assets)
-assert isinstance(case2.geometry, ResourceRef)
-assert case2.geometry.checksum == "a1b2c3d4"
+# Reconstruct creates Resource instances with data
+case2 = Packable.reconstruct(SimulationCase, extracted.metadata.data, extracted.assets)
+assert isinstance(case2.geometry, Resource)
+assert case2.geometry.data == stl_bytes
 assert case2.geometry.ext == ".stl"
-
-# ResourceRef can resolve paths from MESHLY_RESOURCE_PATH environment variable
-# (useful for remote execution where files are cached by checksum)
-path = case2.geometry.resolve_path()  # Finds file by checksum
-data = case2.geometry.read_bytes()    # Read file contents
-```
-
-### Extracting Assets from Multiple Values
-
-Use `extract_assets()` to extract all assets from multiple values at once - useful for collecting all dependencies before remote execution:
-
-```python
-from meshly import Packable
-import numpy as np
-
-# Example: extracting assets from function arguments
-geometry = ResourceRef(path="model.stl")
-initial_temp = np.array([300.0, 301.0, 302.0], dtype=np.float32)
-config = {"solver": "cfd", "timesteps": 100}
-
-# Extract all assets in one call
-extracted = Packable.extract_assets(geometry, initial_temp, config)
-# extracted.assets = {
-#     "checksum1": <stl file bytes>,
-#     "checksum2": <encoded temperature array>
-# }
-# extracted.extensions = {
-#     "checksum1": ".stl"
-# }
-
-# Works with any combination of arrays, Packables, ResourceRefs, BaseModels, dicts, lists
-class Pipeline(Packable):
-    steps: list[np.ndarray]
-
-pipeline = Pipeline(steps=[np.array([1, 2]), np.array([3, 4])])
-user_files = [ResourceRef(path="input1.dat"), ResourceRef(path="input2.dat")]
-
-# Extract from all of them
-all_assets = Packable.extract_assets(pipeline, user_files, geometry, initial_temp)
-# Automatically deduplicates identical content by checksum
 ```
 
 ### Lazy Loading with Callable Assets
 
-When assets is a callable (or `CachedAssetLoader`), `reconstruct()` returns a `LazyModel` that defers loading:
+When using `is_lazy=True` with `reconstruct()`, returns a `LazyModel` that defers loading:
 
 ```python
-from meshly import Packable, CachedAssetLoader, DataHandler
-from meshly.packable import LazyModel
+from meshly import Packable
+from meshly.utils.dynamic_model import LazyModel
 
 # Define a fetch function (e.g., from cloud storage)
 def fetch_asset(checksum: str) -> bytes:
     return cloud_storage.download(checksum)
 
-# Reconstruct with callable - returns LazyModel
-lazy = Packable.reconstruct(SimulationResult, data, fetch_asset)
+# Reconstruct with is_lazy=True - returns LazyModel
+lazy = Packable.reconstruct(SimulationResult, data, fetch_asset, is_lazy=True)
 assert isinstance(lazy, LazyModel)
 
 # No assets loaded yet!
@@ -330,29 +311,26 @@ print(lazy.time)         # Primitive field - no fetch needed
 print(lazy.temperature)  # NOW temperature asset is fetched
 print(lazy.velocity)     # NOW velocity asset is fetched
 
-# Get full Pydantic model
-model = lazy.resolve()
-assert isinstance(model, SimulationResult)
+# Get the fully resolved model
+model = lazy.resolve(SimulationResult)
 ```
 
-### CachedAssetLoader for Disk Persistence
+### Schema-Based Decoding
 
-Use `CachedAssetLoader` to cache fetched assets to disk:
+When decoding using the base `Packable` class (instead of a subclass), the embedded JSON schema is used to build a dynamic model:
 
 ```python
-from meshly import CachedAssetLoader, DataHandler
+# Decode using base Packable - uses embedded schema
+decoded = Packable.decode(encoded_bytes)
+# Returns a dynamic model with the same fields
 
-# Create disk cache
-cache = DataHandler.create("/path/to/cache")
-loader = CachedAssetLoader(fetch_asset, cache)
+# Decode using specific class - returns that class type
+loaded = SimulationResult.decode(encoded_bytes)
+print(loaded.time)  # Access fields normally
 
-# First access fetches and caches
-lazy = Packable.reconstruct(SimulationResult, data, loader)
-temp = lazy.temperature  # Fetches from source, saves to cache
-
-# Subsequent access reads from cache
-lazy2 = Packable.reconstruct(SimulationResult, data, loader)
-temp2 = lazy2.temperature  # Reads from cache, no fetch!
+# Also works with load_from_zip
+loaded = Packable.load_from_zip("result.zip")
+print(loaded.time)  # Access fields normally
 ```
 
 ### Deduplication with Extract
@@ -364,22 +342,54 @@ Since assets are keyed by SHA256 checksum, identical arrays automatically dedupl
 result1 = SimulationResult(time=0.0, temperature=shared_temp, velocity=v1)
 result2 = SimulationResult(time=1.0, temperature=shared_temp, velocity=v2)
 
-extracted1 = Packable.extract(result1)
-extracted2 = Packable.extract(result2)
+extracted1 = result1.extract()
+extracted2 = result2.extract()
 
 # Same checksum for temperature - deduplicated!
-assert extracted1.data["temperature"] == extracted2.data["temperature"]
+assert extracted1.metadata.data["temperature"]["$ref"] == extracted2.metadata.data["temperature"]["$ref"]
 ```
 
-**Note**: Direct Packable fields inside another Packable are not supported. Use `extract()` and `reconstruct()` for composing Packables, or embed Packables inside typed dicts:
+### File-Based Asset Store
+
+Use `AssetStore` for persistent file-based storage with automatic deduplication:
 
 ```python
-from typing import Dict
+from meshly import AssetStore, Mesh
 
-class Container(Packable):
-    name: str
-    # Dict of Packables is allowed - extract() handles them
-    items: Dict[str, SimulationResult] = Field(default_factory=dict)
+# Create a store with separate paths for assets and metadata
+store = AssetStore(
+    assets_path="/data/assets",      # Binary blobs stored by checksum
+    metadata_path="/data/runs"       # Metadata stored at user paths
+)
+
+# Save a packable (auto-generates path from content checksum)
+path = mesh.save(store)
+
+# Or save with explicit path for organization
+mesh.save(store, "experiment_001/geometry")
+result.save(store, "experiment_001/result")
+
+# Load from store
+loaded = Mesh.load(store, path)
+result = SimulationResult.load(store, "experiment_001/result")
+
+# Lazy loading supported
+lazy = Mesh.load(store, path, is_lazy=True)
+```
+
+Directory structure:
+```
+assets_path/
+    <checksum1>.bin
+    <checksum2>.bin
+metadata_path/
+    experiment_001/
+        geometry/
+            data.json
+            schema.json
+        result/
+            data.json
+            schema.json
 ```
 
 ## Architecture
@@ -388,40 +398,36 @@ class Container(Packable):
 
 ```
 Packable (base class)
-├── Mesh (3D mesh with meshoptimizer encoding)
+├── Mesh (3D mesh with meshoptimizer encoding via VertexBuffer/IndexSequence)
 └── Your custom classes...
 ```
 
-### Metadata Classes
+### Array Type Annotations
 
 ```
-PackableMetadata (base metadata)
-└── MeshMetadata (extends with MeshSizeInfo)
+Array          → Generic meshoptimizer compression
+VertexBuffer   → Optimized for 3D vertex data
+IndexSequence  → Optimized for mesh indices
 ```
 
 The `Packable` base class provides:
 - `save_to_zip()` / `load_from_zip()` - File I/O with compression
-- `encode()` / `decode()` - In-memory serialization to/from bytes
-- `extract()` / `reconstruct()` - Content-addressable storage with `$ref` checksums
+- `save()` / `load()` - File-based asset store with deduplication
+- `extract()` / `encode()` - Instance methods for serialization
+- `decode()` / `reconstruct()` - Static methods for deserialization
 - `convert_to()` - Convert arrays between numpy and JAX
-- `_get_custom_fields()` - Override point for custom field encoding
-- `load_metadata()` - Generic metadata loading with type parameter
-- `checksum` - Computed SHA256 checksum property
+- `is_contained` - Class variable controlling nested serialization behavior
 
 ### Zip File Structure
 
 ```
 mesh.zip
-├── metadata.json           # PackableMetadata or MeshMetadata
-├── vertices.bin            # Meshoptimizer-encoded (custom field)
-├── indices.bin             # Meshoptimizer-encoded (custom field, optional)
-└── arrays/                 # Standard arrays (auto-compressed)
-    ├── texture_coords/
-    │   ├── array.bin
-    │   └── metadata.json
-    └── material_data/wood/diffuse/
-        ├── array.bin
-        └── metadata.json
+├── metadata/
+│   ├── schema.json         # JSON Schema with array encoding info
+│   └── data.json           # Serializable data with $ref checksums
+└── assets/                 # Encoded arrays by checksum
+    ├── abc123.bin
+    └── def456.bin
 ```
 
 ## Polygon Support
@@ -518,18 +524,6 @@ combined = Mesh.combine([mesh1, mesh2], marker_names=["part1", "part2"])
 boundary_mesh = mesh.extract_by_marker("inlet")
 ```
 
-### Loading Individual Arrays
-
-Load a single array without loading the entire object (useful for large files):
-
-```python
-# Load just the normals array
-normals = Mesh.load_array("mesh.zip", "normals")
-
-# Load nested arrays using dotted notation
-inlet_indices = Mesh.load_array("mesh.zip", "markers.inlet")
-```
-
 ## JAX Support
 
 Optional GPU-accelerated arrays:
@@ -554,21 +548,39 @@ jax_mesh = mesh.convert_to("jax")
 
 ## API Reference
 
+### Array Type Annotations
+
+```python
+from meshly import Array, VertexBuffer, IndexSequence
+
+# Use in Pydantic models for automatic encoding
+class MyData(Packable):
+    generic_data: Array           # Generic meshoptimizer compression
+    vertices: VertexBuffer        # Optimized for 3D vertex data
+    indices: IndexSequence        # Optimized for mesh indices
+```
+
 ### ArrayUtils
 
 ```python
 class ArrayUtils:
-    # Encode/decode arrays
+    # Extract/reconstruct arrays
     @staticmethod
-    def encode_array(array: Array) -> EncodedArray
+    def extract(array: Array, encoding: ArrayEncoding = "array") -> ExtractedArray
     @staticmethod
-    def decode_array(encoded: EncodedArray) -> np.ndarray
+    def reconstruct(extracted: ExtractedArray, array_type: ArrayType = "numpy") -> np.ndarray
     
-    # File I/O for single arrays
+    # Zip file I/O
     @staticmethod
-    def save_to_zip(array: Array, destination: PathLike | BytesIO) -> None
+    def save_to_zip(array: Array, destination, name: str = "array") -> None
     @staticmethod
-    def load_from_zip(source: PathLike | BytesIO, array_type=None) -> Array
+    def load_from_zip(source, name: str = "array", array_type: ArrayType = "numpy") -> Array
+    
+    # Zip file helpers (for use within zipfile contexts)
+    @staticmethod
+    def save_array(zf: ZipFile, name: str, extracted: ExtractedArray) -> None
+    @staticmethod
+    def decode(zf: ZipFile, name: str, encoding: ArrayEncoding, array_type: ArrayType = "numpy") -> Array
     
     # Array type utilities
     @staticmethod
@@ -577,132 +589,145 @@ class ArrayUtils:
     def detect_array_type(array: Array) -> ArrayType
     @staticmethod
     def convert_array(array: Array, array_type: ArrayType) -> Array
-```
-
-### CustomFieldConfig
-
-```python
-@dataclass
-class CustomFieldConfig(Generic[V, M]):
-    file_name: str                                    # File name in zip (without .bin)
-    encode: Callable[[V, Any], bytes]                 # (value, instance) -> bytes
-    decode: Callable[[bytes, M, Optional[ArrayType]], V]  # (bytes, metadata, array_type) -> value
-    optional: bool = False                            # Won't throw if missing
+    @staticmethod
+    def get_array_encoding(type_hint) -> ArrayEncoding  # Get encoding from type annotation
 ```
 
 ### Packable (Base Class)
 
 ```python
 class Packable(BaseModel):
-    # File I/O
-    def save_to_zip(self, destination, cache_handler=None) -> None
-    @classmethod
-    def load_from_zip(cls, source, array_type=None, cache_handler=None) -> T
+    # Class variable for nested serialization behavior
+    is_contained: ClassVar[bool] = False  # If True, extracts as single zip blob
     
-    # In-memory serialization
-    def encode(self, cache_handler=None) -> bytes
+    # File I/O
+    def save_to_zip(self, destination) -> None
     @classmethod
-    def decode(cls, buf: bytes, array_type=None, cache_handler=None) -> T
+    def load_from_zip(cls, source, array_type="numpy") -> T
+    
+    # Asset Store I/O
+    def save(self, store: AssetStore, path: str = None) -> str  # Returns path
+    @classmethod
+    def load(cls, store: AssetStore, path: str, array_type="numpy", is_lazy=False) -> T
     
     # Array conversion
     def convert_to(self, array_type: ArrayType) -> T
     
-    # Single array loading
-    @staticmethod
-    def load_array(source, name, array_type=None) -> Array
+    # Extract/Encode (instance methods)
+    def extract(self) -> ExtractedPackable  # Cached for efficiency
+    def encode(self) -> bytes  # Calls extract() internally
+    def get_checksum(self) -> str  # SHA256 checksum of encoded bytes
     
-    # Metadata
+    # Decode/Reconstruct
     @classmethod
-    def load_metadata(cls, handler, metadata_cls=PackableMetadata) -> M
-    
-    # Custom field encoding (override in subclasses)
-    @classmethod
-    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]
-    
-    # Extract/Reconstruct for content-addressable storage
+    def decode(cls, buf: bytes, array_type="numpy") -> T  # Decodes and reconstructs
     @staticmethod
-    def extract(obj: BaseModel) -> SerializedPackableData
-    @staticmethod
-    def reconstruct(model_class, data, assets, array_type=None) -> T | LazyModel[T]
-    
-    # Extract assets from multiple values
-    @staticmethod
-    def extract_assets(*values) -> ExtractedAssets
-    
-    # Checksum computation
-    @staticmethod
-    def compute_checksum(obj) -> str
+    def reconstruct(
+        model_class: type[T] | list[type[T]] | JsonSchema,  # Class, list of classes, or schema
+        data: dict[str, Any],
+        assets: AssetProvider = {},
+        array_type: ArrayType = "numpy",
+        is_lazy: bool = False,              # If True, returns LazyModel
+    ) -> T | LazyModel
 ```
 
-### SerializedPackableData
+### ExtractedPackable
 
 ```python
-@dataclass
-class SerializedPackableData:
-    """Result of extracting a Packable for serialization."""
+class PackableMetadata(BaseModel):
+    """JSON-serializable metadata containing data and schema."""
     data: Dict[str, Any]           # Serializable dict with $ref for arrays/Packables
+    json_schema: Dict[str, Any]    # JSON Schema with encoding info
+    
+    @staticmethod
+    def extract_checksums(data: dict) -> list[str]  # Extract checksums from data dict
+
+class ExtractedPackable(BaseModel):
+    """Result of extracting a Packable for serialization."""
+    metadata: PackableMetadata     # JSON-serializable metadata (data + schema)
     assets: Dict[str, bytes]       # Map of checksum -> encoded bytes
 ```
 
-### ExtractedAssets
+### ExtractedArray
 
 ```python
-@dataclass
-class ExtractedAssets:
-    """Result of extracting assets from values.
-    
-    Contains binary assets and their file extensions (for ResourceRefs).
-    """
-    assets: Dict[str, bytes]       # Map of checksum -> encoded bytes
-    extensions: Dict[str, str]     # Map of checksum -> file extension (e.g., '.stl')
+class ExtractedArray(BaseModel):
+    """Result of extracting an array."""
+    data: bytes                    # Meshoptimizer-compressed array data
+    info: ArrayRefInfo             # Metadata (shape, dtype, itemsize, etc.)
+    encoding: ArrayEncoding        # Encoding used ("array", "vertex_buffer", "index_sequence")
 ```
 
 ### LazyModel
 
 ```python
-class LazyModel(Generic[T]):
+class LazyModel:
     """Lazy proxy for a Pydantic BaseModel that defers asset loading.
     
-    Returned by Packable.reconstruct() when assets is a callable or CachedAssetLoader.
+    Returned by Packable.reconstruct() when is_lazy=True.
     """
     def __getattr__(self, name: str) -> Any  # Loads field on first access
-    def resolve(self) -> T                    # Returns fully-loaded model
+    def resolve(self, model_class: type[T]) -> T  # Returns fully-loaded model
     def __repr__(self) -> str                 # Shows loaded/pending fields
 ```
 
-### ResourceRef (Resource)
+### Resource
 
 ```python
-class ResourceRef(BaseModel):
-    """Reference to a file resource that serializes by content checksum.
+class Resource(BaseModel):
+    """Reference to binary data that serializes by content checksum.
     
-    Use as a Pydantic field type for file paths. When extracted via Packable.extract(),
-    files are read and stored by checksum. When reconstructed, files can be retrieved
-    from a cache directory via MESHLY_RESOURCE_PATH environment variable.
+    Use as a Pydantic field type for binary data. When extracted via .extract(),
+    data is gzip-compressed and stored by checksum. When reconstructed, data is
+    decompressed and restored.
     """
-    path: Optional[str]                  # Original file path (if available)
-    ext: Optional[str]                   # File extension (e.g., '.stl')
+    data: bytes                       # Binary data (excluded from serialization)
+    ext: str = ""                     # File extension (e.g., '.stl')
+    name: str = ""                    # Optional name
     
-    @cached_property
-    def checksum(self) -> Optional[str]  # Computed from file content
+    @property
+    def checksum(self) -> str         # Computed from data content
     
-    def read_bytes(self) -> bytes        # Read file content
-    def resolve_path(self) -> Path       # Resolve file path (checks cache)
+    @staticmethod
+    def from_path(path: str | Path) -> Resource  # Create from file path
+```
+
+### AssetStore
+
+```python
+class AssetStore:
+    """File-based asset store for Packable serialization.
     
-# Alias for convenience
-Resource = ResourceRef
+    Assets (binary blobs) are stored by their SHA256 checksum, enabling deduplication.
+    Metadata is stored at user-specified paths in a separate directory.
+    """
+    
+    def __init__(self, assets_path: PathLike, metadata_path: PathLike = None)
+    
+    # Asset operations (by checksum)
+    def asset_exists(self, checksum: str) -> bool
+    def save_asset(self, data: bytes, checksum: str) -> Path
+    def load_asset(self, checksum: str) -> bytes
+    
+    # Metadata operations (by path)
+    def exists(self, path: str) -> bool
+    def load_data(self, path: str) -> dict | None
+    def load_schema(self, path: str) -> dict | None
 ```
 
 ### Mesh
 
 ```python
 class Mesh(Packable):
-    # Fields
-    vertices: Array           # Required (meshoptimizer encoded)
-    indices: Optional[Array]  # Optional (meshoptimizer encoded)
+    # Class variable
+    is_contained: ClassVar[bool] = True  # Mesh extracts as single zip blob
+    
+    # Fields with specialized encoding via type annotations
+    vertices: VertexBuffer        # Required (meshoptimizer vertex buffer encoding)
+    indices: Optional[IndexSequence]  # Optional (meshoptimizer index sequence encoding)
     index_sizes: Optional[Array]  # Auto-inferred
     cell_types: Optional[Array]   # Auto-inferred
-    dim: Optional[int]        # Auto-computed
+    dim: Optional[int]            # Auto-computed
     markers: Dict[str, Array]
     marker_sizes: Dict[str, Array]
     marker_cell_types: Dict[str, Array]
@@ -725,136 +750,6 @@ class Mesh(Packable):
     
     @staticmethod
     def combine(meshes, marker_names=None, preserve_markers=True) -> Mesh
-    
-    # Custom field encoding for meshoptimizer
-    @classmethod
-    def _get_custom_fields(cls) -> Dict[str, CustomFieldConfig]
-```
-
-### Metadata Classes
-
-```python
-class PackableMetadata(BaseModel):
-    class_name: str
-    module_name: str
-    field_data: Dict[str, Any]
-    packable_refs: Dict[str, str]  # SHA256 hash refs for cached packables
-
-class MeshSizeInfo(BaseModel):
-    vertex_count: int
-    vertex_size: int
-    index_count: Optional[int]
-    index_size: int = 4
-
-class MeshMetadata(PackableMetadata):
-    mesh_size: MeshSizeInfo
-    array_type: ArrayType = "numpy"  # "numpy" or "jax"
-```
-
-### DataHandler
-
-The `data_handler` module provides a unified interface for reading and writing data, supporting both regular files and zip archives.
-
-```python
-from meshly import DataHandler
-
-# DataHandler - Unified interface for file I/O
-class DataHandler:
-    def __init__(self, source: PathLike | BytesIO, rel_path: str = "")
-    
-    # Abstract methods (implemented by FileHandler, ZipHandler)
-    def read_text(self, subpath: PathLike, encoding: str = "utf-8") -> str
-    def read_binary(self, subpath: PathLike) -> bytes
-    def write_text(self, subpath: PathLike, content: str, executable: bool = False) -> None
-    def write_binary(self, subpath: PathLike, content: bytes | BytesIO, executable: bool = False) -> None
-    def list_files(self, subpath: PathLike = "", recursive: bool = False) -> List[Path]
-    def exists(self, subpath: PathLike) -> bool
-    def remove_file(self, subpath: PathLike) -> None  # FileHandler only; raises NotImplementedError for ZipHandler
-    
-    # Navigate to subdirectory
-    def to_path(self, rel_path: str) -> DataHandler
-    
-    # Factory method - automatically creates FileHandler or ZipHandler
-    @staticmethod
-    def create(source: PathLike | BytesIO, rel_path: str = "") -> DataHandler
-    
-    # Close resources (important for ZipHandler)
-    def finalize(self) -> None
-    
-    # Context manager support (calls finalize() on exit)
-    def __enter__(self) -> DataHandler
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool
-```
-
-#### Concrete Implementations
-
-```python
-# FileHandler - Read/write from filesystem
-handler = DataHandler.create("/path/to/directory")
-data = handler.read_binary("subdir/file.bin")
-handler.write_text("config.json", '{"version": 1}')
-files = handler.list_files("subdir", recursive=True)
-
-# ZipHandler - Read/write from zip archives (using context manager)
-buf = BytesIO()
-with DataHandler.create(buf) as handler:
-    handler.write_text("metadata.json", json_string)
-    handler.write_binary("data.bin", array_bytes)
-# finalize() is automatically called when exiting the context
-zip_bytes = buf.getvalue()
-
-# Reading from existing zip
-with open("archive.zip", "rb") as f:
-    with DataHandler.create(BytesIO(f.read())) as handler:
-        metadata = handler.read_text("metadata.json")
-        array_data = handler.read_binary("arrays/vertices/array.bin")
-```
-
-#### Advanced Usage
-
-```python
-# Use handlers for custom storage backends
-class S3DataHandler(DataHandler):
-    """Custom handler for reading/writing from S3."""
-    def __init__(self, bucket: str, prefix: str = ""):
-        super().__init__(source="", rel_path="")
-        self.bucket = bucket
-        self.prefix = prefix
-    
-    def read_binary(self, subpath: PathLike) -> bytes:
-        key = f"{self.prefix}/{subpath}" if self.prefix else str(subpath)
-        return s3_client.get_object(Bucket=self.bucket, Key=key)['Body'].read()
-    
-    def write_binary(self, subpath: PathLike, content: bytes | BytesIO, executable: bool = False) -> None:
-        if isinstance(content, BytesIO):
-            content.seek(0)
-            content = content.read()
-        key = f"{self.prefix}/{subpath}" if self.prefix else str(subpath)
-        s3_client.put_object(Bucket=self.bucket, Key=key, Body=content)
-    
-    def exists(self, subpath: PathLike) -> bool:
-        key = f"{self.prefix}/{subpath}" if self.prefix else str(subpath)
-        try:
-            s3_client.head_object(Bucket=self.bucket, Key=key)
-            return True
-        except:
-            return False
-    
-    # ... implement other methods
-
-# Deterministic zip output (ZipHandler uses fixed timestamps)
-# This ensures identical content produces identical zip files
-handler = DataHandler.create(buf)
-# All files get timestamp (2020, 1, 1, 0, 0, 0) for reproducibility
-
-# Automatic mode switching for ZipHandler
-handler = DataHandler.create(BytesIO())
-# Handler starts in write mode for empty buffer
-handler.write_binary("file1.bin", data1)
-# Automatically switches to read mode when needed
-content = handler.read_binary("file1.bin")
-# Switches back to write mode
-handler.write_binary("file2.bin", data2)
 ```
 
 ## Examples
@@ -863,6 +758,7 @@ See the [examples/](examples/) directory:
 - [array_example.ipynb](examples/array_example.ipynb) - Array compression and I/O
 - [mesh_example.ipynb](examples/mesh_example.ipynb) - Mesh operations and custom classes
 - [markers_example.ipynb](examples/markers_example.ipynb) - Markers and boundary conditions
+- [extract_reconstruct_example.ipynb](examples/extract_reconstruct_example.ipynb) - Extract/reconstruct API
 
 ## Development
 

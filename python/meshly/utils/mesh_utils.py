@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from ..mesh import Mesh
+    from meshly.mesh import Mesh
 
 
 class MeshUtils:

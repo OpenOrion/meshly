@@ -13,62 +13,64 @@ meshoptimizer, including:
 7. CellTypeUtils for VTK cell type conversions and edge topology extraction
 """
 
-from .array import (
+from meshly.array import (
     Array,
-    ArrayMetadata,
+    ArrayRefInfo,
     ArrayType,
     ArrayUtils,
-    EncodedArray,
+    ExtractedArray,
+    ArrayEncoding,
+    IndexSequence,
+    VertexBuffer,
 )
-from .cell_types import (
+from meshly.cell_types import (
     CellType,
     CellTypeUtils,
     VTKCellType,
 )
-from .data_handler import (
+from meshly.common import (
     AssetProvider,
-    CachedAssetLoader,
-    DataHandler,
 )
-from .mesh import (
-    Mesh,
-)
-from .packable import ExtractedAssets, LazyModel, Packable, PackableMetadata, SerializedPackableData
-from .resource import (
-    Resource,
-    ResourceRef,
-)
-from .utils import (
-    ElementUtils,
-    MeshUtils,
-)
+from meshly.constants import ExportConstants
+from meshly.mesh import Mesh
+from meshly.packable import ExtractedPackable, Packable, PackableMetadata, PackableRefInfo
+from meshly.utils.dynamic_model import LazyModel
+from meshly.resource import Resource
+from meshly.asset_store import AssetStore
+from meshly.utils import ElementUtils, MeshUtils
 
 __all__ = [
+    "PackableRefInfo",
+    "PackableMetadata",
+
     # Packable base class
     "Packable",
-    "PackableMetadata",
-    "SerializedPackableData",
-    "ExtractedAssets",
+    "ExtractedPackable",
     "LazyModel",
     "ArrayType",
-    # Data handlers
+    # Asset store
+    "AssetStore",
+    # Asset providers
     "AssetProvider",
-    "CachedAssetLoader",
-    "DataHandler",
     # Mesh classes
     "Mesh",
     # Array types and utilities
     "Array",
-    "EncodedArray",
-    "ArrayMetadata",
+    "VertexBuffer",
+    "IndexSequence",
+    "ExtractedArray",
+    "ArrayEncoding",
+    "ArrayRefInfo",
     "ArrayUtils",
+
     # Cell type utilities
     "CellType",
     "VTKCellType",
     "CellTypeUtils",
     # Resource handling
     "Resource",
-    "ResourceRef",
+    # File format constants
+    "ExportConstants",
     # Element utilities
     "ElementUtils",
     # Mesh operations

@@ -17,50 +17,50 @@ class TestArrayUtils:
         self.array_3d = np.random.random((10, 10, 10)).astype(np.float32)
         self.array_int = np.random.randint(0, 100, (20, 20), dtype=np.int32)
 
-    def test_encode_decode_array_1d(self):
-        """Test encoding and decoding a 1D array."""
-        encoded = ArrayUtils.encode_array(self.array_1d)
-        decoded = ArrayUtils.decode_array(encoded)
+    def test_extract_reconstruct_array_1d(self):
+        """Test extracting and reconstructing a 1D array."""
+        extracted = ArrayUtils.extract(self.array_1d)
+        reconstructed = ArrayUtils.reconstruct(extracted)
 
-        np.testing.assert_allclose(decoded, self.array_1d, rtol=1e-5)
-        assert len(encoded.data) < self.array_1d.nbytes
+        np.testing.assert_allclose(reconstructed, self.array_1d, rtol=1e-5)
+        assert len(extracted.data) < self.array_1d.nbytes
 
-    def test_encode_decode_array_2d(self):
-        """Test encoding and decoding a 2D array."""
-        encoded = ArrayUtils.encode_array(self.array_2d)
-        decoded = ArrayUtils.decode_array(encoded)
+    def test_extract_reconstruct_array_2d(self):
+        """Test extracting and reconstructing a 2D array."""
+        extracted = ArrayUtils.extract(self.array_2d)
+        reconstructed = ArrayUtils.reconstruct(extracted)
 
-        np.testing.assert_allclose(decoded, self.array_2d, rtol=1e-5)
-        assert len(encoded.data) < self.array_2d.nbytes
+        np.testing.assert_allclose(reconstructed, self.array_2d, rtol=1e-5)
+        assert len(extracted.data) < self.array_2d.nbytes
 
-    def test_encode_decode_array_3d(self):
-        """Test encoding and decoding a 3D array."""
-        encoded = ArrayUtils.encode_array(self.array_3d)
-        decoded = ArrayUtils.decode_array(encoded)
+    def test_extract_reconstruct_array_3d(self):
+        """Test extracting and reconstructing a 3D array."""
+        extracted = ArrayUtils.extract(self.array_3d)
+        reconstructed = ArrayUtils.reconstruct(extracted)
 
-        np.testing.assert_allclose(decoded, self.array_3d, rtol=1e-5)
-        assert len(encoded.data) < self.array_3d.nbytes
+        np.testing.assert_allclose(reconstructed, self.array_3d, rtol=1e-5)
+        assert len(extracted.data) < self.array_3d.nbytes
 
-    def test_encode_decode_array_int(self):
-        """Test encoding and decoding an integer array."""
-        encoded = ArrayUtils.encode_array(self.array_int)
-        decoded = ArrayUtils.decode_array(encoded)
+    def test_extract_reconstruct_array_int(self):
+        """Test extracting and reconstructing an integer array."""
+        extracted = ArrayUtils.extract(self.array_int)
+        reconstructed = ArrayUtils.reconstruct(extracted)
 
-        np.testing.assert_allclose(decoded, self.array_int, rtol=1e-5)
-        assert len(encoded.data) < self.array_int.nbytes
+        np.testing.assert_allclose(reconstructed, self.array_int, rtol=1e-5)
+        assert len(extracted.data) < self.array_int.nbytes
 
     @pytest.mark.parametrize("shape", [(10,), (5, 5), (2, 3, 4), (2, 2, 2, 2)])
-    def test_encode_decode_preserves_shape(self, shape):
-        """Test that encoding and decoding preserves array shape."""
+    def test_extract_reconstruct_preserves_shape(self, shape):
+        """Test that extracting and reconstructing preserves array shape."""
         array = np.random.random(shape).astype(np.float32)
-        encoded = ArrayUtils.encode_array(array)
-        decoded = ArrayUtils.decode_array(encoded)
+        extracted = ArrayUtils.extract(array)
+        reconstructed = ArrayUtils.reconstruct(extracted)
 
-        assert decoded.shape == shape
-        np.testing.assert_allclose(decoded, array, rtol=1e-5)
+        assert reconstructed.shape == shape
+        np.testing.assert_allclose(reconstructed, array, rtol=1e-5)
 
-    def test_encode_decode_different_dtypes(self):
-        """Test encoding and decoding arrays with different data types."""
+    def test_extract_reconstruct_different_dtypes(self):
+        """Test extracting and reconstructing arrays with different data types."""
         test_arrays = [
             np.array([1, 2, 3, 4, 5], dtype=np.int32),
             np.array([1.1, 2.2, 3.3], dtype=np.float64),
@@ -69,9 +69,9 @@ class TestArrayUtils:
         ]
 
         for test_array in test_arrays:
-            encoded = ArrayUtils.encode_array(test_array)
-            decoded = ArrayUtils.decode_array(encoded)
+            extracted = ArrayUtils.extract(test_array)
+            reconstructed = ArrayUtils.reconstruct(extracted)
 
-            np.testing.assert_allclose(decoded, test_array, rtol=1e-5)
-            assert decoded.shape == test_array.shape
-            assert decoded.dtype == test_array.dtype
+            np.testing.assert_allclose(reconstructed, test_array, rtol=1e-5)
+            assert reconstructed.shape == test_array.shape
+            assert reconstructed.dtype == test_array.dtype

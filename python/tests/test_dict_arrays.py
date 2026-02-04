@@ -13,13 +13,13 @@ from io import BytesIO
 from typing import Dict, Any
 from pydantic import Field
 
-from meshly import Mesh
+from meshly import Mesh, Array
 
 
 class TexturedMesh(Mesh):
     """A custom mesh class with dictionary fields containing numpy arrays."""
 
-    textures: Dict[str, np.ndarray] = Field(
+    textures: Dict[str, Array] = Field(
         default_factory=dict,
         description="Dictionary of texture arrays"
     )
@@ -75,16 +75,6 @@ class TestDictArrays:
             },
             material_name="test_material"
         )
-
-        array_fields = mesh.array_fields
-        expected_fields = {
-            "vertices", "indices", "index_sizes", "cell_types",
-            "textures.diffuse", "textures.normal", "textures.specular",
-            "material_data.surface.roughness", "material_data.surface.metallic",
-            "material_data.lighting.emission"
-        }
-
-        assert array_fields == expected_fields
 
     def test_dict_array_encoding_decoding(self):
         """Test that dictionary arrays can be encoded and decoded."""
@@ -199,8 +189,6 @@ class TestDictArrays:
             indices=self.indices,
             material_name="empty_dict_test"
         )
-
-        assert len(mesh.array_fields) == 4  # vertices, indices, index_sizes, cell_types
 
         buffer = BytesIO()
         mesh.save_to_zip(buffer)

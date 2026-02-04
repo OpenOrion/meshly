@@ -7,176 +7,96 @@ this base to get automatic array encoding/decoding support.
 Custom data classes can inherit from Packable to store simulation
 results, time-series data, or any structured data with numpy arrays.
 
-Packables cannot contain nested Packables. For composite structures,
-use the extract() and reconstruct() methods to handle asset management.
+Packables can be nested. By default, nested Packables are "expanded" during
+extraction (their fields become part of the parent's data dict with $refs for
+arrays). Set `is_contained = True` on a Packable class to make it extract
+as a single zip blob reference instead.
+
+Serialization options:
+- save_to_zip() / load_from_zip(): Single self-contained zip file
+- save() / load(): File-based asset store with deduplication
 """
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass
+import zipfile
+from functools import cached_property
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Generic, TypeVar, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, TypeVar, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
-from .array import Array, ArrayType, ArrayUtils
-from .common import PathLike
-from .data_handler import AssetProvider, CachedAssetLoader, DataHandler
-from .utils.checksum_utils import ChecksumUtils
-from .utils.schema_utils import SchemaUtils
-from .utils.serialization_utils import SerializationUtils
+from meshly.array import ArrayType, ArrayUtils
+from meshly.common import AssetProvider, PathLike, RefInfo
+from meshly.constants import ExportConstants
+from meshly.utils.checksum_utils import ChecksumUtils
+from meshly.utils.schema_utils import SchemaUtils
+from meshly.utils.serialization_utils import SerializationUtils
+from meshly.utils.json_schema import JsonSchema
+from meshly.utils.dynamic_model import DynamicModelBuilder, LazyModel
+
+if TYPE_CHECKING:
+    from meshly.asset_store import AssetStore
 
 TModel = TypeVar("TModel", bound=BaseModel)
 
 
+class PackableRefInfo(RefInfo):
+    """Ref model for self-contained packable $ref (encoded as zip)."""
+    ref: str = Field(..., alias="$ref")
+
+
 class PackableMetadata(BaseModel):
-    """Metadata for a Packable saved to zip."""
+    """Metadata containing the serializable data and JSON schema.
+    
+    This is the JSON-serializable portion of extracted Packable data,
+    containing both the data dict with $ref checksums and the JSON schema.
+    """
+    
+    data: dict[str, Any] = Field(..., description="Serializable dict with primitive fields and checksum refs for arrays")
+    json_schema: dict[str, Any] = Field(..., description="JSON Schema with encoding info")
 
-    field_data: dict[str, Any] = Field(default_factory=dict, description="Non-array field values")
+    @staticmethod
+    def extract_checksums(data: dict[str, Any]) -> list[str]:
+        """Extract all $ref checksums from a serialized data dict.
+
+        Recursively walks the data structure to find all {"$ref": checksum} entries.
+
+        Args:
+            data: Serialized data dict with $ref references
+
+        Returns:
+            List of all unique checksums found
+        """
+        checksums: set[str] = set()
+
+        def _extract(obj: Any) -> None:
+            if isinstance(obj, dict):
+                if "$ref" in obj:
+                    checksums.add(obj["$ref"])
+                else:
+                    for v in obj.values():
+                        _extract(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _extract(item)
+
+        _extract(data)
+        return list(checksums)
 
 
-TPackableMetadata = TypeVar("TPackableMetadata", bound=PackableMetadata)
-TPackable = TypeVar("TPackable", bound="Packable")
-FieldValue = TypeVar("FieldValue")
-
-
-@dataclass
-class SerializedPackableData:
+class ExtractedPackable(BaseModel):
     """Result of extracting a Packable for serialization.
 
-    Contains the serializable data dict with checksum references,
-    plus the encoded assets (arrays as bytes).
+    Contains the metadata (data dict + schema) and the binary assets.
+    The data dict may contain a reserved key '$module' with the fully qualified
+    class name for automatic class resolution during reconstruction.
     """
+    
+    model_config = {"arbitrary_types_allowed": True}
 
-    data: dict[str, Any]
-    """Serializable dict with primitive fields and checksum refs for arrays"""
-    assets: dict[str, bytes]
-    """Map of checksum -> encoded bytes for all arrays"""
-
-
-@dataclass
-class ExtractedAssets:
-    """Result of extracting assets from values.
-
-    Contains the binary assets and their file extensions (for ResourceRefs).
-    """
-
-    assets: dict[str, bytes]
-    """Map of checksum -> encoded bytes"""
-    extensions: dict[str, str]
-    """Map of checksum -> file extension (e.g., '.stl')"""
-
-
-class LazyModel(Generic[TModel]):
-    """Lazy proxy for a Pydantic BaseModel that defers asset loading until field access.
-
-    Example:
-        def fetch_asset(checksum: str) -> bytes:
-            return cloud_storage.download(checksum)
-
-        lazy = Packable.reconstruct(SimulationCase, data, fetch_asset)
-        # No assets loaded yet
-
-        temp = lazy.temperature  # NOW the temperature asset is fetched
-        vel = lazy.velocity      # NOW the velocity asset is fetched
-    """
-
-    __slots__ = ("_model_class", "_data", "_assets", "_array_type", "_cache", "_resolved")
-
-    def __init__(
-        self,
-        model_class: type[TModel],
-        data: dict[str, Any],
-        assets: AssetProvider,
-        array_type: ArrayType | None = None,
-    ):
-        object.__setattr__(self, "_model_class", model_class)
-        object.__setattr__(self, "_data", data)
-        object.__setattr__(self, "_assets", assets)
-        object.__setattr__(self, "_array_type", array_type)
-        object.__setattr__(self, "_cache", {})
-        object.__setattr__(self, "_resolved", None)
-
-    def _get_cached_asset(self, checksum: str) -> bytes:
-        """Get asset bytes, using cache if CachedAssetLoader is provided."""
-        return SerializationUtils.get_cached_asset(
-            object.__getattribute__(self, "_assets"), checksum
-        )
-
-    def __getattr__(self, name: str) -> Any:
-        cache = object.__getattribute__(self, "_cache")
-        if name in cache:
-            return cache[name]
-
-        model_class = object.__getattribute__(self, "_model_class")
-        data = object.__getattribute__(self, "_data")
-        array_type = object.__getattribute__(self, "_array_type")
-
-        if name not in model_class.model_fields:
-            raise AttributeError(f"'{model_class.__name__}' has no attribute '{name}'")
-
-        if name not in data:
-            return None
-
-        field_value = data[name]
-        field_type = model_class.model_fields[name].annotation
-
-        resolved = SchemaUtils.resolve_value_with_type(
-            field_value, field_type, self._get_cached_asset, array_type
-        )
-
-        cache[name] = resolved
-        return resolved
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        raise AttributeError("LazyModel is read-only. Use resolve() to get a mutable model.")
-
-    def resolve(self) -> TModel:
-        """Fully resolve all fields and return the actual Pydantic model."""
-        resolved = object.__getattribute__(self, "_resolved")
-        if resolved is not None:
-            return resolved
-
-        model_class = object.__getattribute__(self, "_model_class")
-        data = object.__getattribute__(self, "_data")
-        array_type = object.__getattribute__(self, "_array_type")
-        cache = object.__getattribute__(self, "_cache")
-
-        resolved_data = {}
-        for field_name, field_info in model_class.model_fields.items():
-            if field_name in cache:
-                resolved_data[field_name] = cache[field_name]
-            elif field_name in data:
-                resolved_data[field_name] = SchemaUtils.resolve_value_with_type(
-                    data[field_name], field_info.annotation, self._get_cached_asset, array_type
-                )
-
-        result = model_class(**resolved_data)
-        object.__setattr__(self, "_resolved", result)
-        return result
-
-    def __repr__(self) -> str:
-        model_class = object.__getattribute__(self, "_model_class")
-        cache = object.__getattribute__(self, "_cache")
-        data = object.__getattribute__(self, "_data")
-        loaded = list(cache.keys())
-        pending = [k for k in data.keys() if k not in cache]
-        return f"LazyModel[{model_class.__name__}](loaded={loaded}, pending={pending})"
-
-
-@dataclass
-class CustomFieldConfig(Generic[FieldValue, TPackableMetadata]):
-    """Configuration for custom field encoding/decoding."""
-
-    file_name: str
-    """File name in zip (without .bin extension)"""
-    encode: Callable[[FieldValue, Any], bytes]
-    """Encoder function: (value, instance) -> bytes"""
-    decode: Callable[[bytes, TPackableMetadata, ArrayType | None], FieldValue]
-    """Decoder function: (bytes, metadata, array_type) -> value"""
-    optional: bool = False
-    """Whether the field is optional (won't throw if missing)"""
+    metadata: PackableMetadata = Field(..., description="JSON-serializable metadata (data + schema)")
+    assets: dict[str, bytes] = Field(default_factory=dict, description="Map of checksum -> encoded bytes for all arrays")
 
 
 class Packable(BaseModel):
@@ -185,6 +105,10 @@ class Packable(BaseModel):
     Subclasses can define numpy array attributes which will be automatically
     detected, encoded, and saved to zip files. Non-array fields are preserved
     in metadata.
+
+    Nested Packables are supported. By default, nested Packables are "expanded"
+    during extraction (fields inlined with $refs for arrays). Set
+    `is_contained = True` to make the class extract as a single zip blob.
 
     Example:
         class SimulationResult(Packable):
@@ -199,72 +123,211 @@ class Packable(BaseModel):
         )
         result.save_to_zip("result.zip")
         loaded = SimulationResult.load_from_zip("result.zip")
+
+        # Self-contained Packable (extracts as single $ref)
+        class Mesh(Packable):
+            is_contained: ClassVar[bool] = True
+            vertices: np.ndarray
+            faces: np.ndarray
     """
+
+    is_contained: ClassVar[bool] = False
+    """If True, this Packable extracts as a single zip blob reference.
+    If False (default), fields are expanded with $refs for individual arrays."""
+
+    _cached_extract: Optional["ExtractedPackable"] = PrivateAttr(default=None)
+    """Cached result of extract() to avoid recomputation."""
 
     class Config:
         arbitrary_types_allowed = True
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        self._validate_no_direct_packable_fields()
+    def extract(self) -> "ExtractedPackable":
+        """Extract arrays and Packables from this model into serializable data and assets.
+        
+        Results are cached for efficiency. Subsequent calls return the cached result.
+        
+        Returns:
+            ExtractedPackable with metadata (data + schema) and binary assets.
+        """
+        if self._cached_extract is not None:
+            return self._cached_extract
+        
+        extracted_result = SerializationUtils.extract_basemodel(
+            self, 
+            include_computed=True
+        )
 
-    def _validate_no_direct_packable_fields(self) -> None:
-        """Validate that this Packable has no direct Packable fields."""
-        for field_name in type(self).model_fields:
-            if field_name in self.__private_attributes__:
-                continue
-            value = getattr(self, field_name, None)
-            if value is not None and isinstance(value, Packable):
-                raise TypeError(
-                    f"Direct Packable fields are not allowed. Field '{field_name}' "
-                    f"contains a {type(value).__name__}. Packables can be nested "
-                    "inside dicts or other BaseModels, and extract() will handle them."
-                )
+        assert isinstance(extracted_result.value, dict), "Extracted value must be a dict for Packable models"
 
-    @property
-    def array_fields(self) -> set[str]:
-        """Get all array field paths, including nested arrays in dicts/BaseModels."""
-        result = set()
-        for field_name in type(self).model_fields:
-            if field_name in self.__private_attributes__:
-                continue
-            value = getattr(self, field_name, None)
-            if value is not None:
-                result.update(
-                    ArrayUtils.extract_nested_arrays(
-                        value, field_name, skip=lambda x: isinstance(x, Packable)
-                    ).keys()
-                )
-        return result
+        self._cached_extract = ExtractedPackable(
+            metadata=PackableMetadata(
+                data=extracted_result.value,
+                json_schema=type(self).model_json_schema()
+            ),
+            assets=extracted_result.assets,
+        )
+        return self._cached_extract
 
-    def _extract_non_array_fields(self) -> dict[str, Any]:
-        """Extract non-array field values for metadata."""
-        model_data = {}
-        direct_arrays = {f for f in self.array_fields if "." not in f}
-        for name in type(self).model_fields:
-            if name in self.__private_attributes__ or name in direct_arrays:
-                continue
-            value = getattr(self, name, None)
-            if value is not None and not ArrayUtils.is_array(value):
-                extracted = ArrayUtils.extract_non_arrays(
-                    value, skip=lambda x: isinstance(x, Packable)
-                )
-                if extracted is not None:
-                    model_data[name] = extracted
-        return model_data
+    def encode(self) -> bytes:
+        """Encode this Packable to bytes (zip format).
+        
+        Calls extract() internally to serialize all fields and assets.
+            
+        Returns:
+            Encoded bytes in zip format.
+        """
+        extracted = self.extract()
+        
+        destination = BytesIO()
+        
+        with zipfile.ZipFile(destination, "w") as zf:
+            # Write JSON Schema with encoding info (if available)
+            if extracted.metadata.json_schema is not None:
+                info = zipfile.ZipInfo(ExportConstants.SCHEMA_FILE, date_time=ExportConstants.EXPORT_TIME)
+                zf.writestr(info, json.dumps(extracted.metadata.json_schema, indent=2, sort_keys=True))
 
-    def _create_metadata(self, field_data: dict[str, Any]) -> PackableMetadata:
-        """Create metadata for this Packable. Subclasses can override."""
-        return PackableMetadata(field_data=field_data)
+            # Write data as JSON
+            info = zipfile.ZipInfo(ExportConstants.DATA_FILE, date_time=ExportConstants.EXPORT_TIME)
+            zf.writestr(info, json.dumps(extracted.metadata.data, indent=2, sort_keys=True))
+
+            # Write assets by checksum
+            for checksum in sorted(extracted.assets.keys()):
+                info = zipfile.ZipInfo(ExportConstants.asset_path(checksum), date_time=ExportConstants.EXPORT_TIME)
+                zf.writestr(info, extracted.assets[checksum])
+
+        return destination.getvalue()
+
+    @cached_property
+    def checksum(self) -> str:
+        """SHA256 checksum of this Packable's encoded bytes (cached)."""
+        return ChecksumUtils.compute_bytes_checksum(self.encode())
 
     @classmethod
-    def load_metadata(
-        cls, handler: DataHandler, metadata_cls: type[TPackableMetadata] = PackableMetadata
-    ) -> TPackableMetadata:
-        """Load and validate metadata using a read handler."""
-        metadata_text = handler.read_text("metadata.json")
-        metadata_dict = json.loads(metadata_text)
-        return metadata_cls(**metadata_dict)
+    def decode(
+        cls,
+        buf: bytes,
+        array_type: ArrayType = "numpy",
+    ):
+        """Decode bytes to a reconstructed Packable.
+        
+        Args:
+            buf: Encoded bytes (zip format)
+            array_type: Target array backend type ("numpy" or "jax")
+        
+        Returns:
+            Reconstructed Packable instance.
+        """
+        with zipfile.ZipFile(BytesIO(buf), "r") as zf:
+            # Read data
+            data = json.loads(zf.read(ExportConstants.DATA_FILE).decode("utf-8"))
+
+            # Read schema if present
+            try:
+                schema = json.loads(zf.read(ExportConstants.SCHEMA_FILE).decode("utf-8"))
+            except KeyError:
+                schema = {}
+
+            # Build assets dict from files
+            assets: dict[str, bytes] = {}
+            for file_path in zf.namelist():
+                if file_path.startswith(ExportConstants.ASSETS_DIR) and file_path.endswith(ExportConstants.ASSET_EXT):
+                    checksum = ExportConstants.checksum_from_path(file_path)
+                    assets[checksum] = zf.read(file_path)
+
+        # If called on base Packable, use schema-based decoding
+        if cls is Packable:
+            if not schema:
+                raise ValueError(
+                    "schema.json not found. Use a specific subclass for decode() "
+                    "or ensure the packable was created with Array/VertexBuffer/IndexSequence types."
+                )
+            json_schema = JsonSchema.model_validate(schema)
+            return Packable.reconstruct(json_schema, data, assets, array_type)
+        
+        return Packable.reconstruct(cls, data, assets, array_type)
+
+    @staticmethod
+    def reconstruct(
+        model_class: Union[type[TModel], list[type[TModel]], JsonSchema, None],
+        data: dict[str, Any],
+        assets: AssetProvider = {},
+        array_type: ArrayType = "numpy",
+        is_lazy: bool = False,
+    ) -> Union[TModel, LazyModel, BaseModel]:
+        """Reconstruct a Pydantic BaseModel from extracted data and assets.
+
+        Args:
+            model_class: The Pydantic model class to reconstruct, a list of model classes
+                        (will match against $module in data), or a JsonSchema for 
+                        schema-based decoding (builds a dynamic model).
+            data: Either a dict containing the extracted data.
+            assets: Asset provider (dict or callable).
+            array_type: Optional array type for conversion.
+            is_lazy: If True, returns a lazy proxy that defers asset loading until field access.
+
+        Returns:
+            Reconstructed model instance, lazy proxy, or dynamically built model (if JsonSchema passed).
+        
+        Example:
+            extracted = Packable.extract(my_model)
+            restored = Packable.reconstruct(MyModel, extracted.data, extracted.assets)
+            
+            # Lazy loading with known model class
+            lazy_model = Packable.reconstruct(MyModel, data, fetch_asset_fn, is_lazy=True)
+            
+            # Lazy loading with schema (dynamic model)
+            lazy_dynamic = Packable.reconstruct(schema, data, fetch_asset_fn, is_lazy=True)
+            
+            # Multiple model classes - matches $module field
+            model = Packable.reconstruct([ModelA, ModelB], data, assets)
+        """
+
+        # Schema-based decoding (builds dynamic model)
+        if isinstance(model_class, JsonSchema):
+            return DynamicModelBuilder.instantiate(model_class, data, assets, array_type, is_lazy)
+
+        # List of model classes - find matching class by $module
+        if isinstance(model_class, list):
+            module_name = data.get("$module")
+            if not module_name:
+                raise ValueError(
+                    "Cannot reconstruct with list of model classes: data does not contain $module field"
+                )
+            for cls in model_class:
+                cls_module = f"{cls.__module__}.{cls.__qualname__}"
+                if cls_module == module_name:
+                    model_class = cls
+                    break
+            else:
+                available = [f"{c.__module__}.{c.__qualname__}" for c in model_class]
+                raise ValueError(
+                    f"No matching model class found for $module='{module_name}'. "
+                    f"Available classes: {available}"
+                )
+
+        assert model_class is not None, "model_class must be provided for reconstruction"
+        
+        # For typed model classes, generate schema and use DynamicModelBuilder for lazy loading
+        if is_lazy:
+            schema = JsonSchema.model_validate(model_class.model_json_schema())
+            return DynamicModelBuilder.instantiate(schema, data, assets, array_type, is_lazy=True)
+    
+        resolved_data = SchemaUtils.resolve_from_class(model_class, data, assets, array_type)
+        return model_class(**resolved_data)
+
+    @classmethod
+    def load_from_zip(
+        cls,
+        source: Union[PathLike, BytesIO],
+        array_type: ArrayType = "numpy",
+    ):
+        """Load a Packable from a zip file."""
+        if isinstance(source, BytesIO):
+            buf = source.read()
+        else:
+            buf = Path(source).read_bytes()
+        
+        return cls.decode(buf, array_type)
 
     def save_to_zip(self, destination: Union[PathLike, BytesIO]) -> None:
         """Save this container to a zip file."""
@@ -274,300 +337,109 @@ class Packable(BaseModel):
         else:
             Path(destination).write_bytes(encoded)
 
-    @classmethod
-    def load_from_zip(
-        cls: type[TPackable],
-        source: Union[PathLike, BytesIO],
-        array_type: ArrayType | None = None,
-    ) -> TPackable:
-        """Load a Packable from a zip file."""
-        if isinstance(source, BytesIO):
-            source.seek(0)
-            return cls.decode(source.read(), array_type)
-        else:
-            with open(source, "rb") as f:
-                return cls.decode(f.read(), array_type)
-
-    @classmethod
-    def _get_custom_fields(cls) -> dict[str, CustomFieldConfig]:
-        """Get custom field configurations. Subclasses override this."""
-        return {}
-
-    @classmethod
-    def _get_custom_field_names(cls) -> set[str]:
-        """Get set of field names that have custom encoding/decoding."""
-        return set(cls._get_custom_fields().keys())
-
-    @classmethod
-    def _decode_custom_fields(
-        cls,
-        handler: DataHandler,
-        metadata: PackableMetadata,
-        data: dict[str, Any],
-        array_type: ArrayType | None = None,
-    ) -> None:
-        """Decode fields with custom decoders."""
-        for field_name, config in cls._get_custom_fields().items():
-            try:
-                encoded_bytes = handler.read_binary(f"{config.file_name}.bin")
-                data[field_name] = config.decode(encoded_bytes, metadata, array_type)
-            except (KeyError, FileNotFoundError):
-                if not config.optional:
-                    raise ValueError(
-                        f"Required custom field '{field_name}' ({config.file_name}.bin) not found"
-                    )
-
-    @classmethod
-    def _load_standard_arrays(
-        cls,
-        handler: DataHandler,
-        data: dict[str, Any],
-        skip_fields: set[str],
-        array_type: ArrayType | None = None,
-    ) -> None:
-        """Load standard arrays from arrays/ folder, skipping custom fields."""
-        try:
-            all_files = handler.list_files("arrays", recursive=True)
-        except (KeyError, FileNotFoundError):
-            return
-
-        for file_path in all_files:
-            file_str = str(file_path)
-            if not file_str.endswith("/array.bin"):
-                continue
-
-            array_path = file_str[7:-10]  # Remove "arrays/" and "/array.bin"
-            name = array_path.replace("/", ".")
-
-            base_field = name.split(".")[0]
-            if base_field in skip_fields:
-                continue
-
-            decoded = ArrayUtils.load_array(handler, name, array_type)
-
-            if "." in name:
-                parts = name.split(".")
-                current = data
-                for part in parts[:-1]:
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-                current[parts[-1]] = decoded
-            else:
-                data[name] = decoded
-
-    def _encode_standard_arrays(self, skip_fields: set[str]) -> dict[str, bytes]:
-        """Encode standard arrays, skipping custom fields."""
-        encoded_arrays = {}
-
-        for field_name in self.array_fields:
-            if field_name in skip_fields:
-                continue
-
-            if "." in field_name:
-                parts = field_name.split(".")
-                obj = self
-                for part in parts[:-1]:
-                    obj = obj[part] if isinstance(obj, dict) else getattr(obj, part)
-                array = obj[parts[-1]] if isinstance(obj, dict) else getattr(obj, parts[-1])
-                if ArrayUtils.is_array(array):
-                    encoded_arrays[field_name] = ArrayUtils.encode_array(array)
-            else:
-                try:
-                    array = getattr(self, field_name)
-                    if ArrayUtils.is_array(array):
-                        encoded_arrays[field_name] = ArrayUtils.encode_array(array)
-                except AttributeError:
-                    pass
-
-        return encoded_arrays
-
-    def _encode_custom_fields(self, handler: DataHandler) -> None:
-        """Encode fields with custom encoders."""
-        for field_name, config in self._get_custom_fields().items():
-            value = getattr(self, field_name)
-            if value is not None:
-                encoded_bytes = config.encode(value, self)
-                handler.write_binary(f"{config.file_name}.bin", encoded_bytes)
-
-    def encode(self) -> bytes:
-        """Serialize this Packable to bytes (zip format)."""
-        custom_field_names = self._get_custom_field_names()
-        encoded_arrays = self._encode_standard_arrays(custom_field_names)
-        field_data = self._extract_non_array_fields()
-        metadata = self._create_metadata(field_data)
-
-        destination = BytesIO()
-        handler = DataHandler.create(destination)
-
-        for name in sorted(encoded_arrays.keys()):
-            ArrayUtils.save_array(handler, name, encoded_arrays[name])
-
-        self._encode_custom_fields(handler)
-
-        handler.write_text(
-            "metadata.json",
-            json.dumps(metadata.model_dump(), indent=2, sort_keys=True),
-        )
-
-        handler.finalize()
-        return destination.getvalue()
-
-    @classmethod
-    def decode(
-        cls: type[TPackable],
-        buf: bytes,
-        array_type: ArrayType | None = None,
-    ) -> TPackable:
-        """Deserialize a Packable from bytes."""
-        if cls is Packable:
-            raise TypeError(
-                "Cannot decode on base Packable class. "
-                "Use the specific subclass: MyClass.decode(...)"
-            )
-
-        handler = DataHandler.create(BytesIO(buf))
-        metadata = cls.load_metadata(handler)
-        skip_fields = cls._get_custom_field_names()
-
-        data: dict[str, Any] = {}
-        cls._decode_custom_fields(handler, metadata, data, array_type)
-        cls._load_standard_arrays(handler, data, skip_fields, array_type)
-
-        if metadata.field_data:
-            SchemaUtils.merge_field_data_with_schema(cls, data, metadata.field_data)
-
-        return cls(**data)
-
-    @staticmethod
-    def extract(obj: BaseModel) -> SerializedPackableData:
-        """Extract arrays and Packables from a BaseModel into serializable data and assets.
-
-        Returns:
-            SerializedPackableData with data dict (refs for arrays) and assets dict
-        """
-        if not isinstance(obj, BaseModel):
-            raise TypeError(f"extract() requires a Pydantic BaseModel, got {type(obj).__name__}.")
-
-        assets: dict[str, bytes] = {}
-        data: dict[str, Any] = {}
-
-        for field_name in type(obj).model_fields:
-            if hasattr(obj, "__private_attributes__") and field_name in obj.__private_attributes__:
-                continue
-            value = getattr(obj, field_name, None)
-            if value is not None:
-                data[field_name] = SerializationUtils.extract_value(value, assets)
-
-        # Include computed fields (Pydantic v2)
-        for field_name in type(obj).model_computed_fields:
-            value = getattr(obj, field_name, None)
-            if value is not None:
-                data[field_name] = SerializationUtils.extract_value(value, assets)
-
-        return SerializedPackableData(data=data, assets=assets)
-
-    @staticmethod
-    def compute_checksum(
-        obj: Union[bytes, "SerializedPackableData", "Packable", BaseModel],
+    def save(
+        self,
+        store: "AssetStore",
+        path: Optional[str] = None,
     ) -> str:
-        """Compute SHA256 checksum for various types of data.
-
-        Returns:
-            16-character hex string (first 64 bits of SHA256)
-        """
-        if isinstance(obj, bytes):
-            return ChecksumUtils.compute_bytes_checksum(obj)
-
-        if isinstance(obj, SerializedPackableData):
-            return ChecksumUtils.compute_dict_checksum(obj.data, obj.assets)
-
-        if isinstance(obj, Packable):
-            return ChecksumUtils.compute_bytes_checksum(obj.encode())
-
-        if isinstance(obj, BaseModel):
-            extracted = Packable.extract(obj)
-            return ChecksumUtils.compute_dict_checksum(extracted.data, extracted.assets)
-
-        raise TypeError(
-            f"compute_checksum() requires bytes, SerializedPackableData, Packable, or BaseModel, "
-            f"got {type(obj).__name__}"
-        )
-
-    @staticmethod
-    def reconstruct(
-        model_class: type[TModel],
-        data: dict[str, Any],
-        assets: AssetProvider,
-        array_type: ArrayType | None = None,
-    ) -> Union[TModel, LazyModel[TModel]]:
-        """Reconstruct a Pydantic BaseModel from extracted data and assets.
-
-        If assets is a dict, returns the actual model (eager loading).
-        If assets is a callable or CachedAssetLoader, returns a LazyModel proxy.
-        """
-        if callable(assets) or isinstance(assets, CachedAssetLoader):
-            return LazyModel(model_class, data, assets, array_type)
-
-        resolved_data = SchemaUtils.resolve_refs_with_schema(model_class, data, assets, array_type)
-        return model_class(**resolved_data)
-
-    @staticmethod
-    def extract_assets(*values: Any) -> ExtractedAssets:
-        """Extract all assets from one or more values.
-
-        Recursively finds all ResourceRefs, Packables, and arrays in the given values
-        and returns their assets with extensions.
-
-        This is useful for extracting assets from function arguments before remote execution,
-        ensuring all referenced files are available on the remote side.
-
+        """Save this Packable to an asset store.
+        
+        Extracts the Packable and saves assets to the store's asset directory,
+        with metadata saved to the specified path.
+        
         Args:
-            *values: Any values to extract assets from (BaseModels, dicts, lists, tuples, etc.)
-
+            store: AssetStore to save to
+            path: Relative path for the metadata. If None, uses the content checksum.
+            
         Returns:
-            ExtractedAssets with assets dict and extensions dict
-
+            The path where the Packable was saved
+            
         Example:
-            # Extract assets from a Pipeline and a ResourceRef
-            extracted = Packable.extract_assets(pipeline, resource_ref)
-
-            # Extract assets from function args
-            extracted = Packable.extract_assets(*fn.args, *fn.kwargs.values())
+            from meshly import AssetStore
+            
+            store = AssetStore("/path/to/assets")
+            
+            # Save with auto-generated checksum path
+            path = my_mesh.save(store)
+            
+            # Save with explicit path
+            settings.save(store, f"{checksum}/settings")
+            result.save(store, f"{checksum}/result")
         """
-        assets: dict[str, bytes] = {}
-        extensions: dict[str, str] = {}
-        for value in values:
-            SerializationUtils.extract_value(value, assets, extensions)
-        return ExtractedAssets(assets=assets, extensions=extensions)
+        import json
+        
+        extracted = self.extract()
+        result_path = path or self.checksum
+        
+        # Save all assets
+        for asset_checksum, asset_bytes in extracted.assets.items():
+            store.save_asset(asset_bytes, asset_checksum)
+        
+        # Create metadata directory
+        meta_dir = store.metadata_dir(result_path)
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save data.json
+        data_path = meta_dir / store.DATA_FILE
+        data_path.write_text(
+            json.dumps(extracted.metadata.data, indent=2, sort_keys=True)
+        )
+        
+        # Save schema.json
+        if extracted.metadata.json_schema:
+            schema_path = meta_dir / store.SCHEMA_FILE
+            schema_path.write_text(
+                json.dumps(extracted.metadata.json_schema, indent=2, sort_keys=True)
+            )
+        
+        return result_path
+
+    @classmethod
+    def load(
+        cls,
+        store: "AssetStore",
+        path: str,
+        array_type: ArrayType = "numpy",
+        is_lazy: bool = False,
+    ):
+        """Load a Packable from an asset store by path.
+        
+        Args:
+            store: AssetStore to load from
+            path: Relative path for the metadata
+            array_type: Target array backend type ("numpy" or "jax")
+            is_lazy: If True, returns a lazy proxy that defers asset loading
+            
+        Returns:
+            Reconstructed Packable instance, or None if not found
+            
+        Example:
+            from meshly import AssetStore, Mesh
+            
+            store = AssetStore("/path/to/assets")
+            mesh = Mesh.load(store, "abc123")
+            
+            # Load from specific path
+            result = Result.load(store, f"{checksum}/result")
+        """
+        data = store.load_data(path)
+        if data is None:
+            return None
+        
+        return cls.reconstruct(cls, data, store.load_asset, array_type, is_lazy)
 
     def __reduce__(self):
         """Support for pickle serialization."""
-        return (self.__class__.decode, (self.encode(),))
+        encoded = self.encode()
+        return (self.__class__.load_from_zip, (BytesIO(encoded),))
 
-    @staticmethod
-    def load_array(
-        source: Union[PathLike, BytesIO], name: str, array_type: ArrayType | None = None
-    ) -> Array:
-        """Load a single array from a zip file without loading the entire object."""
-        if isinstance(source, BytesIO):
-            source.seek(0)
-            handler = DataHandler.create(BytesIO(source.read()))
-        else:
-            handler = DataHandler.create(BytesIO(Path(source).read_bytes()))
-        return ArrayUtils.load_array(handler, name, array_type)
-
-    def convert_to(self: TPackable, array_type: ArrayType) -> TPackable:
+    def convert_to(self, array_type: ArrayType):
         """Create a new Packable with all arrays converted to the specified type."""
         data_copy = self.model_copy(deep=True)
 
         for field_name in data_copy.model_fields_set:
-            try:
-                value = getattr(data_copy, field_name)
-                if value is not None:
-                    converted = ArrayUtils.convert_recursive(value, array_type)
-                    setattr(data_copy, field_name, converted)
-            except AttributeError:
-                pass
+            value = getattr(data_copy, field_name)            
+            converted = ArrayUtils.convert_recursive(value, array_type)
+            setattr(data_copy, field_name, converted)
 
         return data_copy

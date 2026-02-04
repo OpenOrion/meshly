@@ -26,7 +26,7 @@ class ChecksumUtils:
         return hashlib.sha256(data).hexdigest()[:16]
 
     @staticmethod
-    def compute_dict_checksum(data: dict[str, Any], assets: dict[str, bytes]) -> str:
+    def compute_dict_checksum(data: dict[str, Any], assets: dict[str, bytes] = {}) -> str:
         """Compute checksum for a data dict with assets.
 
         Combines data JSON + all asset bytes for deterministic hashing.

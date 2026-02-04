@@ -33,6 +33,10 @@ class VTKCellType:
     VTK_WEDGE = 13
     VTK_PYRAMID = 14
     VTK_POLYGON = 7
+    VTK_POLYHEDRON = 42  # Variable number of points
+    
+    # Cell types with variable point counts (validation should skip these)
+    VARIABLE_SIZE_TYPES = {42}  # VTK_POLYHEDRON
 
 
 
@@ -259,6 +263,9 @@ class CellTypeUtils:
         """
         Validate that element sizes match VTK cell types.
         
+        Variable-size cell types (e.g., VTK_POLYHEDRON=42) are skipped during
+        validation since they can have any number of points.
+        
         Args:
             sizes: Array of element sizes
             vtk_types: Array of VTK cell type identifiers
@@ -270,6 +277,9 @@ class CellTypeUtils:
             return False
         
         for size, vtk_type in zip(sizes, vtk_types):
+            # Skip validation for variable-size cell types (e.g., polyhedra)
+            if vtk_type in VTKCellType.VARIABLE_SIZE_TYPES:
+                continue
             expected_size = CellTypeUtils.vtk_cell_type_to_size(vtk_type)
             if expected_size != size:
                 return False

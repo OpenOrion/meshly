@@ -234,12 +234,13 @@ class Mesh(Packable):
 
         return self
 
-    @staticmethod
+    @classmethod
     def combine(
-        meshes: List["Mesh"],
+        cls: type[T],
+        meshes: List[T],
         marker_names: Optional[List[str]] = None,
         preserve_markers: bool = True,
-    ) -> "Mesh":
+    ) -> T:
         """
         Combine multiple meshes into a single mesh.
 
@@ -310,8 +311,14 @@ class Mesh(Packable):
         # Get dimension from first mesh
         dim = meshes[0].dim
 
+        # Collect extra fields from subclass (take from first mesh)
+        extra_fields = {
+            name: getattr(meshes[0], name)
+            for name in cls.model_fields.keys() - Mesh.model_fields.keys()
+        }
+
         # Create combined mesh
-        return Mesh(
+        return cls(
             vertices=combined_vertices,
             indices=combined_indices,
             index_sizes=combined_index_sizes,
@@ -320,6 +327,7 @@ class Mesh(Packable):
             markers=combined_markers,
             marker_sizes=combined_marker_sizes,
             marker_cell_types=combined_marker_cell_types,
+            **extra_fields,
         )
 
     def extract_by_marker(self, marker_name: str) -> "Mesh":

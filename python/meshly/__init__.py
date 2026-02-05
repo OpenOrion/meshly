@@ -32,7 +32,7 @@ from meshly.common import (
     AssetProvider,
 )
 from meshly.constants import ExportConstants
-from meshly.mesh import Mesh
+from meshly.mesh import Mesh, TMesh
 from meshly.packable import ExtractedPackable, Packable, PackableRefInfo, PackableStore
 from meshly.utils.dynamic_model import LazyModel
 from meshly.resource import Resource
@@ -52,6 +52,7 @@ __all__ = [
     "AssetProvider",
     # Mesh classes
     "Mesh",
+    "TMesh",
     # Array types and utilities
     "Array",
     "VertexBuffer",

@@ -22,6 +22,7 @@ from meshoptimizer import (
     optimize_vertex_fetch as meshopt_optimize_vertex_fetch,
     simplify as meshopt_simplify,
 )
+from pathlib import Path
 from typing import (
     ClassVar,
     Dict,
@@ -39,7 +40,7 @@ from pydantic_core import core_schema as pydantic_core_schema
 
 
 # Type variable for the Mesh class
-T = TypeVar("T", bound="Mesh")
+TMesh = TypeVar("T", bound="Mesh")
 
 
 class Mesh(Packable):
@@ -236,11 +237,11 @@ class Mesh(Packable):
 
     @classmethod
     def combine(
-        cls: type[T],
-        meshes: List[T],
+        cls: type[TMesh],
+        meshes: List[TMesh],
         marker_names: Optional[List[str]] = None,
         preserve_markers: bool = True,
-    ) -> T:
+    ) -> TMesh:
         """
         Combine multiple meshes into a single mesh.
 
@@ -586,3 +587,60 @@ class Mesh(Packable):
             num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
 
         return result_mesh
+
+    def to_pyvista(self):
+        """Convert mesh to a PyVista UnstructuredGrid.
+        
+        Requires pyvista to be installed (available in dev dependencies).
+        
+        Returns:
+            pv.UnstructuredGrid: PyVista mesh object
+            
+        Raises:
+            ImportError: If pyvista is not installed
+            
+        Example:
+            >>> mesh = Mesh(vertices=vertices, indices=indices)
+            >>> pv_mesh = mesh.to_pyvista()
+            >>> pv_mesh.plot()
+        """
+        try:
+            import pyvista as pv
+        except ImportError:
+            raise ImportError(
+                "pyvista is required for VTK export. "
+                "Install with: pip install meshly[dev] or pip install pyvista"
+            )
+        
+        if self.indices is None or self.index_sizes is None or self.cell_types is None:
+            raise ValueError("Mesh must have indices, index_sizes, and cell_types for VTK export")
+        
+        # Build VTK cell array: [size0, idx0, idx1, ..., size1, idx0, idx1, ...]
+        cells = []
+        offset = 0
+        for size in self.index_sizes:
+            cells.append(size)
+            cells.extend(self.indices[offset:offset + size])
+            offset += size
+        
+        return pv.UnstructuredGrid(
+            np.array(cells, dtype=np.int64),
+            np.array(self.cell_types, dtype=np.uint8),
+            np.asarray(self.vertices, dtype=np.float64),
+        )
+
+    def save_vtk(self, path: Union[str, Path]) -> None:
+        """Save mesh to a VTK file.
+        
+        Requires pyvista to be installed (available in dev dependencies).
+        Supports .vtk, .vtu, .ply, .stl and other formats supported by PyVista.
+        
+        Args:
+            path: Output file path. Format determined by extension.
+            
+        Example:
+            >>> mesh.save_vtk("output.vtu")
+            >>> mesh.save_vtk("output.stl")  # For triangle meshes
+        """
+        pv_mesh = self.to_pyvista()
+        pv_mesh.save(str(path))

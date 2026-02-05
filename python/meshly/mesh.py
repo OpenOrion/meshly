@@ -34,6 +34,8 @@ from typing import (
 )
 import numpy as np
 from pydantic import Field, model_validator
+from pydantic.json_schema import JsonSchemaValue, GetJsonSchemaHandler
+from pydantic_core import core_schema as pydantic_core_schema
 
 
 # Type variable for the Mesh class
@@ -54,6 +56,16 @@ class Mesh(Packable):
 
     is_contained: ClassVar[bool] = True
     """Mesh extracts as a single zip blob when nested in other Packables."""
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema_obj: pydantic_core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Inject x-base hint into JSON schema indicating this is a Mesh."""
+        json_schema = handler(core_schema_obj)
+        json_schema = handler.resolve_ref_schema(json_schema)
+        json_schema['x-base'] = 'mesh'
+        return json_schema
 
     # ============================================================
     # Field definitions with encoding specified via Annotated types

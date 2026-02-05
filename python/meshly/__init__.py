@@ -33,23 +33,21 @@ from meshly.common import (
 )
 from meshly.constants import ExportConstants
 from meshly.mesh import Mesh
-from meshly.packable import ExtractedPackable, Packable, PackableMetadata, PackableRefInfo
+from meshly.packable import ExtractedPackable, Packable, PackableRefInfo, PackableStore
 from meshly.utils.dynamic_model import LazyModel
 from meshly.resource import Resource
-from meshly.asset_store import AssetStore
 from meshly.utils import ElementUtils, MeshUtils
 
 __all__ = [
     "PackableRefInfo",
-    "PackableMetadata",
 
     # Packable base class
     "Packable",
     "ExtractedPackable",
     "LazyModel",
     "ArrayType",
-    # Asset store
-    "AssetStore",
+    # Packable store
+    "PackableStore",
     # Asset providers
     "AssetProvider",
     # Mesh classes

@@ -293,11 +293,11 @@ class TestExtractReconstruct:
         extracted = original.extract()
         
         # Data should have the primitive field
-        assert extracted.metadata.data["name"] == "test"
+        assert extracted.data["name"] == "test"
         
         # Array should be replaced with ref (no $type - we use schema)
-        assert "$ref" in extracted.metadata.data["values"]
-        checksum = extracted.metadata.data["values"]["$ref"]
+        assert "$ref" in extracted.data["values"]
+        checksum = extracted.data["values"]["$ref"]
         
         # Assets should contain the encoded array
         assert checksum in extracted.assets
@@ -311,7 +311,7 @@ class TestExtractReconstruct:
         )
         
         extracted = original.extract()
-        reconstructed = Packable.reconstruct(SimpleData, extracted.metadata.data, extracted.assets)
+        reconstructed = SimpleData.reconstruct(extracted)
         
         assert reconstructed.name == original.name
         np.testing.assert_array_almost_equal(reconstructed.values, original.values)
@@ -330,14 +330,14 @@ class TestExtractReconstruct:
         assert len(extracted.assets) == 2
         
         # Primitive field should be preserved
-        assert extracted.metadata.data["time"] == 0.5
+        assert extracted.data["time"] == 0.5
         
         # Arrays should be refs
-        assert "$ref" in extracted.metadata.data["temperature"]
-        assert "$ref" in extracted.metadata.data["velocity"]
+        assert "$ref" in extracted.data["temperature"]
+        assert "$ref" in extracted.data["velocity"]
         
         # Reconstruct
-        reconstructed = Packable.reconstruct(SimulationResult, extracted.metadata.data, extracted.assets)
+        reconstructed = SimulationResult.reconstruct(extracted)
         
         assert reconstructed.time == pytest.approx(original.time)
         np.testing.assert_array_almost_equal(reconstructed.temperature, original.temperature)
@@ -354,7 +354,7 @@ class TestExtractReconstruct:
         extracted = original.extract()
         
         # Should be able to serialize to JSON
-        json_str = json.dumps(extracted.metadata.data)
+        json_str = json.dumps(extracted.data)
         assert isinstance(json_str, str)
         
         # And deserialize back
@@ -363,10 +363,15 @@ class TestExtractReconstruct:
 
     def test_reconstruct_missing_asset_raises(self):
         """Test that reconstruct raises KeyError when asset is missing."""
-        data = {"name": "test", "values": {"$ref": "nonexistent_checksum"}}
+        from meshly.packable import ExtractedPackable
+        extracted = ExtractedPackable(
+            data={"name": "test", "values": {"$ref": "nonexistent_checksum"}},
+            json_schema=SimpleData.model_json_schema(),
+            assets={}
+        )
         
         with pytest.raises(KeyError, match="Missing asset"):
-            Packable.reconstruct(SimpleData, data, {})
+            SimpleData.reconstruct(extracted)
 
     def test_reconstruct_with_callable_returns_lazy_model(self):
         """Test that reconstruct() with callable returns LazyModel for lazy loading."""
@@ -391,9 +396,7 @@ class TestExtractReconstruct:
             return extracted.assets[checksum]
         
         # Reconstruct using callable with is_lazy=True - returns LazyModel
-        lazy = Packable.reconstruct(
-            SimulationResult, extracted.metadata.data, lazy_loader, is_lazy=True
-        )
+        lazy = SimulationResult.reconstruct(extracted, assets=lazy_loader, is_lazy=True)
         
         # Should be a LazyModel, not loaded yet
         assert isinstance(lazy, LazyModel)
@@ -409,13 +412,18 @@ class TestExtractReconstruct:
 
     def test_reconstruct_callable_missing_asset_raises_on_access(self):
         """Test that callable asset provider raises KeyError on field access."""
-        data = {"name": "test", "values": {"$ref": "nonexistent"}}
+        from meshly.packable import ExtractedPackable
+        extracted = ExtractedPackable(
+            data={"name": "test", "values": {"$ref": "nonexistent"}},
+            json_schema=SimpleData.model_json_schema(),
+            assets={}
+        )
         
         def failing_loader(checksum: str) -> bytes:
             raise KeyError(f"Missing asset with checksum '{checksum}'")
         
         # With is_lazy=True, returns LazyModel immediately (no error)
-        lazy = Packable.reconstruct(SimpleData, data, failing_loader, is_lazy=True)
+        lazy = SimpleData.reconstruct(extracted, assets=failing_loader, is_lazy=True)
         
         # Error raised when accessing the field
         with pytest.raises(KeyError, match="Missing asset"):
@@ -437,9 +445,7 @@ class TestExtractReconstruct:
             return extracted.assets[checksum]
         
         # Create lazy model with is_lazy=True - NO assets should be loaded yet
-        lazy = Packable.reconstruct(
-            SimulationResult, extracted.metadata.data, tracking_loader, is_lazy=True
-        )
+        lazy = SimulationResult.reconstruct(extracted, assets=tracking_loader, is_lazy=True)
         assert len(requested_checksums) == 0, "No assets should be loaded on creation"
         
         # Access primitive field - still no asset loading
@@ -471,9 +477,7 @@ class TestExtractReconstruct:
         extracted = original.extract()
         
         # Use callable with is_lazy=True to get LazyModel
-        lazy = Packable.reconstruct(
-            SimulationResult, extracted.metadata.data, lambda c: extracted.assets[c], is_lazy=True
-        )
+        lazy = SimulationResult.reconstruct(extracted, is_lazy=True)
         
         # Resolve to get actual model (dynamic model with same fields)
         resolved = lazy.resolve(SimulationResult)
@@ -496,9 +500,7 @@ class TestExtractReconstruct:
         )
         
         extracted = original.extract()
-        lazy = Packable.reconstruct(
-            SimulationResult, extracted.metadata.data, lambda c: extracted.assets[c], is_lazy=True
-        )
+        lazy = SimulationResult.reconstruct(extracted, is_lazy=True)
         
         repr_str = repr(lazy)
         assert "LazyModel" in repr_str
@@ -517,9 +519,7 @@ class TestExtractReconstruct:
         )
         
         extracted = original.extract()
-        lazy = Packable.reconstruct(
-            SimpleData, extracted.metadata.data, lambda c: extracted.assets[c], is_lazy=True
-        )
+        lazy = SimpleData.reconstruct(extracted, is_lazy=True)
         
         with pytest.raises(AttributeError, match="read-only"):
             lazy.name = "modified"
@@ -595,10 +595,9 @@ class TestNestedPackableRejection:
         
         # The nested Packable should be expanded (not a single $ref)
         # with its arrays as $refs
-        nested_data = extracted.metadata.data["items"]["nested"]
+        nested_data = extracted.data["items"]["nested"]
         assert nested_data["name"] == "inner"
         assert "$ref" in nested_data["values"]  # Array is a ref
-        assert "$module" in nested_data  # Module info preserved
         
         # Should have asset for the array
         assert len(extracted.assets) >= 1
@@ -619,7 +618,7 @@ class TestNestedPackableRejection:
         
         # Extract and reconstruct
         extracted = container.extract()
-        reconstructed = Packable.reconstruct(ContainerPackable, extracted.metadata.data, extracted.assets)
+        reconstructed = ContainerPackable.reconstruct(extracted)
         
         assert reconstructed.name == "container"
         assert isinstance(reconstructed.items["nested"], SimpleData)

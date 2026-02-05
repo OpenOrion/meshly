@@ -69,9 +69,10 @@ class TestJAXSupport:
         buffer.seek(0)
         decoded_jax = Mesh.load_from_zip(buffer, array_type="jax")
 
-        # Verify arrays are JAX arrays
+        # Verify vertices are JAX arrays
         assert hasattr(decoded_jax.vertices, 'device'), "Vertices should be JAX arrays"
-        assert hasattr(decoded_jax.indices, 'device'), "Indices should be JAX arrays"
+        # Indices stay as numpy for meshoptimizer compatibility
+        assert isinstance(decoded_jax.indices, np.ndarray), "Indices are numpy for meshoptimizer"
 
         # Verify data is preserved
         np.testing.assert_array_equal(np.array(decoded_jax.vertices), self.vertices)

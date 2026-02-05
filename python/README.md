@@ -15,10 +15,10 @@ pip install meshly
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
 - **`ArrayUtils`**: Utility class for extracting/reconstructing individual arrays
-- **`AssetStore`**: File-based asset store for persistent storage with deduplication
+- **`PackableStore`**: File-based store for persistent storage with deduplication
 - **`LazyModel`**: Lazy proxy that defers asset loading until field access
 - **`Resource`**: Binary data reference that serializes by content checksum
-- **`ExtractedPackable`**: Result of extracting a Packable (data + assets + schema)
+- **`ExtractedPackable`**: Result of extracting a Packable (data + json_schema + assets)
 - **`ExtractedArray`**: Result of extracting an array (data + metadata + encoding)
 
 ### Array Type Annotations
@@ -32,8 +32,8 @@ pip install meshly
 - Automatic encoding/decoding of numpy array attributes via `Array`, `VertexBuffer`, `IndexSequence` type annotations
 - Custom subclasses with additional array fields are automatically serialized
 - **Extract/Reconstruct API** for content-addressable storage with deduplication
-- **AssetStore** for file-based persistent storage with automatic deduplication
-- **JSON Schema** generation and schema-based decoding for cross-language compatibility
+- **PackableStore** for file-based persistent storage with automatic deduplication
+- **JSON Schema** generation with `x-module` for cross-language compatibility
 - **Lazy loading** with `LazyModel` for deferred asset resolution
 - **Nested Packables** supported - `is_contained` class variable controls serialization strategy
 - Enhanced polygon support with `index_sizes` and VTK-compatible `cell_types`
@@ -211,16 +211,16 @@ result = SimulationResult(
 
 # Extract to serializable data + assets + schema (instance method)
 extracted = result.extract()
-# extracted.metadata.data = {"time": 0.5, "temperature": {"$ref": "abc123...", ...}, ...}
+# extracted.data = {"time": 0.5, "temperature": {"$ref": "abc123...", ...}, ...}
+# extracted.json_schema = {...}  # JSON Schema with x-module for class identification
 # extracted.assets = {"abc123...": <bytes>, "def456...": <bytes>}
-# extracted.metadata.json_schema = {...}  # JSON Schema with encoding info
 
 # Data is JSON-serializable
 import json
-json.dumps(extracted.metadata.data)  # Works!
+json.dumps(extracted.data)  # Works!
 
-# Reconstruct from data + assets (eager loading)
-rebuilt = Packable.reconstruct(SimulationResult, extracted.metadata.data, extracted.assets)
+# Reconstruct from extracted (eager loading)
+rebuilt = SimulationResult.reconstruct(extracted)
 assert rebuilt.time == 0.5
 ```
 
@@ -303,7 +303,7 @@ def fetch_asset(checksum: str) -> bytes:
     return cloud_storage.download(checksum)
 
 # Reconstruct with is_lazy=True - returns LazyModel
-lazy = Packable.reconstruct(SimulationResult, data, fetch_asset, is_lazy=True)
+lazy = SimulationResult.reconstruct(extracted, assets=fetch_asset, is_lazy=True)
 assert isinstance(lazy, LazyModel)
 
 # No assets loaded yet!
@@ -349,32 +349,33 @@ extracted2 = result2.extract()
 assert extracted1.metadata.data["temperature"]["$ref"] == extracted2.metadata.data["temperature"]["$ref"]
 ```
 
-### File-Based Asset Store
+### File-Based Packable Store
 
-Use `AssetStore` for persistent file-based storage with automatic deduplication:
+Use `PackableStore` for persistent file-based storage with automatic deduplication:
 
 ```python
-from meshly import AssetStore, Mesh
+from pathlib import Path
+from meshly import PackableStore, Mesh
 
-# Create a store with separate paths for assets and metadata
-store = AssetStore(
-    assets_path="/data/assets",      # Binary blobs stored by checksum
-    metadata_path="/data/runs"       # Metadata stored at user paths
+# Create a store with separate paths for assets and extracted data
+store = PackableStore(
+    assets_path=Path("/data/assets"),      # Binary blobs stored by checksum
+    extracted_path=Path("/data/runs")      # Extracted JSON stored at user keys
 )
 
-# Save a packable (auto-generates path from content checksum)
-path = mesh.save(store)
+# Save a packable (auto-generates key from content checksum)
+key = mesh.save(store)
 
-# Or save with explicit path for organization
+# Or save with explicit key for organization
 mesh.save(store, "experiment_001/geometry")
 result.save(store, "experiment_001/result")
 
 # Load from store
-loaded = Mesh.load(store, path)
+loaded = Mesh.load(store, key)
 result = SimulationResult.load(store, "experiment_001/result")
 
 # Lazy loading supported
-lazy = Mesh.load(store, path, is_lazy=True)
+lazy = Mesh.load(store, key, is_lazy=True)
 ```
 
 Directory structure:
@@ -382,14 +383,10 @@ Directory structure:
 assets_path/
     <checksum1>.bin
     <checksum2>.bin
-metadata_path/
+extracted_path/
     experiment_001/
-        geometry/
-            data.json
-            schema.json
-        result/
-            data.json
-            schema.json
+        geometry.json   # Contains data + json_schema
+        result.json
 ```
 
 ## Architecture
@@ -422,9 +419,7 @@ The `Packable` base class provides:
 
 ```
 mesh.zip
-├── metadata/
-│   ├── schema.json         # JSON Schema with array encoding info
-│   └── data.json           # Serializable data with $ref checksums
+├── extracted.json          # ExtractedPackable (data + json_schema)
 └── assets/                 # Encoded arrays by checksum
     ├── abc123.bin
     └── def456.bin
@@ -605,10 +600,10 @@ class Packable(BaseModel):
     @classmethod
     def load_from_zip(cls, source, array_type="numpy") -> T
     
-    # Asset Store I/O
-    def save(self, store: AssetStore, path: str = None) -> str  # Returns path
+    # PackableStore I/O
+    def save(self, store: PackableStore, key: str = None) -> str  # Returns key
     @classmethod
-    def load(cls, store: AssetStore, path: str, array_type="numpy", is_lazy=False) -> T
+    def load(cls, store: PackableStore, key: str, array_type="numpy", is_lazy=False) -> T
     
     # Array conversion
     def convert_to(self, array_type: ArrayType) -> T
@@ -621,31 +616,40 @@ class Packable(BaseModel):
     # Decode/Reconstruct
     @classmethod
     def decode(cls, buf: bytes, array_type="numpy") -> T  # Decodes and reconstructs
-    @staticmethod
+    @classmethod
     def reconstruct(
-        model_class: type[T] | list[type[T]] | JsonSchema,  # Class, list of classes, or schema
-        data: dict[str, Any],
-        assets: AssetProvider = {},
+        cls,
+        extracted: ExtractedPackable,       # Contains data, json_schema, and assets
+        assets: AssetProvider = None,       # Optional override for asset provider
         array_type: ArrayType = "numpy",
         is_lazy: bool = False,              # If True, returns LazyModel
     ) -> T | LazyModel
+    @staticmethod
+    def reconstruct_polymorphic(
+        model_classes: list[type[T]],       # Candidate classes to match against
+        extracted: ExtractedPackable,
+        assets: AssetProvider = None,
+        array_type: ArrayType = "numpy",
+        is_lazy: bool = False,
+    ) -> T | LazyModel  # Matches x-module in schema against class list
 ```
 
 ### ExtractedPackable
 
 ```python
-class PackableMetadata(BaseModel):
-    """JSON-serializable metadata containing data and schema."""
+class ExtractedPackable(BaseModel):
+    """Result of extracting a Packable for serialization.
+    
+    The json_schema contains 'x-module' with the fully qualified class path
+    for automatic class resolution during reconstruction.
+    Use model_dump() to get a JSON-serializable dict (assets are excluded).
+    """
     data: Dict[str, Any]           # Serializable dict with $ref for arrays/Packables
-    json_schema: Dict[str, Any]    # JSON Schema with encoding info
+    json_schema: Optional[Dict[str, Any]]  # JSON Schema with x-module for class identification
+    assets: Dict[str, bytes]       # Map of checksum -> encoded bytes (excluded from model_dump)
     
     @staticmethod
     def extract_checksums(data: dict) -> list[str]  # Extract checksums from data dict
-
-class ExtractedPackable(BaseModel):
-    """Result of extracting a Packable for serialization."""
-    metadata: PackableMetadata     # JSON-serializable metadata (data + schema)
-    assets: Dict[str, bytes]       # Map of checksum -> encoded bytes
 ```
 
 ### ExtractedArray
@@ -692,27 +696,21 @@ class Resource(BaseModel):
     def from_path(path: str | Path) -> Resource  # Create from file path
 ```
 
-### AssetStore
+### PackableStore
 
 ```python
-class AssetStore:
-    """File-based asset store for Packable serialization.
+class PackableStore(BaseModel):
+    """Configuration for file-based Packable asset storage.
     
     Assets (binary blobs) are stored by their SHA256 checksum, enabling deduplication.
-    Metadata is stored at user-specified paths in a separate directory.
+    Extracted packable data is stored at user-specified keys as JSON files.
     """
     
-    def __init__(self, assets_path: PathLike, metadata_path: PathLike = None)
+    assets_path: Path              # Directory for binary assets
+    extracted_path: Path = None    # Directory for extracted JSON files (defaults to assets_path)
     
-    # Asset operations (by checksum)
-    def asset_exists(self, checksum: str) -> bool
-    def save_asset(self, data: bytes, checksum: str) -> Path
-    def load_asset(self, checksum: str) -> bytes
-    
-    # Metadata operations (by path)
-    def exists(self, path: str) -> bool
-    def load_data(self, path: str) -> dict | None
-    def load_schema(self, path: str) -> dict | None
+    def asset_file(self, checksum: str) -> Path  # Get path for binary asset
+    def extracted_file(self, key: str) -> Path   # Get path for extracted JSON
 ```
 
 ### Mesh

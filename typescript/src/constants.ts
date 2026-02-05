@@ -7,11 +7,8 @@ export const ExportConstants = {
     /** Fixed date_time for deterministic zip output (not used in TS, but documented for reference) */
     EXPORT_TIME: [2020, 1, 1, 0, 0, 0] as const,
 
-    /** Instance data with $ref references to assets */
-    DATA_FILE: "metadata/data.json",
-
-    /** Pydantic JSON Schema with encoding info */
-    SCHEMA_FILE: "metadata/schema.json",
+    /** ExtractedPackable with data and json_schema */
+    EXTRACTED_FILE: "extracted.json",
 
     /** Directory containing binary assets */
     ASSETS_DIR: "assets",

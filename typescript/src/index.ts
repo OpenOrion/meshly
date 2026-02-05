@@ -20,14 +20,13 @@ export {
 export {
     DynamicModel,
     DynamicModelBuilder, ExtractedPackable,
-    FieldSchema, InstantiateOptions, isArrayRef,
-    isRefObject, LazyModel,
+    FieldSchema, InstantiateOptions, LazyModel,
     LazyModelProps, Packable,
     PackableDecoder,
-    PackableMetadata,
     ReconstructSchema,
     RefObject,
-    SerializedPackableData
+    SerializedPackableData, isArrayRef,
+    isRefObject
 } from './packable'
 
 // Export schema utils directly as well

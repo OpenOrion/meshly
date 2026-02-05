@@ -5,9 +5,8 @@
  * detection and deserialization from zip files. Classes like Mesh inherit from
  * this base to get automatic array decoding support.
  * 
- * The new format stores data in:
- * - metadata/data.json: Instance data with $ref references to assets
- * - metadata/schema.json: JSON Schema with encoding info
+ * The format stores data in:
+ * - extracted.json: ExtractedPackable with data and json_schema
  * - assets/{checksum}.bin: Binary assets (arrays, packables, resources)
  */
 
@@ -29,22 +28,17 @@ export { LazyModel, LazyModelProps } from "./lazy-model"
 export { FieldSchema, isArrayRef, isRefObject, PackableDecoder, ReconstructSchema, RefObject } from "./schema-utils"
 
 /**
- * Metadata containing the serializable data and JSON schema.
- * This is the JSON-serializable portion of extracted Packable data.
- */
-export interface PackableMetadata {
-  /** Serializable dict with primitive fields and checksum refs for arrays */
-  data: Record<string, unknown>
-  /** JSON Schema with encoding info */
-  json_schema?: JsonSchema
-}
-
-/**
  * Result of extracting a Packable for serialization.
+ * 
+ * Contains the data dict, JSON schema, and binary assets.
+ * The schema contains 'x-module' with the fully qualified class path.
+ * The schema's 'x-base' indicates base class type ('packable', 'mesh', etc).
  */
 export interface ExtractedPackable {
-  /** JSON-serializable metadata (data + schema) */
-  metadata: PackableMetadata
+  /** Serializable dict with primitive fields and checksum refs for arrays */
+  data: Record<string, unknown>
+  /** JSON Schema with encoding info and x-module for class identification */
+  json_schema?: JsonSchema
   /** Map of checksum -> encoded bytes for all arrays */
   assets: Record<string, Uint8Array>
 }
@@ -69,11 +63,10 @@ export class Packable<TData = Record<string, unknown>> {
   // ============================================================
 
   /**
-   * Decode a Packable from zip data (new format).
+   * Decode a Packable from zip data.
    * 
-   * The new format has:
-   * - metadata/data.json: Instance data with $ref references
-   * - metadata/schema.json: JSON Schema with encoding info
+   * The format has:
+   * - extracted.json: ExtractedPackable (data + json_schema)
    * - assets/{checksum}.bin: Binary assets
    *
    * @param zipData - Zip file bytes
@@ -84,21 +77,14 @@ export class Packable<TData = Record<string, unknown>> {
   ): Promise<Packable<TData>> {
     const zip = await JSZip.loadAsync(zipData)
 
-    // Read data.json
-    const dataFile = zip.file(ExportConstants.DATA_FILE)
-    if (!dataFile) {
-      throw new Error(`${ExportConstants.DATA_FILE} not found in zip file`)
+    // Read extracted.json (contains data + json_schema)
+    const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE)
+    if (!extractedFile) {
+      throw new Error(`${ExportConstants.EXTRACTED_FILE} not found in zip file`)
     }
-    const dataText = await dataFile.async("text")
-    const data: Record<string, unknown> = JSON.parse(dataText)
-
-    // Read schema.json (optional but recommended)
-    let schema: JsonSchema | undefined
-    const schemaFile = zip.file(ExportConstants.SCHEMA_FILE)
-    if (schemaFile) {
-      const schemaText = await schemaFile.async("text")
-      schema = JSON.parse(schemaText)
-    }
+    const extractedText = await extractedFile.async("text")
+    const extracted: { data: Record<string, unknown>; json_schema?: JsonSchema } = JSON.parse(extractedText)
+    const { data, json_schema: schema } = extracted
 
     // Build assets dict from files in assets/ directory
     const assets: Record<string, Uint8Array> = {}

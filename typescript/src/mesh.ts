@@ -88,25 +88,19 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   /**
    * Decode a Mesh from zip data.
    * 
-   * Expects format: metadata/data.json + metadata/schema.json + assets/{checksum}.bin
+   * Expects format: extracted.json + assets/{checksum}.bin
    */
   static override async decode(zipData: ArrayBuffer | Uint8Array): Promise<Mesh> {
     const zip = await JSZip.loadAsync(zipData)
-    // Read data.json
-    const dataFile = zip.file(ExportConstants.DATA_FILE)
-    if (!dataFile) {
-      throw new Error(`${ExportConstants.DATA_FILE} not found in zip file`)
-    }
-    const dataText = await dataFile.async("text")
-    const data: Record<string, unknown> = JSON.parse(dataText)
 
-    // Read schema.json (optional but recommended)
-    let schema: JsonSchema | undefined
-    const schemaFile = zip.file(ExportConstants.SCHEMA_FILE)
-    if (schemaFile) {
-      const schemaText = await schemaFile.async("text")
-      schema = JSON.parse(schemaText)
+    // Read extracted.json (contains data + json_schema)
+    const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE)
+    if (!extractedFile) {
+      throw new Error(`${ExportConstants.EXTRACTED_FILE} not found in zip file`)
     }
+    const extractedText = await extractedFile.async("text")
+    const extracted: { data: Record<string, unknown>; json_schema?: JsonSchema } = JSON.parse(extractedText)
+    const { data, json_schema: schema } = extracted
 
     // Build assets dict from files in assets/ directory
     const assets: Record<string, Uint8Array> = {}

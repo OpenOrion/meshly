@@ -13,7 +13,7 @@ async function encodeArray(data: Uint8Array, count: number, stride: number): Pro
 }
 
 /**
- * Create a test mesh zip in NEW format (with assets/ and metadata/).
+ * Create a test mesh zip in NEW format (with assets/ and extracted.json).
  */
 async function createTestMeshZipNewFormat(): Promise<ArrayBuffer> {
     const zip = new JSZip()
@@ -27,28 +27,30 @@ async function createTestMeshZipNewFormat(): Promise<ArrayBuffer> {
     // Create checksum for the asset (simplified - using length as mock checksum)
     const checksum = `indexsizes_${indexSizesEncoded.length}`
 
-    // Add data.json with $ref
-    zip.file(ExportConstants.DATA_FILE, JSON.stringify({
-        indexSizes: {
-            $ref: checksum,
-            shape: [1],
-            dtype: 'uint32',
-            itemsize: 4
+    // Add extracted.json with data and json_schema
+    zip.file(ExportConstants.EXTRACTED_FILE, JSON.stringify({
+        data: {
+            indexSizes: {
+                $ref: checksum,
+                shape: [1],
+                dtype: 'uint32',
+                itemsize: 4
+            },
+            mesh_size: {
+                vertex_count: 3,
+                vertex_size: 12,
+                index_count: 3,
+                index_size: 4
+            }
         },
-        mesh_size: {
-            vertex_count: 3,
-            vertex_size: 12,
-            index_count: 3,
-            index_size: 4
-        }
-    }))
-
-    // Add schema.json
-    zip.file(ExportConstants.SCHEMA_FILE, JSON.stringify({
-        title: 'Mesh',
-        type: 'object',
-        properties: {
-            indexSizes: { type: 'array' }
+        json_schema: {
+            title: 'Mesh',
+            type: 'object',
+            'x-module': 'meshly.mesh.Mesh',
+            'x-base': 'mesh',
+            properties: {
+                indexSizes: { type: 'array' }
+            }
         }
     }))
 
@@ -77,38 +79,40 @@ async function createTestMeshWithMarkersZipNewFormat(): Promise<ArrayBuffer> {
     )
     const offsetChecksum = `inlet_offsets_${inletOffsetsEncoded.length}`
 
-    // Add data.json with nested structure
-    zip.file(ExportConstants.DATA_FILE, JSON.stringify({
-        markerIndices: {
-            inlet: {
-                $ref: inletChecksum,
-                shape: [2],
-                dtype: 'uint32',
-                itemsize: 4
-            }
-        },
-        markerOffsets: {
-            inlet: {
-                $ref: offsetChecksum,
-                shape: [1],
-                dtype: 'uint32',
-                itemsize: 4
-            }
-        }
-    }))
-
-    // Add schema.json
-    zip.file(ExportConstants.SCHEMA_FILE, JSON.stringify({
-        title: 'Mesh',
-        type: 'object',
-        properties: {
+    // Add extracted.json with data and json_schema
+    zip.file(ExportConstants.EXTRACTED_FILE, JSON.stringify({
+        data: {
             markerIndices: {
-                type: 'object',
-                additionalProperties: { type: 'array' }
+                inlet: {
+                    $ref: inletChecksum,
+                    shape: [2],
+                    dtype: 'uint32',
+                    itemsize: 4
+                }
             },
             markerOffsets: {
-                type: 'object',
-                additionalProperties: { type: 'array' }
+                inlet: {
+                    $ref: offsetChecksum,
+                    shape: [1],
+                    dtype: 'uint32',
+                    itemsize: 4
+                }
+            }
+        },
+        json_schema: {
+            title: 'Mesh',
+            type: 'object',
+            'x-module': 'meshly.mesh.Mesh',
+            'x-base': 'mesh',
+            properties: {
+                markerIndices: {
+                    type: 'object',
+                    additionalProperties: { type: 'array' }
+                },
+                markerOffsets: {
+                    type: 'object',
+                    additionalProperties: { type: 'array' }
+                }
             }
         }
     }))
@@ -428,7 +432,6 @@ describe('LazyModel', () => {
 
     it('should exclude $ prefixed fields from $fields', async () => {
         const data = {
-            $module: 'meshly.Mesh',
             $version: '1.0',
             normalField: 'value'
         }
@@ -437,19 +440,18 @@ describe('LazyModel', () => {
 
         // $fields should not include $ prefixed fields
         expect(lazy.$fields).toEqual(['normalField'])
-        expect(lazy.$fields).not.toContain('$module')
         expect(lazy.$fields).not.toContain('$version')
     })
 
     it('should allow access to $ prefixed metadata fields', async () => {
         const data = {
-            $module: 'meshly.Mesh',
+            $version: '1.0',
             regularField: 'test'
         }
 
         const lazy = LazyModel.create(data, {})
 
         // Direct access to $ prefixed field should return raw value
-        expect((lazy as Record<string, unknown>)['$module']).toBe('meshly.Mesh')
+        expect((lazy as Record<string, unknown>)['$version']).toBe('1.0')
     })
 })

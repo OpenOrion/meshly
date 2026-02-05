@@ -234,21 +234,14 @@ export class LazyModel<T extends Record<string, unknown> = Record<string, unknow
   ): Promise<LazyModelProps<T> & T> {
     const zip = await JSZip.loadAsync(zipData)
 
-    // Read data.json
-    const dataFile = zip.file(ExportConstants.DATA_FILE)
-    if (!dataFile) {
-      throw new Error(`${ExportConstants.DATA_FILE} not found in zip file`)
+    // Read extracted.json (contains data + json_schema)
+    const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE)
+    if (!extractedFile) {
+      throw new Error(`${ExportConstants.EXTRACTED_FILE} not found in zip file`)
     }
-    const dataText = await dataFile.async("text")
-    const data: Record<string, unknown> = JSON.parse(dataText)
-
-    // Read schema.json (optional)
-    let schema: JsonSchema | undefined
-    const schemaFile = zip.file(ExportConstants.SCHEMA_FILE)
-    if (schemaFile) {
-      const schemaText = await schemaFile.async("text")
-      schema = JSON.parse(schemaText)
-    }
+    const extractedText = await extractedFile.async("text")
+    const extracted: { data: Record<string, unknown>; json_schema?: JsonSchema } = JSON.parse(extractedText)
+    const { data, json_schema: schema } = extracted
 
     // Create lazy asset loader that reads from zip on demand
     const assetCache: Record<string, Uint8Array> = {}

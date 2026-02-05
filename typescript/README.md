@@ -70,38 +70,45 @@ Packable<TData> (base class)
 
 ### Zip File Format
 
-The new format stores data as:
+The format stores data as:
 
 ```
 mesh.zip
-├── metadata/
-│   ├── data.json           # Instance data with $ref references
-│   └── schema.json         # JSON Schema with encoding info
+├── extracted.json          # ExtractedPackable (data + json_schema)
 └── assets/
     ├── {checksum}.bin      # Encoded vertices
     ├── {checksum}.bin      # Encoded indices
     └── ...                 # Other arrays and nested Packables
 ```
 
-### data.json Structure
+### extracted.json Structure
 
 ```json
 {
-  "$module": "meshly.Mesh",
-  "vertices": {
-    "$ref": "abc123def456",
-    "shape": [100, 3],
-    "dtype": "float32",
-    "itemsize": 4
-  },
-  "indices": {
-    "$ref": "789xyz012abc",
-    "shape": [200],
-    "dtype": "uint32",
+  "data": {
+    "vertices": {
+      "$ref": "abc123def456",
+      "shape": [100, 3],
+      "dtype": "float32",
+      "itemsize": 4
+    },
+    "indices": {
+      "$ref": "789xyz012abc",
+      "shape": [200],
+      "dtype": "uint32",
     "itemsize": 4
   },
   "dim": 3,
   "material_name": "default"
+  },
+  "json_schema": {
+    "x-module": "meshly.mesh.Mesh",
+    "x-base": "mesh",
+    "properties": {
+      "vertices": { "type": "vertex_buffer" },
+      "indices": { "type": "index_sequence" }
+    }
+  }
 }
 ```
 

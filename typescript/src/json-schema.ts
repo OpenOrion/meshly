@@ -89,6 +89,12 @@ export interface JsonSchemaProperty {
 
     /** Const value */
     const?: unknown
+
+    /** Base class type hint: 'packable', 'mesh', or 'basemodel' */
+    "x-base"?: string
+
+    /** Fully qualified class module path for reconstruction */
+    "x-module"?: string
 }
 
 /**
@@ -121,6 +127,12 @@ export interface JsonSchema {
 
     /** Whether additional properties are allowed */
     additionalProperties?: boolean | JsonSchemaProperty
+
+    /** Base class type hint: 'packable', 'mesh', or 'basemodel' */
+    "x-base"?: string
+
+    /** Fully qualified class module path for reconstruction */
+    "x-module"?: string
 }
 
 /**

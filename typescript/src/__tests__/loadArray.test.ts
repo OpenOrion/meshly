@@ -47,7 +47,7 @@ async function createTestMeshZipNewFormat(): Promise<ArrayBuffer> {
             title: 'Mesh',
             type: 'object',
             'x-module': 'meshly.mesh.Mesh',
-            'x-base': 'mesh',
+            'x-base': 'Mesh',
             properties: {
                 indexSizes: { type: 'array' }
             }
@@ -103,7 +103,7 @@ async function createTestMeshWithMarkersZipNewFormat(): Promise<ArrayBuffer> {
             title: 'Mesh',
             type: 'object',
             'x-module': 'meshly.mesh.Mesh',
-            'x-base': 'mesh',
+            'x-base': 'Mesh',
             properties: {
                 markerIndices: {
                     type: 'object',

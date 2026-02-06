@@ -103,7 +103,7 @@ mesh.zip
   },
   "json_schema": {
     "x-module": "meshly.mesh.Mesh",
-    "x-base": "mesh",
+    "x-base": "Mesh",
     "properties": {
       "vertices": { "type": "vertex_buffer" },
       "indices": { "type": "index_sequence" }

@@ -32,7 +32,7 @@ export { FieldSchema, isArrayRef, isRefObject, PackableDecoder, ReconstructSchem
  * 
  * Contains the data dict, JSON schema, and binary assets.
  * The schema contains 'x-module' with the fully qualified class path.
- * The schema's 'x-base' indicates base class type ('packable', 'mesh', etc).
+ * The schema's 'x-base' indicates base class type ('Packable', 'Mesh', etc).
  */
 export interface ExtractedPackable {
   /** Serializable dict with primitive fields and checksum refs for arrays */

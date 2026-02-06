@@ -20,6 +20,7 @@ pip install meshly
 - **`Resource`**: Binary data reference that serializes by content checksum
 - **`ExtractedPackable`**: Result of extracting a Packable (data + json_schema + assets)
 - **`ExtractedArray`**: Result of extracting an array (data + metadata + encoding)
+- **`TMesh`**: Type variable for typing custom mesh operations (e.g., `def combine(meshes: List[TMesh]) -> TMesh`)
 
 ### Array Type Annotations
 
@@ -39,6 +40,7 @@ pip install meshly
 - Enhanced polygon support with `index_sizes` and VTK-compatible `cell_types`
 - Mesh markers for boundary conditions, material regions, and geometric features
 - Mesh operations: triangulate, optimize, simplify, combine, extract
+- **VTK export** via PyVista with `to_pyvista()` and `save_vtk()` methods
 - Optional JAX array support for GPU-accelerated workflows
 
 ## Quick Start
@@ -317,12 +319,18 @@ model = lazy.resolve(SimulationResult)
 
 ### Schema-Based Decoding
 
-When decoding using the base `Packable` class (instead of a subclass), the embedded JSON schema is used to build a dynamic model:
+When decoding using the base `Packable` class (instead of a subclass), the embedded JSON schema is used to build a dynamic model. The `x-base` hint in the schema determines the base class (`Mesh` or `Packable`):
 
 ```python
 # Decode using base Packable - uses embedded schema
 decoded = Packable.decode(encoded_bytes)
-# Returns a dynamic model with the same fields
+# Returns a dynamic model inheriting from Mesh if x-base is "Mesh",
+# or from Packable if x-base is "Packable"
+
+# If the original was a Mesh subclass, the decoded object has Mesh methods
+if isinstance(decoded, Mesh):
+    decoded.triangulate()  # Works!
+    decoded.to_pyvista()   # Works!
 
 # Decode using specific class - returns that class type
 loaded = SimulationResult.decode(encoded_bytes)
@@ -519,6 +527,21 @@ combined = Mesh.combine([mesh1, mesh2], marker_names=["part1", "part2"])
 boundary_mesh = mesh.extract_by_marker("inlet")
 ```
 
+### VTK Export
+
+Export meshes to VTK formats for visualization and analysis (requires pyvista):
+
+```python
+# Convert to PyVista UnstructuredGrid
+pv_mesh = mesh.to_pyvista()
+pv_mesh.plot()
+
+# Save directly to VTK formats
+mesh.save_vtk("output.vtu")  # VTK unstructured grid
+mesh.save_vtk("output.stl")  # STL format
+mesh.save_vtk("output.ply")  # PLY format
+```
+
 ## JAX Support
 
 Optional GPU-accelerated arrays:
@@ -641,15 +664,15 @@ class ExtractedPackable(BaseModel):
     """Result of extracting a Packable for serialization.
     
     The json_schema contains 'x-module' with the fully qualified class path
-    for automatic class resolution during reconstruction.
+    for automatic class resolution during reconstruction, and 'x-base' with
+    the base class hint ('Mesh', 'Packable', or 'BaseModel').
     Use model_dump() to get a JSON-serializable dict (assets are excluded).
     """
     data: Dict[str, Any]           # Serializable dict with $ref for arrays/Packables
-    json_schema: Optional[Dict[str, Any]]  # JSON Schema with x-module for class identification
+    json_schema: Optional[Dict[str, Any]]  # JSON Schema with x-module and x-base hints
     assets: Dict[str, bytes]       # Map of checksum -> encoded bytes (excluded from model_dump)
     
-    @staticmethod
-    def extract_checksums(data: dict) -> list[str]  # Extract checksums from data dict
+    def extract_checksums(self) -> list[str]  # Extract checksums from self.data
 ```
 
 ### ExtractedArray
@@ -709,8 +732,19 @@ class PackableStore(BaseModel):
     assets_path: Path              # Directory for binary assets
     extracted_path: Path = None    # Directory for extracted JSON files (defaults to assets_path)
     
-    def asset_file(self, checksum: str) -> Path  # Get path for binary asset
-    def extracted_file(self, key: str) -> Path   # Get path for extracted JSON
+    # Path helpers
+    def asset_file(self, checksum: str) -> Path       # Get path for binary asset
+    def get_extracted_path(self, key: str) -> Path    # Get path for extracted JSON
+    
+    # Asset operations (binary blobs by checksum)
+    def save_asset(self, data: bytes, checksum: str) -> None
+    def load_asset(self, checksum: str) -> bytes
+    def asset_exists(self, checksum: str) -> bool
+    
+    # Extracted packable operations (JSON by key)
+    def save_extracted(self, key: str, extracted: ExtractedPackable) -> None
+    def load_extracted(self, key: str) -> ExtractedPackable
+    def extracted_exists(self, key: str) -> bool
 ```
 
 ### Mesh
@@ -746,8 +780,12 @@ class Mesh(Packable):
     def get_reconstructed_markers(self) -> Dict[str, List[List[int]]]
     def extract_by_marker(self, marker_name) -> Mesh
     
-    @staticmethod
-    def combine(meshes, marker_names=None, preserve_markers=True) -> Mesh
+    # VTK export (requires pyvista)
+    def to_pyvista(self) -> pv.UnstructuredGrid  # Convert to PyVista mesh
+    def save_vtk(self, path: str | Path) -> None # Save to VTK/STL/PLY formats
+    
+    @classmethod
+    def combine(cls, meshes: List[TMesh], marker_names=None, preserve_markers=True) -> TMesh
 ```
 
 ## Examples

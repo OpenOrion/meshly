@@ -64,8 +64,7 @@ class ExtractedPackable(BaseModel):
     json_schema: Optional[dict[str, Any]] = Field(default=None, description="JSON Schema with encoding info")
     assets: dict[str, bytes] = Field(default_factory=dict, exclude=True, description="Map of checksum -> encoded bytes for all arrays")
 
-    @staticmethod
-    def extract_checksums(data: dict[str, Any]) -> list[str]:
+    def extract_checksums(self) -> list[str]:
         """Extract all $ref checksums from a serialized data dict.
 
         Recursively walks the data structure to find all {"$ref": checksum} entries.
@@ -89,7 +88,7 @@ class ExtractedPackable(BaseModel):
                 for item in obj:
                     _extract(item)
 
-        _extract(data)
+        _extract(self.data)
         return list(checksums)
 
 
@@ -121,10 +120,89 @@ class PackableStore(BaseModel):
         """Get the filesystem path for a binary asset."""
         return self.assets_path / f"{checksum}.bin"
     
-    def extracted_file(self, key: str) -> Path:
+    def get_extracted_path(self, key: str) -> Path:
         """Get the filesystem path for an extracted packable's JSON file."""
         extracted_dir = self.extracted_path if self.extracted_path is not None else self.assets_path
         return extracted_dir / f"{key}.json"
+    
+    def save_asset(self, data: bytes, checksum: str) -> None:
+        """Save binary asset data to storage.
+        
+        Args:
+            data: Binary data to save
+            checksum: SHA256 checksum identifier for the asset
+        """
+        asset_path = self.asset_file(checksum)
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(data)
+    
+    def load_asset(self, checksum: str) -> bytes:
+        """Load binary asset data from storage.
+        
+        Args:
+            checksum: SHA256 checksum identifier for the asset
+            
+        Returns:
+            Binary data of the asset
+            
+        Raises:
+            FileNotFoundError: If asset doesn't exist
+        """
+        return self.asset_file(checksum).read_bytes()
+    
+    def asset_exists(self, checksum: str) -> bool:
+        """Check if an asset exists in storage.
+        
+        Args:
+            checksum: SHA256 checksum identifier for the asset
+            
+        Returns:
+            True if asset exists, False otherwise
+        """
+        return self.asset_file(checksum).exists()
+
+    def save_extracted(self, key: str, extracted: "ExtractedPackable") -> None:
+        """Save extracted packable JSON to storage.
+        
+        Args:
+            key: Identifier for the packable
+            extracted: ExtractedPackable to save (assets are not saved here)
+        """
+        extracted_json_path = self.get_extracted_path(key)
+        extracted_json_path.parent.mkdir(parents=True, exist_ok=True)
+        extracted_json_path.write_text(json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
+    
+    def load_extracted(self, key: str) -> "ExtractedPackable":
+        """Load extracted packable from storage.
+        
+        Args:
+            key: Identifier for the packable
+            
+        Returns:
+            ExtractedPackable with data and json_schema (assets loaded via load_asset)
+            
+        Raises:
+            FileNotFoundError: If extracted file doesn't exist
+        """
+        extracted_json_path = self.get_extracted_path(key)
+        if not extracted_json_path.exists():
+            raise FileNotFoundError(f"Extracted packable not found: {key}")
+        extracted_data = json.loads(extracted_json_path.read_text())
+        return ExtractedPackable(
+            data=extracted_data["data"],
+            json_schema=extracted_data.get("json_schema"),
+        )
+    
+    def extracted_exists(self, key: str) -> bool:
+        """Check if an extracted packable exists in storage.
+        
+        Args:
+            key: Identifier for the packable
+            
+        Returns:
+            True if extracted file exists, False otherwise
+        """
+        return self.get_extracted_path(key).exists()
 
 
 class Packable(BaseModel):
@@ -176,8 +254,8 @@ class Packable(BaseModel):
         """Inject x-base and x-module hints into JSON schema."""
         json_schema = handler(core_schema_obj)
         json_schema = handler.resolve_ref_schema(json_schema)
-        # Add base class hint: "packable", "mesh", or "basemodel"
-        json_schema['x-base'] = 'packable'
+        # Add base class hint: "Packable", "Mesh", or "BaseModel"
+        json_schema['x-base'] = 'Packable'
         # Add module path for reconstruction
         json_schema['x-module'] = f"{cls.__module__}.{cls.__qualname__}"
         return json_schema
@@ -422,15 +500,11 @@ class Packable(BaseModel):
         
         # Save all binary assets (deduplicated by checksum)
         for asset_checksum, asset_bytes in extracted.assets.items():
-            asset_path = store.asset_file(asset_checksum)
-            asset_path.parent.mkdir(parents=True, exist_ok=True)
-            if not asset_path.exists():
-                asset_path.write_bytes(asset_bytes)
+            if not store.asset_exists(asset_checksum):
+                store.save_asset(asset_bytes, asset_checksum)
         
         # Save extracted data (data + schema) as JSON
-        file_path = store.extracted_file(result_key)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
+        store.save_extracted(result_key, extracted)
         
         return result_key
 
@@ -462,25 +536,10 @@ class Packable(BaseModel):
             # Load from specific key
             result = Result.load(store, f"{checksum}/result")
         """
-        file_path = store.extracted_file(key)
-        if not file_path.exists():
+        if not store.extracted_exists(key):
             return None
-        extracted_data = json.loads(file_path.read_text())
-        
-        def load_asset(checksum: str) -> bytes:
-            """Load binary asset by checksum."""
-            asset_path = store.asset_file(checksum)
-            if not asset_path.exists():
-                raise FileNotFoundError(f"Asset not found: {checksum}")
-            return asset_path.read_bytes()
-        
-        # Build ExtractedPackable from loaded data (assets loaded on demand)
-        extracted = ExtractedPackable(
-            data=extracted_data["data"],
-            json_schema=extracted_data.get("json_schema"),
-            assets={},  # Assets loaded via load_asset callback
-        )
-        return cls.reconstruct(extracted, assets=load_asset, array_type=array_type, is_lazy=is_lazy)
+        extracted = store.load_extracted(key)
+        return cls.reconstruct(extracted, assets=store.load_asset, array_type=array_type, is_lazy=is_lazy)
 
     def __reduce__(self):
         """Support for pickle serialization."""

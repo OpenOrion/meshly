@@ -65,7 +65,7 @@ class Mesh(Packable):
         """Inject x-base hint into JSON schema indicating this is a Mesh."""
         json_schema = handler(core_schema_obj)
         json_schema = handler.resolve_ref_schema(json_schema)
-        json_schema['x-base'] = 'mesh'
+        json_schema['x-base'] = 'Mesh'
         return json_schema
 
     # ============================================================

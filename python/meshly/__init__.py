@@ -46,9 +46,7 @@ __all__ = [
     "ExtractedPackable",
     "LazyModel",
     "ArrayType",
-    # Packable store
     "PackableStore",
-    # Asset providers
     "AssetProvider",
     # Mesh classes
     "Mesh",

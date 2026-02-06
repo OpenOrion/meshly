@@ -59,7 +59,7 @@ class TestPackableStore:
             store = PackableStore(assets_path=Path(tmpdir))
             
             key = "my/custom/path"
-            path = store.extracted_file(key)
+            path = store.get_extracted_path(key)
             assert path == Path(tmpdir) / "my" / "custom" / "path.json"
 
 
@@ -80,7 +80,7 @@ class TestPackableSaveToStore:
             
             # Key should be the checksum
             assert key == data.checksum
-            assert store.extracted_file(key).exists()
+            assert store.get_extracted_path(key).exists()
 
     def test_save_explicit_key(self):
         """Test saving to store with explicit key."""
@@ -95,7 +95,7 @@ class TestPackableSaveToStore:
             key = data.save(store, "my/custom/path")
             
             assert key == "my/custom/path"
-            assert store.extracted_file("my/custom/path").exists()
+            assert store.get_extracted_path("my/custom/path").exists()
 
     def test_save_load_roundtrip(self):
         """Test save and load roundtrip."""
@@ -212,7 +212,7 @@ class TestPackableSaveToStore:
             
             # Check extracted file directly
             import json
-            file_path = store.extracted_file("test_key")
+            file_path = store.get_extracted_path("test_key")
             assert file_path.exists()
             extracted = json.loads(file_path.read_text())
             assert "data" in extracted

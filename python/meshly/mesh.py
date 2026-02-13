@@ -22,6 +22,7 @@ from meshoptimizer import (
     optimize_vertex_fetch as meshopt_optimize_vertex_fetch,
     simplify as meshopt_simplify,
 )
+from pathlib import Path
 from typing import (
     ClassVar,
     Dict,
@@ -34,10 +35,12 @@ from typing import (
 )
 import numpy as np
 from pydantic import Field, model_validator
+from pydantic.json_schema import JsonSchemaValue, GetJsonSchemaHandler
+from pydantic_core import core_schema as pydantic_core_schema
 
 
 # Type variable for the Mesh class
-T = TypeVar("T", bound="Mesh")
+TMesh = TypeVar("T", bound="Mesh")
 
 
 class Mesh(Packable):
@@ -54,6 +57,16 @@ class Mesh(Packable):
 
     is_contained: ClassVar[bool] = True
     """Mesh extracts as a single zip blob when nested in other Packables."""
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema_obj: pydantic_core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Inject x-base hint into JSON schema indicating this is a Mesh."""
+        json_schema = handler(core_schema_obj)
+        json_schema = handler.resolve_ref_schema(json_schema)
+        json_schema['x-base'] = 'Mesh'
+        return json_schema
 
     # ============================================================
     # Field definitions with encoding specified via Annotated types
@@ -222,12 +235,13 @@ class Mesh(Packable):
 
         return self
 
-    @staticmethod
+    @classmethod
     def combine(
-        meshes: List["Mesh"],
+        cls: type[TMesh],
+        meshes: List[TMesh],
         marker_names: Optional[List[str]] = None,
         preserve_markers: bool = True,
-    ) -> "Mesh":
+    ) -> TMesh:
         """
         Combine multiple meshes into a single mesh.
 
@@ -298,8 +312,14 @@ class Mesh(Packable):
         # Get dimension from first mesh
         dim = meshes[0].dim
 
+        # Collect extra fields from subclass (take from first mesh)
+        extra_fields = {
+            name: getattr(meshes[0], name)
+            for name in cls.model_fields.keys() - Mesh.model_fields.keys()
+        }
+
         # Create combined mesh
-        return Mesh(
+        return cls(
             vertices=combined_vertices,
             indices=combined_indices,
             index_sizes=combined_index_sizes,
@@ -308,6 +328,7 @@ class Mesh(Packable):
             markers=combined_markers,
             marker_sizes=combined_marker_sizes,
             marker_cell_types=combined_marker_cell_types,
+            **extra_fields,
         )
 
     def extract_by_marker(self, marker_name: str) -> "Mesh":
@@ -566,3 +587,60 @@ class Mesh(Packable):
             num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
 
         return result_mesh
+
+    def to_pyvista(self):
+        """Convert mesh to a PyVista UnstructuredGrid.
+        
+        Requires pyvista to be installed (available in dev dependencies).
+        
+        Returns:
+            pv.UnstructuredGrid: PyVista mesh object
+            
+        Raises:
+            ImportError: If pyvista is not installed
+            
+        Example:
+            >>> mesh = Mesh(vertices=vertices, indices=indices)
+            >>> pv_mesh = mesh.to_pyvista()
+            >>> pv_mesh.plot()
+        """
+        try:
+            import pyvista as pv
+        except ImportError:
+            raise ImportError(
+                "pyvista is required for VTK export. "
+                "Install with: pip install meshly[dev] or pip install pyvista"
+            )
+        
+        if self.indices is None or self.index_sizes is None or self.cell_types is None:
+            raise ValueError("Mesh must have indices, index_sizes, and cell_types for VTK export")
+        
+        # Build VTK cell array: [size0, idx0, idx1, ..., size1, idx0, idx1, ...]
+        cells = []
+        offset = 0
+        for size in self.index_sizes:
+            cells.append(size)
+            cells.extend(self.indices[offset:offset + size])
+            offset += size
+        
+        return pv.UnstructuredGrid(
+            np.array(cells, dtype=np.int64),
+            np.array(self.cell_types, dtype=np.uint8),
+            np.asarray(self.vertices, dtype=np.float64),
+        )
+
+    def save_vtk(self, path: Union[str, Path]) -> None:
+        """Save mesh to a VTK file.
+        
+        Requires pyvista to be installed (available in dev dependencies).
+        Supports .vtk, .vtu, .ply, .stl and other formats supported by PyVista.
+        
+        Args:
+            path: Output file path. Format determined by extension.
+            
+        Example:
+            >>> mesh.save_vtk("output.vtu")
+            >>> mesh.save_vtk("output.stl")  # For triangle meshes
+        """
+        pv_mesh = self.to_pyvista()
+        pv_mesh.save(str(path))

@@ -147,14 +147,6 @@ class SchemaUtils:
             if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
                 resolved = SchemaUtils.resolve_from_class(expected_type, value, assets, array_type)
                 return expected_type(**resolved)
-            # $module: dynamic class
-            if "$module" in value:
-                cls = SchemaUtils._load_class(value["$module"])
-                if cls and isinstance(cls, type) and issubclass(cls, BaseModel):
-                    resolved = SchemaUtils.resolve_from_class(
-                        cls, {k: v for k, v in value.items() if k != "$module"}, assets, array_type
-                    )
-                    return cls(**resolved)
             # Untyped dict
             return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
 

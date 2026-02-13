@@ -17,9 +17,10 @@ pnpm add meshly
 - Convert to THREE.js BufferGeometry
 - Support for polygon meshes with automatic triangulation
 - Marker extraction for boundary conditions and regions
-- Custom field decoding via `getCustomFields()` override
 - **Reconstruct API** for resolving `$ref` asset references
-- **CachedAssetLoader** for disk-cached asset loading
+- **Lazy loading** with `LazyModel` for on-demand field resolution
+- **Dynamic model building** with `DynamicModelBuilder` from JSON schema
+- **Asset caching** with IndexedDB-backed `AssetCache` (browser)
 - Full TypeScript type definitions
 
 ## Quick Start
@@ -54,8 +55,7 @@ console.log(`Indices: ${mesh.indices?.length}`)
 console.log(`Polygons: ${mesh.getPolygonCount()}`)
 console.log(`Uniform: ${mesh.isUniformPolygons()}`)
 
-// Access additional arrays
-console.log(`Has normals: ${!!mesh.normals}`)
+// Access additional arrays (from subclasses)
 console.log(`Dimension: ${mesh.dim}`)
 ```
 
@@ -68,62 +68,48 @@ Packable<TData> (base class)
 └── Mesh<MeshData> (3D mesh with meshoptimizer decoding)
 ```
 
-### Custom Field Decoding
+### Zip File Format
 
-Subclasses can override `getCustomFields()` to define custom decoders:
-
-```typescript
-protected static override getCustomFields(): Record<string, CustomFieldConfig> {
-  return {
-    vertices: {
-      fileName: 'vertices',
-      decode: (data, metadata) => Mesh._decodeVertices(data, metadata),
-      optional: false
-    },
-    indices: {
-      fileName: 'indices', 
-      decode: (data, metadata) => Mesh._decodeIndices(data, metadata),
-      optional: true
-    }
-  }
-}
-```
-
-### Metadata Interfaces
-
-```typescript
-// Base metadata (matches Python PackableMetadata)
-interface PackableMetadata {
-  field_data?: Record<string, unknown>
-}
-
-// Mesh-specific metadata (extends PackableMetadata)
-interface MeshMetadata extends PackableMetadata {
-  mesh_size: MeshSize
-}
-
-interface MeshSize {
-  vertex_count: number
-  vertex_size: number
-  index_count: number | null
-  index_size: number
-}
-```
-
-### Zip File Structure
+The format stores data as:
 
 ```
 mesh.zip
-├── metadata.json           # MeshMetadata (extends PackableMetadata)
-├── vertices.bin            # Meshoptimizer-encoded (custom field)
-├── indices.bin             # Meshoptimizer-encoded (custom field, optional)
-└── arrays/                 # Standard arrays
-    ├── indexSizes/
-    │   ├── array.bin
-    │   └── metadata.json
-    └── normals/
-        ├── array.bin
-        └── metadata.json
+├── extracted.json          # ExtractedPackable (data + json_schema)
+└── assets/
+    ├── {checksum}.bin      # Encoded vertices
+    ├── {checksum}.bin      # Encoded indices
+    └── ...                 # Other arrays and nested Packables
+```
+
+### extracted.json Structure
+
+```json
+{
+  "data": {
+    "vertices": {
+      "$ref": "abc123def456",
+      "shape": [100, 3],
+      "dtype": "float32",
+      "itemsize": 4
+    },
+    "indices": {
+      "$ref": "789xyz012abc",
+      "shape": [200],
+      "dtype": "uint32",
+    "itemsize": 4
+  },
+  "dim": 3,
+  "material_name": "default"
+  },
+  "json_schema": {
+    "x-module": "meshly.mesh.Mesh",
+    "x-base": "Mesh",
+    "properties": {
+      "vertices": { "type": "vertex_buffer" },
+      "indices": { "type": "index_sequence" }
+    }
+  }
+}
 ```
 
 ## Polygon Support
@@ -167,7 +153,7 @@ Extract submeshes by marker name:
 const mesh = await Mesh.decode(zipData)
 
 // Check available markers
-console.log('Markers:', Object.keys(mesh.markerIndices || {}))
+console.log('Markers:', Object.keys(mesh.markers || {}))
 
 // Extract marker as new mesh
 const boundaryMesh = mesh.extractByMarker('inlet')
@@ -177,67 +163,56 @@ console.log(`Boundary vertices: ${boundaryMesh.vertices.length / 3}`)
 const geometry = mesh.extractMarkerAsBufferGeometry('inlet')
 ```
 
-## Loading Individual Arrays
+## Lazy Loading
 
-Load a single array without decoding the entire mesh (useful for large files):
+Load fields on-demand for large meshes:
 
 ```typescript
-// Load just the normals array
-const normals = await Mesh.loadArray(zipData, 'normals')
+import { LazyModel } from 'meshly'
 
-// Load nested arrays using dotted notation
-const inletIndices = await Mesh.loadArray(zipData, 'markerIndices.inlet')
+// Create lazy model from zip
+const lazy = await LazyModel.fromZip(zipData)
+
+// No arrays loaded yet
+console.log(lazy.$loaded) // []
+
+// Load vertices on access
+const vertices = await lazy.vertices
+
+// Now it's loaded
+console.log(lazy.$loaded) // ['vertices']
+
+// Resolve all fields at once
+const resolved = await lazy.$resolve()
+```
+
+## Asset Caching
+
+Cache assets for repeated access (browser environments):
+
+```typescript
+import { AssetCache, createCachedProvider } from 'meshly'
+
+// Create a cached provider
+const cachedFetcher = await createCachedProvider(async (checksum) => {
+  const response = await fetch(`/api/assets/${checksum}`)
+  return new Uint8Array(await response.arrayBuffer())
+})
+
+// Use with reconstruct
+const result = await Packable.reconstruct(data, cachedFetcher, schema)
 ```
 
 ## API Reference
 
-### DataHandler
+### AssetProvider
 
 ```typescript
-// DataHandler interface for loading and saving data from various sources
-interface DataHandler {
-  // Read binary content from a file
-  readBinary(path: string): Promise<ArrayBuffer | Uint8Array | undefined>
-  // Write binary content to a file (optional)
-  writeBinary?(path: string, content: Uint8Array | ArrayBuffer): Promise<void>
-  // Check if a file exists (optional)
-  exists?(path: string): Promise<boolean>
-}
-
 // Asset fetch function type
 type AssetFetcher = (checksum: string) => Promise<Uint8Array | ArrayBuffer>
 
 // Asset provider: either a dict of assets or a fetcher function
 type AssetProvider = Record<string, Uint8Array | ArrayBuffer> | AssetFetcher
-```
-
-### CachedAssetLoader
-
-```typescript
-// Asset loader with optional disk cache for persistence
-class CachedAssetLoader {
-  constructor(
-    fetch: AssetFetcher,  // Function that fetches asset bytes by checksum
-    cache: DataHandler    // DataHandler for caching fetched assets
-  )
-  
-  // Get asset bytes, checking cache first then fetching if needed
-  async getAsset(checksum: string): Promise<Uint8Array | ArrayBuffer>
-}
-```
-
-### CustomFieldConfig
-
-```typescript
-// Custom decoder function type
-type CustomDecoder<T, M extends PackableMetadata> = (data: Uint8Array, metadata: M) => T
-
-// Custom field configuration
-interface CustomFieldConfig<T = unknown, M extends PackableMetadata = PackableMetadata> {
-  fileName: string           // File name in zip (without .bin)
-  decode: CustomDecoder<T, M>  // Decoder function
-  optional?: boolean         // Won't throw if missing (default: false)
-}
 ```
 
 ### Packable (Base Class)
@@ -252,21 +227,13 @@ class Packable<TData> {
   // Reconstruct from extracted data and assets
   static async reconstruct<T>(
     data: Record<string, unknown>,
-    assets: AssetProvider | CachedAssetLoader,
-    schema?: ReconstructSchema
+    assets: AssetProvider,
+    schema?: JsonSchema,
+    fieldSchemas?: ReconstructSchema
   ): Promise<T>
   
-  // Decode packed array format (metadata + data bytes)
-  static _decodePackedArray(packed: Uint8Array | ArrayBuffer): TypedArray
-  
-  // Load single array
-  static async loadArray(zipData: ArrayBuffer | Uint8Array, name: string): Promise<TypedArray>
-  
-  // Load metadata
-  static async loadMetadata<T extends PackableMetadata>(zip: JSZip): Promise<T>
-  
-  // Custom field configuration (override in subclasses)
-  protected static getCustomFields(): Record<string, CustomFieldConfig>
+  // Extract all checksums from data
+  static extractChecksums(data: Record<string, unknown>): string[]
 }
 ```
 
@@ -274,15 +241,15 @@ class Packable<TData> {
 
 ```typescript
 class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
-  // Properties (via declare)
+  // Properties
   vertices: Float32Array
   indices?: Uint32Array
   indexSizes?: Uint32Array
   cellTypes?: Uint32Array
   dim?: number
-  markerIndices?: Record<string, Uint32Array>
-  markerOffsets?: Record<string, Uint32Array>
-  markerTypes?: Record<string, Uint8Array>
+  markers?: Record<string, Uint32Array>
+  markerSizes?: Record<string, Uint32Array>
+  markerCellTypes?: Record<string, Uint32Array>
   
   // Utility methods
   getPolygonCount(): number
@@ -298,10 +265,6 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   // THREE.js integration
   toBufferGeometry(): THREE.BufferGeometry
   extractMarkerAsBufferGeometry(markerName: string): THREE.BufferGeometry
-  
-  // Custom field configuration for meshoptimizer decoding
-  protected static override getCustomFields(): Record<string, CustomFieldConfig<unknown, MeshMetadata>>
-}
 }
 ```
 
@@ -314,33 +277,45 @@ interface MeshData {
   indexSizes?: Uint32Array
   cellTypes?: Uint32Array
   dim?: number
-  markerIndices?: Record<string, Uint32Array>
-  markerOffsets?: Record<string, Uint32Array>
-  markerTypes?: Record<string, Uint8Array>
-  markers?: Record<string, number[][]>
+  markers?: Record<string, Uint32Array>
+  markerSizes?: Record<string, Uint32Array>
+  markerCellTypes?: Record<string, Uint32Array>
 }
 ```
 
-### Metadata Interfaces
+### ArrayRefInfo
 
 ```typescript
-// Base metadata for all Packable types
-interface PackableMetadata {
-  field_data?: Record<string, unknown>
+// Reference to an encoded array in assets
+interface ArrayRefInfo {
+  $ref: string        // Checksum of the asset
+  shape: number[]     // Array shape
+  dtype: string       // Data type ('float32', 'uint32', etc.)
+  itemsize: number    // Bytes per element
+  pad_bytes?: number  // Optional padding bytes
+}
+```
+
+### JSON Schema Types
+
+```typescript
+// JSON Schema with encoding info
+interface JsonSchema {
+  properties?: Record<string, JsonSchemaProperty>
+  $defs?: Record<string, JsonSchemaProperty>
+  // ... standard JSON Schema fields
 }
 
-// Mesh-specific metadata extending base
-interface MeshMetadata extends PackableMetadata {
-  mesh_size: MeshSize
-  array_type?: "numpy" | "jax"  // For Python compatibility
+interface JsonSchemaProperty {
+  type?: string | 'array' | 'vertex_buffer' | 'index_sequence'
+  items?: JsonSchemaProperty
+  properties?: Record<string, JsonSchemaProperty>
+  $ref?: string
+  // ... standard JSON Schema fields
 }
 
-interface MeshSize {
-  vertex_count: number
-  vertex_size: number
-  index_count: number | null
-  index_size: number
-}
+// Array encoding types
+type ArrayEncoding = 'array' | 'vertex_buffer' | 'index_sequence'
 ```
 
 ### Reconstruct Schema Types
@@ -358,38 +333,32 @@ type FieldSchema =
 
 // Schema mapping field names to their types
 type ReconstructSchema = Record<string, FieldSchema>
-
-// Result of Python's Packable.extract()
-interface SerializedPackableData {
-  data: Record<string, unknown>      // Serializable dict with $ref references
-  assets: Record<string, Uint8Array> // Map of checksum -> encoded bytes
-}
 ```
 
 ### Reconstruct Example
 
 ```typescript
-import { Packable, CachedAssetLoader, ReconstructSchema } from 'meshly'
+import { Packable, ReconstructSchema, Mesh } from 'meshly'
 
-// Simple case - all $refs are arrays
-const result = await Packable.reconstruct(data, assets)
+// Simple case - all $refs are arrays (uses JSON schema for encoding info)
+const result = await Packable.reconstruct(data, assets, jsonSchema)
 
-// With nested Packables - define schema for type hints
-const schema: ReconstructSchema = {
+// With nested Packables - define field schemas for type hints
+const fieldSchemas: ReconstructSchema = {
   mesh: { type: 'packable', decode: (bytes) => Mesh.decode(bytes) },
   snapshots: { 
     type: 'array', 
     element: { type: 'packable', decode: (bytes) => Mesh.decode(bytes) }
   }
 }
-const result = await Packable.reconstruct(data, assets, schema)
+const result = await Packable.reconstruct(data, assets, jsonSchema, fieldSchemas)
 
-// With CachedAssetLoader for disk caching
-const loader = new CachedAssetLoader(
-  async (checksum) => fetch(`/api/assets/${checksum}`).then(r => r.arrayBuffer()),
-  myDataHandler
-)
-const result = await Packable.reconstruct(data, loader, schema)
+// With async fetcher
+const fetcher = async (checksum: string) => {
+  const response = await fetch(`/api/assets/${checksum}`)
+  return response.arrayBuffer()
+}
+const result = await Packable.reconstruct(data, fetcher, jsonSchema)
 ```
 
 ### Utility Classes
@@ -397,17 +366,127 @@ const result = await Packable.reconstruct(data, loader, schema)
 ```typescript
 // Array encoding/decoding
 class ArrayUtils {
-  static decodeArray(data: Uint8Array, metadata: ArrayMetadata): Float32Array | Uint32Array
-  static async loadArray(zip: JSZip, name: string): Promise<TypedArray>
+  // Reconstruct array from ExtractedArray
+  static reconstruct(extracted: ExtractedArray): TypedArray
+  
+  // Decode array from zip file
+  static async decode(zip: JSZip, name: string, encoding?: ArrayEncoding): Promise<TypedArray>
 }
 
-// Array metadata
-interface ArrayMetadata {
+// Extracted array with data and metadata (matches Python's ExtractedArray)
+interface ExtractedArray {
+  data: Uint8Array
+  info: ArrayRefInfo
+  encoding?: ArrayEncoding
+}
+
+// Array reference info (matches Python's ArrayRefInfo)
+interface ArrayRefInfo {
+  $ref?: string      // Checksum reference
   shape: number[]
   dtype: string
   itemsize: number
-  array_type?: "numpy" | "jax"  // For Python compatibility
+  pad_bytes?: number
 }
+```
+
+### ExportConstants
+
+```typescript
+// File paths for the new format
+const ExportConstants = {
+  DATA_FILE: 'metadata/data.json',
+  SCHEMA_FILE: 'metadata/schema.json',
+  ASSETS_DIR: 'assets',
+  ASSET_EXT: '.bin',
+  
+  // Get asset path from checksum
+  assetPath(checksum: string): string,
+  
+  // Extract checksum from asset path
+  checksumFromPath(path: string): string
+}
+```
+
+### LazyModel
+
+```typescript
+// Lazy loading proxy for deferred field resolution
+class LazyModel {
+  // Create lazy proxy from data and assets
+  static create<T>(
+    data: Record<string, unknown>,
+    assets: AssetProvider,
+    schema?: JsonSchema,
+    fieldSchemas?: ReconstructSchema
+  ): LazyModelProps<T> & T
+  
+  // Create from zip data
+  static async fromZip<T>(zipData: ArrayBuffer | Uint8Array): Promise<LazyModelProps<T> & T>
+}
+
+// Special properties exposed by LazyModel proxy
+interface LazyModelProps<T> {
+  readonly $loaded: string[]   // Loaded field names
+  readonly $pending: string[]  // Currently loading fields
+  readonly $fields: string[]   // All available field names
+  $resolve(): Promise<T>       // Resolve all fields
+  $get(name: string): Promise<unknown>  // Get specific field
+}
+```
+
+### DynamicModelBuilder
+
+```typescript
+// Dynamic model building from JSON schema
+class DynamicModelBuilder {
+  // Instantiate model from schema and data
+  static async instantiate<T>(
+    schema: JsonSchema,
+    data: Record<string, unknown>,
+    assets: AssetProvider,
+    options?: InstantiateOptions
+  ): Promise<DynamicModel<T> | LazyModelProps<T>>
+  
+  // Load from zip data
+  static async fromZip<T>(
+    zipData: ArrayBuffer | Uint8Array,
+    options?: InstantiateOptions
+  ): Promise<DynamicModel<T> | LazyModelProps<T>>
+}
+
+interface InstantiateOptions {
+  isLazy?: boolean              // Return lazy proxy instead
+  fieldSchemas?: ReconstructSchema  // Nested Packable decoders
+}
+```
+
+### AssetCache
+
+```typescript
+// IndexedDB-backed LRU cache for binary assets (browser)
+class AssetCache {
+  constructor(config?: AssetCacheConfig)
+  
+  async initialize(): Promise<void>
+  async get(checksum: string): Promise<Uint8Array | undefined>
+  async put(checksum: string, data: Uint8Array): Promise<void>
+  async has(checksum: string): Promise<boolean>
+  async clear(): Promise<void>
+  
+  // Create cached asset fetcher
+  createProvider(fetcher: AssetFetcher): AssetFetcher
+}
+
+interface AssetCacheConfig {
+  dbName?: string   // Default: 'meshly-asset-cache'
+  maxItems?: number // Default: 500
+  maxSize?: number  // Default: 500MB
+}
+
+// Convenience functions
+function getDefaultAssetCache(): AssetCache
+async function createCachedProvider(fetcher: AssetFetcher): Promise<AssetFetcher>
 ```
 
 ## Python Compatibility
@@ -426,6 +505,40 @@ mesh.save_to_zip("mesh.zip")
 import { Mesh } from 'meshly'
 const mesh = await Mesh.decode(zipData)
 const geometry = mesh.toBufferGeometry()
+```
+
+### Custom Mesh Subclasses
+
+Python subclasses with additional arrays are fully supported:
+
+```python
+# Python: Custom mesh with texture coordinates
+class TexturedMesh(Mesh):
+    texture_coords: Array
+    normals: Array
+    material_name: str
+
+mesh = TexturedMesh(
+    vertices=vertices,
+    indices=indices,
+    texture_coords=tex_coords,
+    normals=normals,
+    material_name="wood"
+)
+mesh.save_to_zip("textured.zip")
+```
+
+```typescript
+// TypeScript: Access custom fields
+interface TexturedMeshData extends MeshData {
+  texture_coords: Float32Array
+  normals: Float32Array
+  material_name: string
+}
+
+const mesh = await Mesh.decode(zipData) as Mesh & TexturedMeshData
+console.log(mesh.texture_coords)  // Float32Array
+console.log(mesh.material_name)   // "wood"
 ```
 
 ## Development

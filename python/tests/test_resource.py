@@ -8,6 +8,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 from meshly import Array, Packable, Resource
+from meshly.packable import ExtractedPackable
 from meshly.utils.dynamic_model import LazyModel
 
 
@@ -63,13 +64,13 @@ def test_packable_extract_with_resource():
         # Extract should convert ResourceRef to $ref with checksum
         extracted = case.extract()
 
-        assert extracted.metadata.data["name"] == "test"
-        assert "$ref" in extracted.metadata.data["geometry"]
-        assert "ext" in extracted.metadata.data["geometry"]
-        assert extracted.metadata.data["geometry"]["ext"] == ".stl"
+        assert extracted.data["name"] == "test"
+        assert "$ref" in extracted.data["geometry"]
+        assert "ext" in extracted.data["geometry"]
+        assert extracted.data["geometry"]["ext"] == ".stl"
 
         # Should have the gzip-compressed file data in assets
-        checksum = extracted.metadata.data["geometry"]["$ref"]
+        checksum = extracted.data["geometry"]["$ref"]
         assert checksum in extracted.assets
         # Data is gzip compressed
         assert gzip.decompress(extracted.assets[checksum]) == b"STL geometry data"
@@ -87,9 +88,10 @@ def test_packable_reconstruct_with_resource():
     # Simulate serialized data
     data = {"name": "test", "geometry": {"$ref": "abc123", "ext": ".stl"}}
     assets = {"abc123": gzip.compress(b"STL geometry data")}
+    extracted = ExtractedPackable(data=data, assets=assets)
 
     # Reconstruct should create ResourceRef with data
-    case = Packable.reconstruct(SimulationCase, data, assets)
+    case = SimulationCase.reconstruct(extracted)
 
     assert case.name == "test"
     assert isinstance(case.geometry, Resource)
@@ -126,13 +128,13 @@ def test_resource_round_trip():
         extracted = case1.extract()
 
         # Verify extraction
-        assert extracted.metadata.data["name"] == "wind_tunnel"
-        assert "$ref" in extracted.metadata.data["geometry"]
-        assert "$ref" in extracted.metadata.data["config"]
+        assert extracted.data["name"] == "wind_tunnel"
+        assert "$ref" in extracted.data["geometry"]
+        assert "$ref" in extracted.data["config"]
         assert len(extracted.assets) == 2
 
         # Reconstruct
-        case2 = Packable.reconstruct(SimulationCase, extracted.metadata.data, extracted.assets)
+        case2 = SimulationCase.reconstruct(extracted)
 
         # Verify reconstruction
         assert case2.name == "wind_tunnel"
@@ -157,6 +159,7 @@ def test_lazy_model_with_resource_ref():
     # Simulate serialized data with ResourceRef
     data = {"name": "test_case", "geometry": {"$ref": "abc123", "ext": ".stl"}}
     assets = {"abc123": gzip.compress(b"STL geometry data")}
+    extracted = ExtractedPackable(data=data, assets=assets)
 
     # Track which assets are requested
     requested = []
@@ -166,7 +169,7 @@ def test_lazy_model_with_resource_ref():
         return assets[checksum]
 
     # Reconstruct with is_lazy=True - returns LazyModel
-    lazy = Packable.reconstruct(SimulationCase, data, tracking_loader, is_lazy=True)
+    lazy = SimulationCase.reconstruct(extracted, assets=tracking_loader, is_lazy=True)
 
     assert isinstance(lazy, LazyModel)
     assert len(requested) == 0, "No assets should be loaded yet"
@@ -201,9 +204,10 @@ def test_lazy_model_resolve_with_resource_ref():
         "geo123": gzip.compress(b"geometry data"), 
         "cfg456": gzip.compress(b"config data")
     }
+    extracted = ExtractedPackable(data=data, assets=assets)
 
     # With dict assets (not callable), reconstruct returns the actual model
-    result = Packable.reconstruct(SimulationCase, data, assets)
+    result = SimulationCase.reconstruct(extracted)
     assert isinstance(result, SimulationCase)
 
     # Verify the model
@@ -233,9 +237,10 @@ def test_resource_ref_in_nested_dict_eager_loading():
         "mesh123": gzip.compress(b"mesh data"), 
         "tex456": gzip.compress(b"texture data")
     }
+    extracted = ExtractedPackable(data=data, assets=assets)
 
     # Use dict assets for eager loading
-    result = Packable.reconstruct(ExperimentCase, data, assets)
+    result = ExperimentCase.reconstruct(extracted)
 
     # Access nested dict with ResourceRefs
     files = result.files
@@ -269,9 +274,10 @@ def test_resource_ref_in_list_eager_loading():
         "file1": gzip.compress(b"data1"), 
         "file2": gzip.compress(b"data2")
     }
+    extracted = ExtractedPackable(data=data, assets=assets)
 
     # Use dict assets for eager loading
-    result = Packable.reconstruct(BatchJob, data, assets)
+    result = BatchJob.reconstruct(extracted)
 
     # Access list of ResourceRefs
     files = result.input_files
@@ -317,7 +323,7 @@ def test_mixed_resource_and_array_lazy_loading():
             return extracted.assets[checksum]
 
         # Reconstruct with is_lazy=True
-        lazy = Packable.reconstruct(Simulation, extracted.metadata.data, tracking_loader, is_lazy=True)
+        lazy = Simulation.reconstruct(extracted, assets=tracking_loader, is_lazy=True)
 
         assert isinstance(lazy, LazyModel)
         assert len(requested) == 0

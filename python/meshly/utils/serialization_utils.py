@@ -149,7 +149,7 @@ class SerializationUtils:
                 assets={k: v for e in items for k, v in e.assets.items()},
             )
 
-        # BaseModels: extract with $module metadata
+        # BaseModels: extract fields
         if isinstance(value, BaseModel):
             return SerializationUtils.extract_basemodel(value)
 
@@ -172,12 +172,11 @@ class SerializationUtils:
             ref_dict = PackableRefInfo(ref=checksum).model_dump(by_alias=True)
             return ExtractedResult(value=ref_dict, assets={checksum: encoded})
         
-        # Expanded: recursively extract each field with $module metadata
+        # Expanded: recursively extract each field
         dumped = value.model_dump(mode='python')
         items = [(k, SerializationUtils.extract_value(v)) for k, v in dumped.items()]
-        value_class = type(value)
         return ExtractedResult(
-            value={**{k: e.value for k, e in items}, "$module": f"{value_class.__module__}.{value_class.__qualname__}"},
+            value={k: e.value for k, e in items},
             assets={k: v for _, e in items for k, v in e.assets.items()},
         )
 
@@ -220,6 +219,4 @@ class SerializationUtils:
                 data[name] = extracted.value
                 assets.update(extracted.assets)
         
-        value_class = type(value)
-        data["$module"] = f"{value_class.__module__}.{value_class.__qualname__}"
         return ExtractedResult(value=data, assets=assets)

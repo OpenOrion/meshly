@@ -67,6 +67,16 @@ class DynamicModelBuilder:
         if cache_key in cls._model_cache:
             return cls._model_cache[cache_key]
         
+        # Determine base class from x-base hint
+        base_class = BaseModel
+        x_base = schema.x_base
+        if x_base == "Mesh":
+            from meshly.mesh import Mesh
+            base_class = Mesh
+        elif x_base == "Packable":
+            from meshly.packable import Packable
+            base_class = Packable
+        
         # Build field definitions
         field_definitions = {}
         required = set(schema.required)
@@ -84,13 +94,23 @@ class DynamicModelBuilder:
             else:
                 field_definitions[field_name] = (py_type, default)
         
-        # Create model with config for arbitrary types (numpy arrays)
-        model = create_model(
-            title,
-            __module__="meshly.dynamic",
-            __config__=ConfigDict(arbitrary_types_allowed=True),
-            **field_definitions,
-        )
+        # Create model with base class
+        # Note: When using __base__, config is inherited from base class
+        # Only set __config__ explicitly when base_class is BaseModel
+        if base_class is BaseModel:
+            model = create_model(
+                title,
+                __module__="meshly.dynamic",
+                __config__=ConfigDict(arbitrary_types_allowed=True),
+                **field_definitions,
+            )
+        else:
+            model = create_model(
+                title,
+                __module__="meshly.dynamic",
+                __base__=base_class,
+                **field_definitions,
+            )
         
         cls._model_cache[cache_key] = model
         return model
@@ -141,12 +161,13 @@ class DynamicModelBuilder:
         schema: JsonSchema,
         required: set[str],
         field_name: str,
-    ) -> tuple[type, Any]:
+    ) -> tuple[object, Any]:
         """
         Convert a JsonSchemaProperty to Python type and default.
         
         Returns:
             Tuple of (python_type, default_value)
+            Note: python_type can be a type, Union type, or None
         """
         is_required = field_name in required
         
@@ -202,6 +223,14 @@ class DynamicModelBuilder:
             return (list_type, default) if is_required else (Union[list_type, None], default)
         
         if prop.type == "object":
+            # Check for x-base hints (Mesh, Packable)
+            if prop.x_base == "Mesh":
+                from meshly.mesh import Mesh
+                return (Mesh, ...) if is_required else (Union[Mesh, None], None)
+            if prop.x_base == "Packable":
+                from meshly.packable import Packable
+                return (Packable, ...) if is_required else (Union[Packable, None], None)
+            
             # Check for additionalProperties (dict pattern)
             if prop.additionalProperties and isinstance(prop.additionalProperties, JsonSchemaProperty):
                 value_type, _ = cls._property_to_type(prop.additionalProperties, schema, set(), "")
@@ -234,4 +263,5 @@ class DynamicModelBuilder:
         """Generate a cache key for a schema."""
         title = schema.title or ""
         props = sorted(schema.field_names())
-        return f"{title}:{','.join(props)}"
+        x_base = schema.x_base or "basemodel"
+        return f"{x_base}:{title}:{','.join(props)}"

@@ -24,7 +24,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional, TypeVar, Union
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic.json_schema import JsonSchemaValue, GetJsonSchemaHandler
+from pydantic_core import core_schema as pydantic_core_schema
 
 from meshly.array import ArrayType, ArrayUtils
 from meshly.common import AssetProvider, PathLike, RefInfo
@@ -36,7 +38,7 @@ from meshly.utils.json_schema import JsonSchema
 from meshly.utils.dynamic_model import DynamicModelBuilder, LazyModel
 
 if TYPE_CHECKING:
-    from meshly.asset_store import AssetStore
+    pass
 
 TModel = TypeVar("TModel", bound=BaseModel)
 
@@ -46,18 +48,23 @@ class PackableRefInfo(RefInfo):
     ref: str = Field(..., alias="$ref")
 
 
-class PackableMetadata(BaseModel):
-    """Metadata containing the serializable data and JSON schema.
+class ExtractedPackable(BaseModel):
+    """Result of extracting a Packable for serialization.
+
+    Contains the data dict, JSON schema, and binary assets.
+    The schema contains 'x-module' with the fully qualified class path.
+    The schema's 'x-base' indicates base class type ('packable', 'mesh', etc).
     
-    This is the JSON-serializable portion of extracted Packable data,
-    containing both the data dict with $ref checksums and the JSON schema.
+    Use model_dump() to get a JSON-serializable dict (assets are excluded).
     """
     
-    data: dict[str, Any] = Field(..., description="Serializable dict with primitive fields and checksum refs for arrays")
-    json_schema: dict[str, Any] = Field(..., description="JSON Schema with encoding info")
+    model_config = {"arbitrary_types_allowed": True}
 
-    @staticmethod
-    def extract_checksums(data: dict[str, Any]) -> list[str]:
+    data: dict[str, Any] = Field(..., description="Serializable dict with primitive fields and checksum refs for arrays")
+    json_schema: Optional[dict[str, Any]] = Field(default=None, description="JSON Schema with encoding info")
+    assets: dict[str, bytes] = Field(default_factory=dict, exclude=True, description="Map of checksum -> encoded bytes for all arrays")
+
+    def extract_checksums(self) -> list[str]:
         """Extract all $ref checksums from a serialized data dict.
 
         Recursively walks the data structure to find all {"$ref": checksum} entries.
@@ -81,22 +88,121 @@ class PackableMetadata(BaseModel):
                 for item in obj:
                     _extract(item)
 
-        _extract(data)
+        _extract(self.data)
         return list(checksums)
 
 
-class ExtractedPackable(BaseModel):
-    """Result of extracting a Packable for serialization.
-
-    Contains the metadata (data dict + schema) and the binary assets.
-    The data dict may contain a reserved key '$module' with the fully qualified
-    class name for automatic class resolution during reconstruction.
+class PackableStore(BaseModel):
+    """Configuration for file-based Packable asset storage.
+    
+    Assets (binary blobs) are stored by their SHA256 checksum, enabling deduplication.
+    Extracted packable data is stored at user-specified keys as JSON files.
+    
+    Directory structure:
+        assets_path/
+            <checksum1>.bin
+            <checksum2>.bin
+        extracted_path/
+            <key>.json  (contains both data and json_schema)
+    
+    Example:
+        store = PackableStore(assets_path=Path("/data/assets"), extracted_path=Path("/data/runs"))
+        my_mesh.save(store, "experiment/result")
+        loaded = Mesh.load(store, "experiment/result")
     """
     
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    assets_path: Path = Field(..., description="Directory for binary assets")
+    extracted_path: Optional[Path] = Field(default=None, description="Directory for extracted JSON files. If None, uses assets_path")
+    
+    def asset_file(self, checksum: str) -> Path:
+        """Get the filesystem path for a binary asset."""
+        return self.assets_path / f"{checksum}.bin"
+    
+    def get_extracted_path(self, key: str) -> Path:
+        """Get the filesystem path for an extracted packable's JSON file."""
+        extracted_dir = self.extracted_path if self.extracted_path is not None else self.assets_path
+        return extracted_dir / f"{key}.json"
+    
+    def save_asset(self, data: bytes, checksum: str) -> None:
+        """Save binary asset data to storage.
+        
+        Args:
+            data: Binary data to save
+            checksum: SHA256 checksum identifier for the asset
+        """
+        asset_path = self.asset_file(checksum)
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(data)
+    
+    def load_asset(self, checksum: str) -> bytes:
+        """Load binary asset data from storage.
+        
+        Args:
+            checksum: SHA256 checksum identifier for the asset
+            
+        Returns:
+            Binary data of the asset
+            
+        Raises:
+            FileNotFoundError: If asset doesn't exist
+        """
+        return self.asset_file(checksum).read_bytes()
+    
+    def asset_exists(self, checksum: str) -> bool:
+        """Check if an asset exists in storage.
+        
+        Args:
+            checksum: SHA256 checksum identifier for the asset
+            
+        Returns:
+            True if asset exists, False otherwise
+        """
+        return self.asset_file(checksum).exists()
 
-    metadata: PackableMetadata = Field(..., description="JSON-serializable metadata (data + schema)")
-    assets: dict[str, bytes] = Field(default_factory=dict, description="Map of checksum -> encoded bytes for all arrays")
+    def save_extracted(self, key: str, extracted: "ExtractedPackable") -> None:
+        """Save extracted packable JSON to storage.
+        
+        Args:
+            key: Identifier for the packable
+            extracted: ExtractedPackable to save (assets are not saved here)
+        """
+        extracted_json_path = self.get_extracted_path(key)
+        extracted_json_path.parent.mkdir(parents=True, exist_ok=True)
+        extracted_json_path.write_text(json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
+    
+    def load_extracted(self, key: str) -> "ExtractedPackable":
+        """Load extracted packable from storage.
+        
+        Args:
+            key: Identifier for the packable
+            
+        Returns:
+            ExtractedPackable with data and json_schema (assets loaded via load_asset)
+            
+        Raises:
+            FileNotFoundError: If extracted file doesn't exist
+        """
+        extracted_json_path = self.get_extracted_path(key)
+        if not extracted_json_path.exists():
+            raise FileNotFoundError(f"Extracted packable not found: {key}")
+        extracted_data = json.loads(extracted_json_path.read_text())
+        return ExtractedPackable(
+            data=extracted_data["data"],
+            json_schema=extracted_data.get("json_schema"),
+        )
+    
+    def extracted_exists(self, key: str) -> bool:
+        """Check if an extracted packable exists in storage.
+        
+        Args:
+            key: Identifier for the packable
+            
+        Returns:
+            True if extracted file exists, False otherwise
+        """
+        return self.get_extracted_path(key).exists()
 
 
 class Packable(BaseModel):
@@ -141,6 +247,19 @@ class Packable(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema_obj: pydantic_core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Inject x-base and x-module hints into JSON schema."""
+        json_schema = handler(core_schema_obj)
+        json_schema = handler.resolve_ref_schema(json_schema)
+        # Add base class hint: "Packable", "Mesh", or "BaseModel"
+        json_schema['x-base'] = 'Packable'
+        # Add module path for reconstruction
+        json_schema['x-module'] = f"{cls.__module__}.{cls.__qualname__}"
+        return json_schema
+
     def extract(self) -> "ExtractedPackable":
         """Extract arrays and Packables from this model into serializable data and assets.
         
@@ -154,16 +273,14 @@ class Packable(BaseModel):
         
         extracted_result = SerializationUtils.extract_basemodel(
             self, 
-            include_computed=True
+            include_computed=True,
         )
 
         assert isinstance(extracted_result.value, dict), "Extracted value must be a dict for Packable models"
 
         self._cached_extract = ExtractedPackable(
-            metadata=PackableMetadata(
-                data=extracted_result.value,
-                json_schema=type(self).model_json_schema()
-            ),
+            data=extracted_result.value,
+            json_schema=type(self).model_json_schema(),
             assets=extracted_result.assets,
         )
         return self._cached_extract
@@ -181,14 +298,9 @@ class Packable(BaseModel):
         destination = BytesIO()
         
         with zipfile.ZipFile(destination, "w") as zf:
-            # Write JSON Schema with encoding info (if available)
-            if extracted.metadata.json_schema is not None:
-                info = zipfile.ZipInfo(ExportConstants.SCHEMA_FILE, date_time=ExportConstants.EXPORT_TIME)
-                zf.writestr(info, json.dumps(extracted.metadata.json_schema, indent=2, sort_keys=True))
-
-            # Write data as JSON
-            info = zipfile.ZipInfo(ExportConstants.DATA_FILE, date_time=ExportConstants.EXPORT_TIME)
-            zf.writestr(info, json.dumps(extracted.metadata.data, indent=2, sort_keys=True))
+            # Write extracted data (data + schema) as single JSON
+            info = zipfile.ZipInfo(ExportConstants.EXTRACTED_FILE, date_time=ExportConstants.EXPORT_TIME)
+            zf.writestr(info, json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
 
             # Write assets by checksum
             for checksum in sorted(extracted.assets.keys()):
@@ -218,14 +330,8 @@ class Packable(BaseModel):
             Reconstructed Packable instance.
         """
         with zipfile.ZipFile(BytesIO(buf), "r") as zf:
-            # Read data
-            data = json.loads(zf.read(ExportConstants.DATA_FILE).decode("utf-8"))
-
-            # Read schema if present
-            try:
-                schema = json.loads(zf.read(ExportConstants.SCHEMA_FILE).decode("utf-8"))
-            except KeyError:
-                schema = {}
+            # Read extracted data (data + schema)
+            extracted_json = json.loads(zf.read(ExportConstants.EXTRACTED_FILE).decode("utf-8"))
 
             # Build assets dict from files
             assets: dict[str, bytes] = {}
@@ -234,86 +340,109 @@ class Packable(BaseModel):
                     checksum = ExportConstants.checksum_from_path(file_path)
                     assets[checksum] = zf.read(file_path)
 
-        # If called on base Packable, use schema-based decoding
-        if cls is Packable:
-            if not schema:
-                raise ValueError(
-                    "schema.json not found. Use a specific subclass for decode() "
-                    "or ensure the packable was created with Array/VertexBuffer/IndexSequence types."
-                )
-            json_schema = JsonSchema.model_validate(schema)
-            return Packable.reconstruct(json_schema, data, assets, array_type)
-        
-        return Packable.reconstruct(cls, data, assets, array_type)
+        # Create ExtractedPackable from zip contents
+        extracted = ExtractedPackable(
+            data=extracted_json["data"],
+            json_schema=extracted_json.get("json_schema"),
+            assets=assets,
+        )
+        return cls.reconstruct(extracted, array_type=array_type)
 
-    @staticmethod
+    @classmethod
     def reconstruct(
-        model_class: Union[type[TModel], list[type[TModel]], JsonSchema, None],
-        data: dict[str, Any],
-        assets: AssetProvider = {},
+        cls,
+        extracted: "ExtractedPackable",
+        assets: Optional[AssetProvider] = None,
         array_type: ArrayType = "numpy",
         is_lazy: bool = False,
     ) -> Union[TModel, LazyModel, BaseModel]:
-        """Reconstruct a Pydantic BaseModel from extracted data and assets.
+        """Reconstruct a Packable from extracted data and assets.
 
         Args:
-            model_class: The Pydantic model class to reconstruct, a list of model classes
-                        (will match against $module in data), or a JsonSchema for 
-                        schema-based decoding (builds a dynamic model).
-            data: Either a dict containing the extracted data.
-            assets: Asset provider (dict or callable).
-            array_type: Optional array type for conversion.
+            extracted: ExtractedPackable containing data, json_schema, and assets.
+            assets: Optional asset provider override (dict or callable). If None, uses extracted.assets.
+            array_type: Target array backend type ("numpy" or "jax").
             is_lazy: If True, returns a lazy proxy that defers asset loading until field access.
 
         Returns:
-            Reconstructed model instance, lazy proxy, or dynamically built model (if JsonSchema passed).
+            Reconstructed Packable instance, lazy proxy, or dynamically built model.
         
         Example:
-            extracted = Packable.extract(my_model)
-            restored = Packable.reconstruct(MyModel, extracted.data, extracted.assets)
+            extracted = my_model.extract()
+            restored = MyModel.reconstruct(extracted)
             
-            # Lazy loading with known model class
-            lazy_model = Packable.reconstruct(MyModel, data, fetch_asset_fn, is_lazy=True)
+            # Lazy loading
+            lazy_model = MyModel.reconstruct(extracted, is_lazy=True)
             
-            # Lazy loading with schema (dynamic model)
-            lazy_dynamic = Packable.reconstruct(schema, data, fetch_asset_fn, is_lazy=True)
+            # With external asset provider
+            restored = MyModel.reconstruct(extracted, assets=store.load_asset)
             
-            # Multiple model classes - matches $module field
-            model = Packable.reconstruct([ModelA, ModelB], data, assets)
+            # Schema-based decoding (when called on base Packable)
+            dynamic = Packable.reconstruct(extracted)
         """
-
-        # Schema-based decoding (builds dynamic model)
-        if isinstance(model_class, JsonSchema):
-            return DynamicModelBuilder.instantiate(model_class, data, assets, array_type, is_lazy)
-
-        # List of model classes - find matching class by $module
-        if isinstance(model_class, list):
-            module_name = data.get("$module")
-            if not module_name:
-                raise ValueError(
-                    "Cannot reconstruct with list of model classes: data does not contain $module field"
-                )
-            for cls in model_class:
-                cls_module = f"{cls.__module__}.{cls.__qualname__}"
-                if cls_module == module_name:
-                    model_class = cls
-                    break
-            else:
-                available = [f"{c.__module__}.{c.__qualname__}" for c in model_class]
-                raise ValueError(
-                    f"No matching model class found for $module='{module_name}'. "
-                    f"Available classes: {available}"
-                )
-
-        assert model_class is not None, "model_class must be provided for reconstruction"
+        asset_provider: AssetProvider = assets if assets is not None else extracted.assets
+        
+        # If called on base Packable, use schema-based decoding
+        if cls is Packable:
+            if extracted.json_schema is None:
+                raise ValueError("Cannot reconstruct on base Packable without json_schema")
+            json_schema = JsonSchema.model_validate(extracted.json_schema)
+            return DynamicModelBuilder.instantiate(json_schema, extracted.data, asset_provider, array_type, is_lazy)
         
         # For typed model classes, generate schema and use DynamicModelBuilder for lazy loading
         if is_lazy:
-            schema = JsonSchema.model_validate(model_class.model_json_schema())
-            return DynamicModelBuilder.instantiate(schema, data, assets, array_type, is_lazy=True)
+            schema = JsonSchema.model_validate(cls.model_json_schema())
+            return DynamicModelBuilder.instantiate(schema, extracted.data, asset_provider, array_type, is_lazy=True)
     
-        resolved_data = SchemaUtils.resolve_from_class(model_class, data, assets, array_type)
-        return model_class(**resolved_data)
+        resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
+        return cls(**resolved_data)
+
+    @staticmethod
+    def reconstruct_polymorphic(
+        model_classes: list[type[TModel]],
+        extracted: "ExtractedPackable",
+        assets: Optional[AssetProvider] = None,
+        array_type: ArrayType = "numpy",
+        is_lazy: bool = False,
+    ) -> Union[TModel, LazyModel]:
+        """Reconstruct a Packable by matching x-module in schema against a list of model classes.
+
+        Args:
+            model_classes: List of candidate model classes to match against.
+            extracted: ExtractedPackable containing data, json_schema, and assets.
+            assets: Optional asset provider override. If None, uses extracted.assets.
+            array_type: Target array backend type ("numpy" or "jax").
+            is_lazy: If True, returns a lazy proxy that defers asset loading.
+
+        Returns:
+            Reconstructed instance of the matching model class.
+            
+        Raises:
+            ValueError: If x-module is not in json_schema or no matching class is found.
+        
+        Example:
+            model = Packable.reconstruct_polymorphic([ModelA, ModelB], extracted)
+        """
+        if not extracted.json_schema:
+            raise ValueError(
+                "Cannot reconstruct polymorphic: json_schema is required"
+            )
+        module_name = extracted.json_schema.get("x-module")
+        if not module_name:
+            raise ValueError(
+                "Cannot reconstruct polymorphic: json_schema does not contain x-module field"
+            )
+        
+        for model_cls in model_classes:
+            cls_module = f"{model_cls.__module__}.{model_cls.__qualname__}"
+            if cls_module == module_name:
+                return model_cls.reconstruct(extracted, assets, array_type, is_lazy)
+        
+        available = [f"{c.__module__}.{c.__qualname__}" for c in model_classes]
+        raise ValueError(
+            f"No matching model class found for x-module='{module_name}'. "
+            f"Available classes: {available}"
+        )
 
     @classmethod
     def load_from_zip(
@@ -339,74 +468,59 @@ class Packable(BaseModel):
 
     def save(
         self,
-        store: "AssetStore",
-        path: Optional[str] = None,
+        store: PackableStore,
+        key: Optional[str] = None,
     ) -> str:
         """Save this Packable to an asset store.
         
         Extracts the Packable and saves assets to the store's asset directory,
-        with metadata saved to the specified path.
+        with extracted data saved to the specified key.
         
         Args:
-            store: AssetStore to save to
-            path: Relative path for the metadata. If None, uses the content checksum.
+            store: PackableStore config
+            key: Identifier for the packable. If None, uses the content checksum.
             
         Returns:
-            The path where the Packable was saved
+            The key where the Packable was saved
             
         Example:
-            from meshly import AssetStore
+            from meshly import PackableStore
             
-            store = AssetStore("/path/to/assets")
+            store = PackableStore(assets_path=Path("/path/to/assets"))
             
-            # Save with auto-generated checksum path
-            path = my_mesh.save(store)
+            # Save with auto-generated checksum key
+            key = my_mesh.save(store)
             
-            # Save with explicit path
+            # Save with explicit key
             settings.save(store, f"{checksum}/settings")
             result.save(store, f"{checksum}/result")
         """
-        import json
-        
         extracted = self.extract()
-        result_path = path or self.checksum
+        result_key = key or self.checksum
         
-        # Save all assets
+        # Save all binary assets (deduplicated by checksum)
         for asset_checksum, asset_bytes in extracted.assets.items():
-            store.save_asset(asset_bytes, asset_checksum)
+            if not store.asset_exists(asset_checksum):
+                store.save_asset(asset_bytes, asset_checksum)
         
-        # Create metadata directory
-        meta_dir = store.metadata_dir(result_path)
-        meta_dir.mkdir(parents=True, exist_ok=True)
+        # Save extracted data (data + schema) as JSON
+        store.save_extracted(result_key, extracted)
         
-        # Save data.json
-        data_path = meta_dir / store.DATA_FILE
-        data_path.write_text(
-            json.dumps(extracted.metadata.data, indent=2, sort_keys=True)
-        )
-        
-        # Save schema.json
-        if extracted.metadata.json_schema:
-            schema_path = meta_dir / store.SCHEMA_FILE
-            schema_path.write_text(
-                json.dumps(extracted.metadata.json_schema, indent=2, sort_keys=True)
-            )
-        
-        return result_path
+        return result_key
 
     @classmethod
     def load(
         cls,
-        store: "AssetStore",
-        path: str,
+        store: PackableStore,
+        key: str,
         array_type: ArrayType = "numpy",
         is_lazy: bool = False,
     ):
-        """Load a Packable from an asset store by path.
+        """Load a Packable from an asset store by key.
         
         Args:
-            store: AssetStore to load from
-            path: Relative path for the metadata
+            store: PackableStore config
+            key: Identifier for the packable
             array_type: Target array backend type ("numpy" or "jax")
             is_lazy: If True, returns a lazy proxy that defers asset loading
             
@@ -414,19 +528,18 @@ class Packable(BaseModel):
             Reconstructed Packable instance, or None if not found
             
         Example:
-            from meshly import AssetStore, Mesh
+            from meshly import PackableStore, Mesh
             
-            store = AssetStore("/path/to/assets")
+            store = PackableStore(assets_path=Path("/path/to/assets"))
             mesh = Mesh.load(store, "abc123")
             
-            # Load from specific path
+            # Load from specific key
             result = Result.load(store, f"{checksum}/result")
         """
-        data = store.load_data(path)
-        if data is None:
+        if not store.extracted_exists(key):
             return None
-        
-        return cls.reconstruct(cls, data, store.load_asset, array_type, is_lazy)
+        extracted = store.load_extracted(key)
+        return cls.reconstruct(extracted, assets=store.load_asset, array_type=array_type, is_lazy=is_lazy)
 
     def __reduce__(self):
         """Support for pickle serialization."""

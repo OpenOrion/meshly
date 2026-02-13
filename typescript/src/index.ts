@@ -5,35 +5,59 @@
  * Compatible with the Python meshly library for cross-platform mesh serialization.
  */
 
+// Export constants
+export { ExportConstants } from './constants'
+
+// Export from json-schema module
+export {
+    ArrayEncoding,
+    JsonSchema,
+    JsonSchemaProperty,
+    JsonSchemaUtils
+} from './json-schema'
+
 // Export from packable module
 export {
-    CustomDecoder,
-    CustomFieldConfig,
-    FieldSchema,
-    Packable,
+    DynamicModel,
+    DynamicModelBuilder, ExtractedPackable,
+    FieldSchema, InstantiateOptions, LazyModel,
+    LazyModelProps, Packable,
     PackableDecoder,
-    PackableMetadata,
     ReconstructSchema,
-    SerializedPackableData
+    RefObject,
+    SerializedPackableData, isArrayRef,
+    isRefObject
 } from './packable'
 
-// Export from data-handler module
+// Export schema utils directly as well
+export { SchemaUtils } from './schema-utils'
+
+// Export from common module
 export {
     AssetFetcher,
-    AssetProvider,
-    CachedAssetLoader,
-    DataHandler,
-    getAsset
-} from './data-handler'
+    AssetProvider
+} from './common'
 
 // Export from array module
-export { ArrayMetadata, ArrayType, ArrayUtils, EncodedArray } from './array'
+export {
+    ArrayRefInfo,
+    ArrayType,
+    ArrayUtils,
+    ExtractedArray,
+    TypedArray
+} from './array'
 
 // Export from mesh module
 export {
     Mesh,
-    MeshData,
-    MeshMetadata,
-    MeshSize
+    MeshData
 } from './mesh'
+
+// Export from cache module
+export {
+    AssetCache,
+    AssetCacheConfig,
+    createCachedProvider,
+    getDefaultAssetCache
+} from './cache'
 

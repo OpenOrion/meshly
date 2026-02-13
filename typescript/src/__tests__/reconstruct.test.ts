@@ -1,43 +1,37 @@
 import { MeshoptEncoder } from 'meshoptimizer'
 import { describe, expect, it } from 'vitest'
-import { ArrayMetadata } from '../array'
-import { AssetProvider, CachedAssetLoader, DataHandler } from '../data-handler'
-import { Packable, ReconstructSchema, SerializedPackableData } from '../packable'
+import { ArrayRefInfo } from '../array'
+import { AssetProvider } from '../common'
+import { Packable, ReconstructSchema } from '../packable'
 
 /**
- * Helper to encode an array using meshoptimizer and pack with metadata.
- * Matches Python's packed array format: [4 bytes metadata length][metadata json][array data]
+ * Helper data type for tests - simulates the data + assets from Python
  */
-async function packArray(
+interface TestExtractedData {
+    data: Record<string, unknown>
+    assets: Record<string, Uint8Array>
+}
+
+/**
+ * Helper to encode an array using meshoptimizer and return raw encoded bytes.
+ * The new format stores raw encoded bytes directly in assets, not packed with metadata.
+ */
+async function encodeArray(
     values: Float32Array | Uint32Array | Int32Array,
-    dtype: string
 ): Promise<Uint8Array> {
     await MeshoptEncoder.ready
 
     const itemsize = values.BYTES_PER_ELEMENT
     const count = values.length
-    const shape = [count]
 
-    // Encode with meshoptimizer
+    // Encode with meshoptimizer vertex buffer encoder
     const encoded = MeshoptEncoder.encodeVertexBuffer(
         new Uint8Array(values.buffer, values.byteOffset, values.byteLength),
         count,
         itemsize
     )
 
-    // Create metadata
-    const metadata: ArrayMetadata = { shape, dtype, itemsize }
-    const metadataJson = JSON.stringify(metadata)
-    const metadataBytes = new TextEncoder().encode(metadataJson)
-
-    // Pack: [4 bytes len][metadata][data]
-    const packed = new Uint8Array(4 + metadataBytes.length + encoded.length)
-    const view = new DataView(packed.buffer)
-    view.setUint32(0, metadataBytes.length, true) // little-endian
-    packed.set(metadataBytes, 4)
-    packed.set(encoded, 4 + metadataBytes.length)
-
-    return packed
+    return encoded
 }
 
 /**
@@ -51,20 +45,30 @@ async function sha256(data: Uint8Array): Promise<string> {
 
 /**
  * Helper to create extracted data format (simulating Python's Packable.extract output)
+ * Now uses the new $ref format with shape/dtype/itemsize metadata in the ref itself
  */
 async function createExtractedData(
     fields: Record<string, unknown>,
     arrays: Record<string, Float32Array | Uint32Array | Int32Array>
-): Promise<SerializedPackableData> {
+): Promise<TestExtractedData> {
     const data: Record<string, unknown> = { ...fields }
     const assets: Record<string, Uint8Array> = {}
 
     for (const [name, values] of Object.entries(arrays)) {
-        const dtype = values instanceof Float32Array ? 'float32' : 'uint32'
-        const packed = await packArray(values, dtype)
-        const checksum = await sha256(packed)
-        data[name] = { $ref: checksum }
-        assets[checksum] = packed
+        const dtype = values instanceof Float32Array ? 'float32' :
+            values instanceof Uint32Array ? 'uint32' : 'int32'
+        const encoded = await encodeArray(values)
+        const checksum = await sha256(encoded)
+
+        // New format: $ref includes shape, dtype, itemsize
+        const refInfo: ArrayRefInfo = {
+            $ref: checksum,
+            shape: [values.length],
+            dtype,
+            itemsize: values.BYTES_PER_ELEMENT
+        }
+        data[name] = refInfo
+        assets[checksum] = encoded
     }
 
     return { data, assets }
@@ -118,17 +122,25 @@ describe('Packable.reconstruct', () => {
 
         it('handles nested objects with refs', async () => {
             const tempArray = new Float32Array([100.0, 200.0])
-            const tempPacked = await packArray(tempArray, 'float32')
-            const tempChecksum = await sha256(tempPacked)
+            const encoded = await encodeArray(tempArray)
+            const tempChecksum = await sha256(encoded)
 
             const data = {
                 name: 'nested',
                 fields: {
-                    temperature: { $ref: tempChecksum }
+                    temperature: {
+                        $ref: tempChecksum,
+                        shape: [2],
+                        dtype: 'float32',
+                        itemsize: 4
+                    }
                 }
             }
 
-            const result = await Packable.reconstruct(data, { [tempChecksum]: tempPacked })
+            const result = await Packable.reconstruct<{
+                name: string
+                fields: { temperature: Float32Array }
+            }>(data, { [tempChecksum]: encoded })
 
             expect(result.name).toBe('nested')
             expect(result.fields.temperature).toBeInstanceOf(Float32Array)
@@ -138,22 +150,22 @@ describe('Packable.reconstruct', () => {
         it('handles arrays of objects with refs', async () => {
             const temp1 = new Float32Array([100.0])
             const temp2 = new Float32Array([200.0])
-            const packed1 = await packArray(temp1, 'float32')
-            const packed2 = await packArray(temp2, 'float32')
-            const checksum1 = await sha256(packed1)
-            const checksum2 = await sha256(packed2)
+            const encoded1 = await encodeArray(temp1)
+            const encoded2 = await encodeArray(temp2)
+            const checksum1 = await sha256(encoded1)
+            const checksum2 = await sha256(encoded2)
 
             const data = {
                 snapshots: [
-                    { time: 0.0, temperature: { $ref: checksum1 } },
-                    { time: 1.0, temperature: { $ref: checksum2 } }
+                    { time: 0.0, temperature: { $ref: checksum1, shape: [1], dtype: 'float32', itemsize: 4 } },
+                    { time: 1.0, temperature: { $ref: checksum2, shape: [1], dtype: 'float32', itemsize: 4 } }
                 ]
             }
 
             type Snapshot = { time: number; temperature: Float32Array }
             const result = await Packable.reconstruct<{ snapshots: Snapshot[] }>(data, {
-                [checksum1]: packed1,
-                [checksum2]: packed2
+                [checksum1]: encoded1,
+                [checksum2]: encoded2
             })
 
             expect(result.snapshots).toHaveLength(2)
@@ -220,7 +232,7 @@ describe('Packable.reconstruct', () => {
                 nested: { type: 'packable', decode: mockDecoder }
             }
 
-            const result = await Packable.reconstruct(data, { [checksum]: mockPackableBytes }, schema)
+            const result = await Packable.reconstruct(data, { [checksum]: mockPackableBytes }, undefined, schema)
 
             expect(result.name).toBe('with_nested')
             expect(result.nested).toEqual({ type: 'mock', value: 42 })
@@ -248,10 +260,12 @@ describe('Packable.reconstruct', () => {
                 }
             }
 
-            const result = await Packable.reconstruct(data, {
+            const result = await Packable.reconstruct<{
+                items: { id: number }[]
+            }>(data, {
                 [checksum1]: item1Bytes,
                 [checksum2]: item2Bytes
-            }, schema)
+            }, undefined, schema)
 
             expect(result.items).toHaveLength(2)
             expect(result.items[0]).toEqual({ id: 1 })
@@ -259,12 +273,19 @@ describe('Packable.reconstruct', () => {
         })
     })
 
-    describe('_decodePackedArray', () => {
-        it('decodes packed array format correctly', async () => {
+    describe('ArrayUtils.reconstruct', () => {
+        it('decodes array from ref info correctly', async () => {
             const original = new Float32Array([1.0, 2.0, 3.0, 4.0])
-            const packed = await packArray(original, 'float32')
+            const encoded = await encodeArray(original)
+            const refInfo: ArrayRefInfo = {
+                $ref: 'test-checksum',
+                shape: [4],
+                dtype: 'float32',
+                itemsize: 4
+            }
 
-            const decoded = Packable._decodePackedArray(packed)
+            const { ArrayUtils } = await import('../array')
+            const decoded = ArrayUtils.reconstruct({ data: encoded, info: refInfo })
 
             expect(decoded).toBeInstanceOf(Float32Array)
             expect(Array.from(decoded as Float32Array)).toEqual([1.0, 2.0, 3.0, 4.0])
@@ -272,51 +293,80 @@ describe('Packable.reconstruct', () => {
 
         it('handles uint32 arrays', async () => {
             const original = new Uint32Array([10, 20, 30])
-            const packed = await packArray(original, 'uint32')
+            const encoded = await encodeArray(original)
+            const refInfo: ArrayRefInfo = {
+                $ref: 'test-checksum',
+                shape: [3],
+                dtype: 'uint32',
+                itemsize: 4
+            }
 
-            const decoded = Packable._decodePackedArray(packed)
+            const { ArrayUtils } = await import('../array')
+            const decoded = ArrayUtils.reconstruct({ data: encoded, info: refInfo })
 
             expect(decoded).toBeInstanceOf(Uint32Array)
             expect(Array.from(decoded as Uint32Array)).toEqual([10, 20, 30])
         })
     })
-})
 
-describe('CachedAssetLoader', () => {
-    it('caches fetched assets', async () => {
-        const extracted = await createExtractedData({}, { values: new Float32Array([1.0, 2.0]) })
-        const checksum = Object.keys(extracted.assets)[0]
+    describe('with isLazy parameter', () => {
+        it('returns LazyModel when isLazy=true', async () => {
+            const extracted = await createExtractedData(
+                { name: 'LazyTest', value: 123 },
+                { vertices: new Float32Array([1.0, 2.0, 3.0]) }
+            )
 
-        let fetchCount = 0
-        const fetcher = async (c: string) => {
-            fetchCount++
-            return extracted.assets[c]
-        }
+            const result = await Packable.reconstruct(
+                extracted.data,
+                extracted.assets,
+                undefined, // schema
+                undefined, // fieldSchemas
+                true // isLazy=true
+            )
 
-        // Create a simple in-memory cache
-        const cache: Record<string, Uint8Array> = {}
-        const mockHandler: DataHandler = {
-            async readBinary(path: string) {
-                return cache[path]
-            },
-            async writeBinary(path: string, content: Uint8Array | ArrayBuffer) {
-                cache[path] = content instanceof Uint8Array ? content : new Uint8Array(content)
-            },
-            async exists(path: string) {
-                return path in cache
-            }
-        }
+            // Should be a LazyModel proxy
+            expect(result).toBeDefined()
+            expect(typeof result).toBe('object')
 
-        const loader = new CachedAssetLoader(fetcher, mockHandler)
+            // Should have LazyModel special properties
+            expect('$data' in result).toBe(true)
+            expect('$schema' in result).toBe(true)
 
-        // First fetch - should call fetcher
-        const result1 = await loader.getAsset(checksum)
-        expect(fetchCount).toBe(1)
-        expect(result1).toBeDefined()
+            // Use $get to access fields - all fields return promises in LazyModel
+            const lazyResult = result as { $get: (key: string) => Promise<unknown> }
 
-        // Second fetch - should use cache
-        const result2 = await loader.getAsset(checksum)
-        expect(fetchCount).toBe(1) // Still 1, cached
-        expect(result2).toBeDefined()
+            // Plain fields are lazily resolved
+            expect(await lazyResult.$get('name')).toBe('LazyTest')
+            expect(await lazyResult.$get('value')).toBe(123)
+
+            // Array fields are lazily loaded
+            const vertices = await lazyResult.$get('vertices')
+            expect(vertices).toBeInstanceOf(Float32Array)
+            expect(Array.from(vertices as Float32Array)).toEqual([1.0, 2.0, 3.0])
+        })
+
+        it('returns eager result when isLazy=false (default)', async () => {
+            const extracted = await createExtractedData(
+                { name: 'EagerTest' },
+                { data: new Float32Array([4.0, 5.0, 6.0]) }
+            )
+
+            const result = await Packable.reconstruct(
+                extracted.data,
+                extracted.assets,
+                undefined, // schema
+                undefined, // fieldSchemas
+                false // isLazy=false (default)
+            )
+
+            // Should be plain object, not LazyModel
+            expect(result.name).toBe('EagerTest')
+            expect(result.data).toBeInstanceOf(Float32Array)
+            expect(Array.from(result.data as Float32Array)).toEqual([4.0, 5.0, 6.0])
+
+            // Should NOT have LazyModel special properties
+            expect('$data' in result).toBe(false)
+            expect('$schema' in result).toBe(false)
+        })
     })
 })

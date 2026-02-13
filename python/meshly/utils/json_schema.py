@@ -72,6 +72,13 @@ class JsonSchemaProperty(BaseModel):
     # Const
     const: Any = None
     
+    # Extension: base class hint for reconstruction
+    x_base: Union[str, None] = Field(default=None, alias="x-base")
+    """Base class type hint: 'packable', 'mesh', or 'basemodel'."""
+    
+    x_module: Union[str, None] = Field(default=None, alias="x-module")
+    """Fully qualified class module path for reconstruction."""
+    
     model_config = {"extra": "allow", "populate_by_name": True}
     
     def is_array_type(self) -> bool:
@@ -142,6 +149,12 @@ class JsonSchema(BaseModel):
     
     additionalProperties: Union[bool, JsonSchemaProperty, None] = None
     """Whether additional properties are allowed."""
+    
+    x_base: Union[str, None] = Field(default=None, alias="x-base")
+    """Base class type hint: 'packable', 'mesh', or 'basemodel'."""
+    
+    x_module: Union[str, None] = Field(default=None, alias="x-module")
+    """Fully qualified class module path for reconstruction."""
     
     model_config = {"extra": "allow", "populate_by_name": True}
     

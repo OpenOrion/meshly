@@ -7,12 +7,8 @@ class ExportConstants:
     EXPORT_TIME = (2020, 1, 1, 0, 0, 0)
     """Fixed date_time for deterministic zip output (2020-01-01 00:00:00)"""
 
-
-    DATA_FILE = "metadata/data.json"
-    """Instance data with $ref references to assets."""
-
-    SCHEMA_FILE = "metadata/schema.json"
-    """Pydantic JSON Schema with encoding info in json_schema_extra."""
+    EXTRACTED_FILE = "extracted.json"
+    """ExtractedPackable with data and json_schema."""
 
     ASSETS_DIR = "assets"
     """Directory containing binary assets."""

@@ -42,14 +42,14 @@ describe('Mesh Markers', () => {
         indices,
         indexSizes: new Uint32Array([3, 3]),
         cellTypes: new Uint32Array([5, 5]), // VTK_TRIANGLE
-        markerIndices: {
+        markers: {
           "first_triangle": new Uint32Array([0, 1, 2])
         },
-        markerOffsets: {
-          "first_triangle": new Uint32Array([0])
+        markerSizes: {
+          "first_triangle": new Uint32Array([3])
         },
-        markerTypes: {
-          "first_triangle": new Uint8Array([5]) // VTK_TRIANGLE
+        markerCellTypes: {
+          "first_triangle": new Uint32Array([5]) // VTK_TRIANGLE
         },
         dim: 2
       })
@@ -83,14 +83,14 @@ describe('Mesh Markers', () => {
         indices: new Uint32Array([0, 1, 1, 2, 2, 3, 3, 0]),  // 4 edges
         indexSizes: new Uint32Array([2, 2, 2, 2]),
         cellTypes: new Uint32Array([3, 3, 3, 3]), // VTK_LINE
-        markerIndices: {
+        markers: {
           "boundary": new Uint32Array([0, 1, 1, 2, 2, 3, 3, 0])
         },
-        markerOffsets: {
-          "boundary": new Uint32Array([0, 2, 4, 6])
+        markerSizes: {
+          "boundary": new Uint32Array([2, 2, 2, 2])
         },
-        markerTypes: {
-          "boundary": new Uint8Array([3, 3, 3, 3]) // VTK_LINE
+        markerCellTypes: {
+          "boundary": new Uint32Array([3, 3, 3, 3]) // VTK_LINE
         },
         dim: 2
       })
@@ -114,14 +114,14 @@ describe('Mesh Markers', () => {
       const mesh = new Mesh({
         vertices: baseMesh.vertices,
         indices: baseMesh.indices,
-        markerIndices: {
+        markers: {
           "boundary": new Uint32Array([0, 1])
         },
-        markerOffsets: {
-          "boundary": new Uint32Array([0])
+        markerSizes: {
+          "boundary": new Uint32Array([2])
         },
-        markerTypes: {
-          "boundary": new Uint8Array([3])
+        markerCellTypes: {
+          "boundary": new Uint32Array([3])
         }
       })
 
@@ -134,14 +134,14 @@ describe('Mesh Markers', () => {
       const mesh = new Mesh({
         vertices: baseMesh.vertices,
         indices: baseMesh.indices,
-        markerIndices: {
+        markers: {
           "incomplete": new Uint32Array([0, 1, 2])
         }
-        // Missing markerOffsets and markerTypes
+        // Missing markerSizes and markerCellTypes
       })
 
       expect(() => mesh.extractByMarker("incomplete")).toThrow(
-        "Marker 'incomplete' is missing offset or type information"
+        "Marker 'incomplete' is missing sizes or cell type information"
       )
     })
 
@@ -157,14 +157,14 @@ describe('Mesh Markers', () => {
 
       const mesh = new Mesh({
         vertices,
-        markerIndices: {
+        markers: {
           "subset": new Uint32Array([1, 3, 1, 4]) // Uses vertices 1, 3, 4
         },
-        markerOffsets: {
-          "subset": new Uint32Array([0, 2])
+        markerSizes: {
+          "subset": new Uint32Array([2, 2])
         },
-        markerTypes: {
-          "subset": new Uint8Array([3, 3]) // Two lines
+        markerCellTypes: {
+          "subset": new Uint32Array([3, 3]) // Two lines
         },
         dim: 3
       })
@@ -196,14 +196,14 @@ describe('Mesh Markers', () => {
 
       const mesh = new Mesh({
         vertices,
-        markerIndices: {
+        markers: {
           "triangle": new Uint32Array([0, 1, 2])
         },
-        markerOffsets: {
-          "triangle": new Uint32Array([0])
+        markerSizes: {
+          "triangle": new Uint32Array([3])
         },
-        markerTypes: {
-          "triangle": new Uint8Array([5]) // VTK_TRIANGLE
+        markerCellTypes: {
+          "triangle": new Uint32Array([5]) // VTK_TRIANGLE
         },
         dim: 2
       })

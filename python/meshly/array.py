@@ -86,9 +86,45 @@ class _ArrayAnnotation:
     
     def __hash__(self):
         return hash(self.encoding)
-    
+
     def __eq__(self, other):
         return isinstance(other, _ArrayAnnotation) and self.encoding == other.encoding
+
+
+class _ListAnnotation:
+    """Pydantic annotation marker for numpy arrays serialized as inline JSON lists.
+
+    Same validation as _ArrayAnnotation (accepts numpy, JAX, list/tuple → np.ndarray),
+    but serializes as .tolist() instead of binary $ref assets.
+    """
+
+    def __get_pydantic_core_schema__(
+        self, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        return core_schema.no_info_plain_validator_function(self._validate)
+
+    def _validate(self, v: Any) -> np.ndarray:
+        if isinstance(v, np.ndarray):
+            return v
+        if isinstance(v, (list, tuple)):
+            return np.array(v)
+        if HAS_JAX and hasattr(v, '__jax_array__'):
+            return v
+        type_module = type(v).__module__
+        if type_module.startswith('jax') or type_module.startswith('jaxlib'):
+            return v
+        raise ValueError(f"Expected numpy/JAX array or list/tuple, got {type(v)}")
+
+    def __get_pydantic_json_schema__(
+        self, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        return {"type": "list"}
+
+    def __hash__(self):
+        return hash("list")
+
+    def __eq__(self, other):
+        return isinstance(other, _ListAnnotation)
 
 
 # Public type aliases for use in Pydantic models
@@ -100,6 +136,9 @@ VertexBuffer = Annotated[np.ndarray, _ArrayAnnotation("vertex_buffer")]
 
 IndexSequence = Annotated[np.ndarray, _ArrayAnnotation("index_sequence")]
 """Optimized for mesh indices (1D array)."""
+
+List = Annotated[np.ndarray, _ListAnnotation()]
+"""Array serialized as inline JSON list (no binary $ref)."""
 
 
 # =============================================================================
@@ -205,6 +244,26 @@ class ArrayUtils:
                     return arg.encoding
         
         return "array"
+
+    @staticmethod
+    def is_list_annotation(annotation: Any) -> bool:
+        """Check if a type annotation contains _ListAnnotation."""
+        if annotation is None:
+            return False
+        # Handle Optional/Union - unwrap to find the inner type
+        origin = get_origin(annotation)
+        if origin is Union or isinstance(annotation, types.UnionType):
+            for arg in get_args(annotation):
+                if arg is not type(None):
+                    if ArrayUtils.is_list_annotation(arg):
+                        return True
+            return False
+        # Handle Annotated types
+        if get_origin(annotation) is Annotated:
+            for arg in get_args(annotation):
+                if isinstance(arg, _ListAnnotation):
+                    return True
+        return False
 
     # -------------------------------------------------------------------------
     # Nested Structure Helpers

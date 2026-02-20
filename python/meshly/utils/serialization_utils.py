@@ -13,6 +13,8 @@ import typing
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
+import numpy as np
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from meshly.array import ArrayUtils, ArrayEncoding
@@ -210,10 +212,13 @@ class SerializationUtils:
                 continue
             
             if ArrayUtils.is_array(field_value):
-                encoding = ArrayUtils.get_array_encoding(hints.get(name))
-                result = SerializationUtils._extract_array_to_ref(field_value, encoding)
-                data[name] = result.value
-                assets.update(result.assets)
+                if ArrayUtils.is_list_annotation(hints.get(name)):
+                    data[name] = np.asarray(field_value).tolist()
+                else:
+                    encoding = ArrayUtils.get_array_encoding(hints.get(name))
+                    result = SerializationUtils._extract_array_to_ref(field_value, encoding)
+                    data[name] = result.value
+                    assets.update(result.assets)
             else:
                 extracted = SerializationUtils.extract_value(field_value)
                 data[name] = extracted.value

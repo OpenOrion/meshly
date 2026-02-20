@@ -8,6 +8,8 @@ import types
 import typing
 from typing import Annotated, Union, get_args, get_origin
 
+import numpy as np
+
 from pydantic import BaseModel
 
 from meshly.array import ArrayRefInfo, ArrayType, ArrayUtils, ExtractedArray
@@ -150,6 +152,10 @@ class SchemaUtils:
             # Untyped dict
             return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
 
+        # List annotation → reconstruct numpy array from inline JSON list
+        if isinstance(value, list) and ArrayUtils.is_list_annotation(expected_type):
+            return ArrayUtils.convert_array(np.array(value), array_type)
+
         # List/tuple
         if isinstance(value, (list, tuple)):
             origin = get_origin(expected_type)
@@ -229,6 +235,10 @@ class SchemaUtils:
                     for k, v in value.items() if not k.startswith("$")
                 }
             return value
+
+        # List annotation → reconstruct numpy array from inline JSON list
+        if isinstance(value, list) and prop and prop.type == "list":
+            return ArrayUtils.convert_array(np.array(value), array_type)
 
         # List
         if isinstance(value, list):

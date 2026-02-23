@@ -1,12 +1,11 @@
 {
   "name": "meshly",
   "version": "3.1.0-alpha",
-  "type": "commonjs",
   "description": "TypeScript library to decode Python meshoptimizer zip files into THREE.js geometries",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "node scripts/build.js",
+    "build": "node scripts/build.cjs",
     "test": "vitest run --coverage",
     "prepublishOnly": "npm run build"
   },

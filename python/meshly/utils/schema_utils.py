@@ -25,6 +25,9 @@ JsonValue = Union[str, int, float, bool, None, dict, list]
 class SchemaUtils:
     """Utilities for resolving $ref values during deserialization."""
 
+    # Cache for get_type_hints results (expensive to compute repeatedly)
+    _type_hints_cache: dict[type, dict[str, type]] = {}
+
     # -------------------------------------------------------------------------
     # Type helpers
     # -------------------------------------------------------------------------
@@ -68,7 +71,10 @@ class SchemaUtils:
         array_type: ArrayType = "numpy",
     ) -> dict[str, object]:
         """Resolve $ref values using Pydantic model type hints."""
-        hints = typing.get_type_hints(model_class, include_extras=True)
+        # Cache type hints (get_type_hints is expensive)
+        if model_class not in SchemaUtils._type_hints_cache:
+            SchemaUtils._type_hints_cache[model_class] = typing.get_type_hints(model_class, include_extras=True)
+        hints = SchemaUtils._type_hints_cache[model_class]
         result: dict[str, object] = {}
 
         for field_name, field_info in model_class.model_fields.items():
@@ -102,6 +108,53 @@ class SchemaUtils:
     # -------------------------------------------------------------------------
 
     @staticmethod
+    def _resolve_ref(
+        value: dict,
+        assets: AssetProvider,
+        array_type: ArrayType,
+        encoding_hint: str | None = None,
+        packable_class: type | None = None,
+    ) -> object:
+        """Resolve a $ref dict using $type discriminator.
+
+        Args:
+            value: Dict with $ref and $type fields
+            assets: Asset provider
+            array_type: Target array type
+            encoding_hint: Optional encoding hint for arrays (from type annotation)
+            packable_class: Optional specific Packable subclass to decode to
+        """
+        from meshly.packable import Packable
+
+        ref_type = value.get("$type")
+        checksum = value["$ref"]
+        asset_bytes = SerializationUtils.get_asset(assets, checksum)
+
+        if ref_type == "array":
+            metadata = {k: v for k, v in value.items() if not k.startswith("$")}
+            encoding = encoding_hint or "array"
+            return ArrayUtils.reconstruct(
+                ExtractedArray(
+                    data=asset_bytes,
+                    info=ArrayRefInfo(**metadata),
+                    encoding=encoding,
+                ),
+                array_type,
+            )
+
+        if ref_type == "resource":
+            data = gzip.decompress(asset_bytes)
+            return Resource(data=data, ext=value.get("ext", ""), name=value.get("name", ""))
+
+        if ref_type == "packable":
+            # Use typed decode if a specific class is provided
+            if packable_class is not None and issubclass(packable_class, Packable):
+                return packable_class.decode(asset_bytes, array_type)
+            return Packable.decode(asset_bytes, array_type)
+
+        raise ValueError(f"Unknown $type: {ref_type}")
+
+    @staticmethod
     def _resolve_with_type(
         value: JsonValue,
         expected_type: type,
@@ -116,9 +169,18 @@ class SchemaUtils:
 
         expected_type = SchemaUtils._unwrap_optional(expected_type)
 
-        # $ref in data - decode array, packable, or resource
+        # $ref in data - use $type discriminator
         if isinstance(value, dict) and "$ref" in value:
-            # ResourceRef - decompress and create
+            # If $type is present, use discriminated dispatch
+            if "$type" in value:
+                encoding_hint = ArrayUtils.get_array_encoding(expected_type) if value["$type"] == "array" else None
+                # Pass packable_class if expected_type is a Packable subclass
+                packable_class = expected_type if (
+                    isinstance(expected_type, type) and issubclass(expected_type, Packable)
+                ) else None
+                return SchemaUtils._resolve_ref(value, assets, array_type, encoding_hint, packable_class)
+
+            # Legacy fallback for typed fields (Resource or Packable subclass)
             if SchemaUtils._is_resource_ref(expected_type):
                 asset_bytes = SerializationUtils.get_asset(assets, value["$ref"])
                 data = gzip.decompress(asset_bytes)
@@ -127,16 +189,8 @@ class SchemaUtils:
                 return expected_type.decode(
                     SerializationUtils.get_asset(assets, value["$ref"]), array_type
                 )
-            # Array - get encoding from type annotation
-            encoding = ArrayUtils.get_array_encoding(expected_type)
-            return ArrayUtils.reconstruct(
-                ExtractedArray(
-                    data=SerializationUtils.get_asset(assets, value["$ref"]),
-                    info=ArrayRefInfo(**{k: v for k, v in value.items() if k != "$ref"}),
-                    encoding=encoding,
-                ),
-                array_type,
-            )
+
+            raise ValueError(f"$ref without $type and no type hint: {value}")
 
         # Nested dict
         if isinstance(value, dict):
@@ -148,6 +202,10 @@ class SchemaUtils:
             # BaseModel
             if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
                 resolved = SchemaUtils.resolve_from_class(expected_type, value, assets, array_type)
+                # Pass through extra fields for models with extra="allow"
+                for key in value:
+                    if key not in resolved:
+                        resolved[key] = value[key]
                 return expected_type(**resolved)
             # Untyped dict
             return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
@@ -178,8 +236,6 @@ class SchemaUtils:
         array_type: ArrayType = "numpy",
     ) -> object:
         """Resolve a value using JSON schema property."""
-        from meshly.packable import Packable
-
         if value is None:
             return None
 
@@ -189,32 +245,13 @@ class SchemaUtils:
         if prop and prop.anyOf:
             prop = prop.get_inner_type() or prop
 
-        # $ref in data
+        # $ref in data - use $type discriminator
         if isinstance(value, dict) and "$ref" in value:
-            checksum = value["$ref"]
-            metadata = {k: v for k, v in value.items() if k != "$ref"}
-            asset_bytes = SerializationUtils.get_asset(assets, checksum)
+            if "$type" not in value:
+                raise ValueError(f"$ref without $type: {value}")
 
-            # Resource - assets from _extract_resource are always gzip compressed
-            is_resource = (prop and prop.is_resource_type()) or "ext" in metadata
-            if is_resource:
-                data = gzip.decompress(asset_bytes)
-                return Resource(data=data, ext=metadata.get("ext", ""), name=metadata.get("name", ""))
-
-            # Array
-            if "dtype" in metadata and "shape" in metadata:
-                encoding = prop.type if prop and prop.is_array_type() else "array"
-                return ArrayUtils.reconstruct(
-                    ExtractedArray(
-                        data=asset_bytes, 
-                        info=ArrayRefInfo(**{k: v for k, v in value.items() if k != "$ref"}),
-                        encoding=encoding,
-                    ), 
-                    array_type,
-                )
-
-            # Packable
-            return Packable.decode(asset_bytes, array_type)
+            encoding_hint = prop.type if prop and prop.is_array_type() else None
+            return SchemaUtils._resolve_ref(value, assets, array_type, encoding_hint)
 
         # No schema info - fallback
         if prop is None:

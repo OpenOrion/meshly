@@ -147,17 +147,20 @@ List = Annotated[np.ndarray, _ListAnnotation()]
 
 class ArrayRefInfo(RefInfo):
     """Metadata for encoded arrays (stored in zip files and $ref in data.json).
-    
-    Example $ref: {"$ref": "abc123", "dtype": "float32", "shape": [100, 3]}
+
+    Example $ref: {"$ref": "abc123", "$type": "array", "dtype": "float32", "shape": [100, 3]}
     """
+    # Type discriminator
+    type: Literal["array"] = Field("array", alias="$type")
+
     # $ref (for data.json serialization)
     ref: Optional[str] = Field(None, alias="$ref")
-    
+
     # Core fields (always present)
     shape: list[int]
     dtype: str
     itemsize: int
-    
+
     # Encoding fields
     pad_bytes: Optional[int] = None
 

@@ -365,11 +365,11 @@ class TestExtractReconstruct:
         """Test that reconstruct raises KeyError when asset is missing."""
         from meshly.packable import ExtractedPackable
         extracted = ExtractedPackable(
-            data={"name": "test", "values": {"$ref": "nonexistent_checksum"}},
+            data={"name": "test", "values": {"$ref": "nonexistent_checksum", "$type": "array", "dtype": "float32", "shape": [2], "itemsize": 4}},
             json_schema=SimpleData.model_json_schema(),
             assets={}
         )
-        
+
         with pytest.raises(KeyError, match="Missing asset"):
             SimpleData.reconstruct(extracted)
 
@@ -414,11 +414,11 @@ class TestExtractReconstruct:
         """Test that callable asset provider raises KeyError on field access."""
         from meshly.packable import ExtractedPackable
         extracted = ExtractedPackable(
-            data={"name": "test", "values": {"$ref": "nonexistent"}},
+            data={"name": "test", "values": {"$ref": "nonexistent", "$type": "array", "dtype": "float32", "shape": [2], "itemsize": 4}},
             json_schema=SimpleData.model_json_schema(),
             assets={}
         )
-        
+
         def failing_loader(checksum: str) -> bytes:
             raise KeyError(f"Missing asset with checksum '{checksum}'")
         

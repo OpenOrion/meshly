@@ -273,3 +273,11 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 typescript/scripts/test-mesh.zip
+python/meshly/array.py
+python/meshly/common.py
+python/meshly/packable.py
+python/meshly/resource.py
+python/meshly/utils/schema_utils.py
+python/meshly/utils/serialization_utils.py
+python/tests/test_packable.py
+python/tests/test_resource.py

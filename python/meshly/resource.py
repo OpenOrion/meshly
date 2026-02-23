@@ -4,7 +4,7 @@ ResourceRef allows bytes data to be serialized by checksum when extracted/recons
 """
 
 from pathlib import Path
-from typing import Union
+from typing import Literal, Union
 
 from pydantic import ConfigDict, Field, computed_field
 
@@ -16,7 +16,7 @@ class Resource(RefInfo):
     """Reference to binary resource data that can be serialized by checksum.
 
     When used in a Pydantic model that gets extracted via Packable.extract():
-    - On extract: checksum computed, stored as {"$ref": checksum, "ext": extension}
+    - On extract: checksum computed, stored as {"$ref": checksum, "$type": "resource", "ext": extension}
     - On reconstruct: loaded from assets by checksum
 
     Example:
@@ -33,7 +33,7 @@ class Resource(RefInfo):
 
         # Serialize for transmission
         extracted = Packable.extract(case)
-        # extracted.data = {"geometry": {"$ref": "a1b2c3d4", "ext": ".stl"}}
+        # extracted.data = {"geometry": {"$ref": "a1b2c3d4", "$type": "resource", "ext": ".stl"}}
         # extracted.assets = {"a1b2c3d4": <stl file bytes>}
 
         # Reconstruct from serialized data
@@ -41,6 +41,9 @@ class Resource(RefInfo):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Type discriminator
+    type: Literal["resource"] = Field("resource", alias="$type")
 
     data: bytes = Field(exclude=True)
     ext: str = ""

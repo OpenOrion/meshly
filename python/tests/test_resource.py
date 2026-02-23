@@ -86,7 +86,7 @@ def test_packable_reconstruct_with_resource():
         geometry: Resource
 
     # Simulate serialized data
-    data = {"name": "test", "geometry": {"$ref": "abc123", "ext": ".stl"}}
+    data = {"name": "test", "geometry": {"$ref": "abc123", "$type": "resource", "ext": ".stl"}}
     assets = {"abc123": gzip.compress(b"STL geometry data")}
     extracted = ExtractedPackable(data=data, assets=assets)
 
@@ -157,7 +157,7 @@ def test_lazy_model_with_resource_ref():
         geometry: Resource
 
     # Simulate serialized data with ResourceRef
-    data = {"name": "test_case", "geometry": {"$ref": "abc123", "ext": ".stl"}}
+    data = {"name": "test_case", "geometry": {"$ref": "abc123", "$type": "resource", "ext": ".stl"}}
     assets = {"abc123": gzip.compress(b"STL geometry data")}
     extracted = ExtractedPackable(data=data, assets=assets)
 

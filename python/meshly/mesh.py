@@ -62,11 +62,26 @@ class Mesh(Packable):
     def __get_pydantic_json_schema__(
         cls, core_schema_obj: pydantic_core_schema.CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        """Inject x-base hint into JSON schema indicating this is a Mesh."""
-        json_schema = handler(core_schema_obj)
-        json_schema = handler.resolve_ref_schema(json_schema)
-        json_schema['x-base'] = 'Mesh'
-        return json_schema
+        """Return identifying schema metadata for Mesh subclasses.
+
+        Avoids calling handler() because numpy array fields (VertexBuffer,
+        IndexSequence) use no_info_plain_validator_function schemas that
+        Pydantic cannot map to JSON schema, raising PydanticInvalidForJsonSchema.
+
+        The properties block is required so the TypeScript client knows to use
+        meshoptimizer decoding for vertices (vertex_buffer) and indices
+        (index_sequence) rather than defaulting to raw array decoding.
+        All other array fields not listed here default to "array" encoding.
+        """
+        return {
+            "type": "object",
+            "x-base": "Mesh",
+            "x-module": f"{cls.__module__}.{cls.__qualname__}",
+            "properties": {
+                "vertices": {"type": "vertex_buffer"},
+                "indices": {"anyOf": [{"type": "index_sequence"}, {"type": "null"}]},
+            },
+        }
 
     # ============================================================
     # Field definitions with encoding specified via Annotated types

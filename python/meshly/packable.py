@@ -22,7 +22,7 @@ import zipfile
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Optional, TypeVar, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic.json_schema import JsonSchemaValue, GetJsonSchemaHandler
@@ -45,6 +45,7 @@ TModel = TypeVar("TModel", bound=BaseModel)
 
 class PackableRefInfo(RefInfo):
     """Ref model for self-contained packable $ref (encoded as zip)."""
+    type: Literal["packable"] = Field("packable", alias="$type")
     ref: str = Field(..., alias="$ref")
 
 

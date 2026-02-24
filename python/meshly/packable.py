@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 TModel = TypeVar("TModel", bound=BaseModel)
 
 
+def _reconstruct_packable(cls, data: dict):
+    """Helper function for pickle reconstruction of Packable objects."""
+    return cls.model_construct(**data)
+
+
 class PackableRefInfo(RefInfo):
     """Ref model for self-contained packable $ref (encoded as zip)."""
     ref: str = Field(..., alias="$ref")
@@ -542,9 +547,11 @@ class Packable(BaseModel):
         return cls.reconstruct(extracted, assets=store.load_asset, array_type=array_type, is_lazy=is_lazy)
 
     def __reduce__(self):
-        """Support for pickle serialization."""
-        encoded = self.encode()
-        return (self.__class__.load_from_zip, (BytesIO(encoded),))
+        """Support for pickle serialization using standard dict approach."""
+        return (
+            _reconstruct_packable,
+            (self.__class__, dict(self)),
+        )
 
     def convert_to(self, array_type: ArrayType):
         """Create a new Packable with all arrays converted to the specified type."""

@@ -195,15 +195,15 @@ class SchemaUtils:
             metadata = {k: v for k, v in value.items() if k != "$ref"}
             asset_bytes = SerializationUtils.get_asset(assets, checksum)
 
-            # Resource - assets from _extract_resource are always gzip compressed
-            is_resource = (prop and prop.is_resource_type()) or "ext" in metadata
-            if is_resource:
+            # Use schema to determine type
+            if prop and prop.is_resource_type():
+                # Resource - assets from _extract_resource are always gzip compressed
                 data = gzip.decompress(asset_bytes)
                 return Resource(data=data, ext=metadata.get("ext", ""), name=metadata.get("name", ""))
-
-            # Array
-            if "dtype" in metadata and "shape" in metadata:
-                encoding = prop.type if prop and prop.is_array_type() else "array"
+            
+            if prop and prop.is_array_type():
+                # Array
+                encoding = prop.type
                 return ArrayUtils.reconstruct(
                     ExtractedArray(
                         data=asset_bytes, 
@@ -212,8 +212,8 @@ class SchemaUtils:
                     ), 
                     array_type,
                 )
-
-            # Packable
+            
+            # Packable (default)
             return Packable.decode(asset_bytes, array_type)
 
         # No schema info - fallback

@@ -174,13 +174,8 @@ class SerializationUtils:
             ref_dict = PackableRefInfo(ref=checksum).model_dump(by_alias=True)
             return ExtractedResult(value=ref_dict, assets={checksum: encoded})
         
-        # Expanded: recursively extract each field
-        dumped = value.model_dump(mode='python')
-        items = [(k, SerializationUtils.extract_value(v)) for k, v in dumped.items()]
-        return ExtractedResult(
-            value={k: e.value for k, e in items},
-            assets={k: v for _, e in items for k, v in e.assets.items()},
-        )
+        # Expanded: use extract_basemodel to preserve type annotations (e.g., List)
+        return SerializationUtils.extract_basemodel(value)
 
     @staticmethod
     def _extract_resource(value: "Resource") -> ExtractedResult:

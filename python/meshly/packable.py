@@ -17,13 +17,14 @@ Serialization options:
 - save() / load(): File-based asset store with deduplication
 """
 
-import json
+import time
 import zipfile
-from functools import cached_property
+from functools import cached_property, lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional, TypeVar, Union
 
+import orjson
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic.json_schema import JsonSchemaValue, GetJsonSchemaHandler
 from pydantic_core import core_schema as pydantic_core_schema
@@ -175,7 +176,7 @@ class PackableStore(BaseModel):
         """
         extracted_json_path = self.get_extracted_path(key)
         extracted_json_path.parent.mkdir(parents=True, exist_ok=True)
-        extracted_json_path.write_text(json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
+        extracted_json_path.write_bytes(orjson.dumps(extracted.model_dump()))
     
     def load_extracted(self, key: str) -> "ExtractedPackable":
         """Load extracted packable from storage.
@@ -192,7 +193,7 @@ class PackableStore(BaseModel):
         extracted_json_path = self.get_extracted_path(key)
         if not extracted_json_path.exists():
             raise FileNotFoundError(f"Extracted packable not found: {key}")
-        extracted_data = json.loads(extracted_json_path.read_text())
+        extracted_data = orjson.loads(extracted_json_path.read_bytes())
         return ExtractedPackable(
             data=extracted_data["data"],
             json_schema=extracted_data.get("json_schema"),
@@ -265,6 +266,16 @@ class Packable(BaseModel):
         json_schema['x-module'] = f"{cls.__module__}.{cls.__qualname__}"
         return json_schema
 
+    @classmethod
+    @lru_cache(maxsize=None)
+    def cached_json_schema(cls) -> dict[str, Any]:
+        """Get cached JSON schema for this class.
+        
+        This caches model_json_schema() at the class level to avoid
+        regenerating it for every instance during extraction.
+        """
+        return cls.model_json_schema()
+
     def extract(self) -> "ExtractedPackable":
         """Extract arrays and Packables from this model into serializable data and assets.
         
@@ -285,39 +296,47 @@ class Packable(BaseModel):
 
         self._cached_extract = ExtractedPackable(
             data=extracted_result.value,
-            json_schema=type(self).model_json_schema(),
+            json_schema=type(self).cached_json_schema(),
             assets=extracted_result.assets,
         )
         return self._cached_extract
 
-    def encode(self) -> bytes:
-        """Encode this Packable to bytes (zip format).
-        
-        Calls extract() internally to serialize all fields and assets.
-            
-        Returns:
-            Encoded bytes in zip format.
-        """
+    @cached_property
+    def _encoded(self) -> bytes:
+        """Cached encoded bytes (zip format)."""
         extracted = self.extract()
         
         destination = BytesIO()
         
-        with zipfile.ZipFile(destination, "w") as zf:
+        # Use ZIP_STORED for assets (already compressed by meshoptimizer)
+        # This avoids double-compression overhead
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as zf:
             # Write extracted data (data + schema) as single JSON
             info = zipfile.ZipInfo(ExportConstants.EXTRACTED_FILE, date_time=ExportConstants.EXPORT_TIME)
-            zf.writestr(info, json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
+            zf.writestr(info, orjson.dumps(extracted.model_dump()))
 
-            # Write assets by checksum
+            # Write assets by checksum (already compressed, skip compression)
             for checksum in sorted(extracted.assets.keys()):
                 info = zipfile.ZipInfo(ExportConstants.asset_path(checksum), date_time=ExportConstants.EXPORT_TIME)
                 zf.writestr(info, extracted.assets[checksum])
 
         return destination.getvalue()
 
+    def encode(self) -> bytes:
+        """Encode this Packable to bytes (zip format).
+        
+        Calls extract() internally to serialize all fields and assets.
+        Results are cached for efficiency.
+            
+        Returns:
+            Encoded bytes in zip format.
+        """
+        return self._encoded
+
     @cached_property
     def checksum(self) -> str:
         """SHA256 checksum of this Packable's encoded bytes (cached)."""
-        return ChecksumUtils.compute_bytes_checksum(self.encode())
+        return ChecksumUtils.compute_bytes_checksum(self._encoded)
 
     @classmethod
     def decode(
@@ -336,7 +355,7 @@ class Packable(BaseModel):
         """
         with zipfile.ZipFile(BytesIO(buf), "r") as zf:
             # Read extracted data (data + schema)
-            extracted_json = json.loads(zf.read(ExportConstants.EXTRACTED_FILE).decode("utf-8"))
+            extracted_json = orjson.loads(zf.read(ExportConstants.EXTRACTED_FILE))
 
             # Build assets dict from files
             assets: dict[str, bytes] = {}
@@ -500,7 +519,11 @@ class Packable(BaseModel):
             settings.save(store, f"{checksum}/settings")
             result.save(store, f"{checksum}/result")
         """
-        extracted = self.extract()
+        start_time = time.time()
+
+        extracted = self.extract()   
+        elapsed_ms = (time.time() - start_time) * 1000
+        # print(f"Extracted packable in {elapsed_ms:.1f} ms with {len(extracted.assets)} assets")
         result_key = key or self.checksum
         
         # Save all binary assets (deduplicated by checksum)

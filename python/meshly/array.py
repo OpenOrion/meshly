@@ -12,7 +12,6 @@ Encoding Types:
 - "index_sequence": Optimized for mesh indices (1D array)
 """
 
-import ctypes
 import json
 import types
 import zipfile
@@ -20,12 +19,11 @@ from io import BytesIO
 from typing import Annotated, Any, Callable, Literal, Optional, Union, get_args, get_origin
 
 import numpy as np
-from meshoptimizer._loader import lib
 from meshoptimizer import decode_vertex_buffer, decode_index_sequence
+from meshoptimizer import encode_vertex_buffer, encode_index_sequence
 from pydantic import BaseModel, Field, GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
-from meshoptimizer import encode_vertex_buffer, encode_index_sequence
 
 from meshly.common import PathLike, RefInfo
 
@@ -157,9 +155,6 @@ class ArrayRefInfo(RefInfo):
     shape: list[int]
     dtype: str
     itemsize: int
-    
-    # Encoding fields
-    pad_bytes: Optional[int] = None
 
 
 class ExtractedArray(BaseModel):
@@ -354,44 +349,18 @@ class ArrayUtils:
                 encoding=encoding,
             )
         
-        # Generic array: meshoptimizer vertex buffer encoding with padding
-        # meshoptimizer requires item_size % 4 == 0, so pad if needed
-        pad_bytes = (4 - array_np.itemsize % 4) % 4
+        # Generic array: meshoptimizer vertex buffer encoding
         flattened = array_np.reshape(-1)
         item_count = len(flattened)
-        
-        # Pad each element if needed (e.g., float16 -> 4 bytes)
-        if pad_bytes > 0:
-            padded_itemsize = array_np.itemsize + pad_bytes
-            padded = np.zeros(item_count * padded_itemsize, dtype=np.uint8)
-            for i in range(item_count):
-                src_bytes = np.frombuffer(flattened[i:i+1].tobytes(), dtype=np.uint8)
-                padded[i * padded_itemsize : i * padded_itemsize + array_np.itemsize] = src_bytes
-            flattened = padded
-            item_size = padded_itemsize
-        else:
-            item_size = flattened.itemsize
-
-        # Encode with meshoptimizer vertex buffer encoder
-        bound = lib.meshopt_encodeVertexBufferBound(item_count, item_size)
-        buffer = np.zeros(bound, dtype=np.uint8)
-        result_size = lib.meshopt_encodeVertexBuffer(
-            buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-            bound,
-            flattened.ctypes.data_as(ctypes.c_void_p),
-            item_count,
-            item_size
-        )
-        if result_size == 0:
-            raise RuntimeError("Failed to encode array")
+        item_size = flattened.itemsize
+        data = encode_vertex_buffer(flattened, item_count, item_size)
 
         return ExtractedArray(
-            data=bytes(buffer[:result_size]),
+            data=bytes(data),
             info=ArrayRefInfo(
                 shape=original_shape,
                 dtype=original_dtype,
                 itemsize=array_np.dtype.itemsize,
-                pad_bytes=pad_bytes if pad_bytes > 0 else None,
             ),
             encoding=encoding,
         )
@@ -418,12 +387,13 @@ class ArrayUtils:
         # Vertex buffer: 2D array optimized encoding
         if encoding == "vertex_buffer":
             vertex_count = metadata.shape[0]
-            vertex_size = metadata.itemsize * metadata.shape[1] if len(metadata.shape) > 1 else metadata.itemsize
-            decoded = decode_vertex_buffer(vertex_count, vertex_size, extracted.data)
-            decoded = decoded.reshape(metadata.shape)
-            if str(decoded.dtype) != metadata.dtype:
-                decoded = decoded.astype(metadata.dtype)
-            return ArrayUtils.convert_array(decoded, array_type)
+            components = metadata.shape[1] if len(metadata.shape) > 1 else 1
+            vertex_size = metadata.itemsize * components
+            original_dtype = np.dtype(metadata.dtype)
+            
+            row_dtype = np.dtype((original_dtype, components))
+            decoded = decode_vertex_buffer(vertex_count, vertex_size, extracted.data, dtype=row_dtype)
+            return ArrayUtils.convert_array(decoded.reshape(metadata.shape), array_type)
         
         # Index sequence: 1D index array encoding
         if encoding == "index_sequence":
@@ -434,48 +404,11 @@ class ArrayUtils:
                 decoded = decoded.astype(metadata.dtype)
             return ArrayUtils.convert_array(decoded, array_type)
         
-        # Generic array: meshoptimizer vertex buffer encoding with optional padding
-        buffer_array = np.frombuffer(extracted.data, dtype=np.uint8)
+        # Generic array: meshoptimizer vertex buffer encoding
         original_dtype = np.dtype(metadata.dtype)
-        pad_bytes = metadata.pad_bytes or 0
         total_items = int(np.prod(metadata.shape))
-        
-        if pad_bytes > 0:
-            padded_itemsize = original_dtype.itemsize + pad_bytes
-            destination = np.zeros(total_items * padded_itemsize, dtype=np.uint8)
-            
-            result = lib.meshopt_decodeVertexBuffer(
-                destination.ctypes.data_as(ctypes.c_void_p),
-                total_items,
-                padded_itemsize,
-                buffer_array.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-                len(buffer_array)
-            )
-            if result != 0:
-                raise RuntimeError(f"Failed to decode array: error code {result}")
-            
-            # Strip padding from each element
-            unpadded = np.zeros(total_items, dtype=original_dtype)
-            for i in range(total_items):
-                src_start = i * padded_itemsize
-                src_bytes = destination[src_start:src_start + original_dtype.itemsize]
-                unpadded[i] = np.frombuffer(src_bytes.tobytes(), dtype=original_dtype)[0]
-            decoded = unpadded.reshape(metadata.shape)
-        else:
-            # Direct decode without padding
-            destination = np.zeros(total_items, dtype=original_dtype)
-            result = lib.meshopt_decodeVertexBuffer(
-                destination.ctypes.data_as(ctypes.c_void_p),
-                total_items,
-                original_dtype.itemsize,
-                buffer_array.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
-                len(buffer_array)
-            )
-            if result != 0:
-                raise RuntimeError(f"Failed to decode array: error code {result}")
-            decoded = destination.reshape(metadata.shape)
-
-        return ArrayUtils.convert_array(decoded, array_type)
+        decoded = decode_vertex_buffer(total_items, original_dtype.itemsize, extracted.data, dtype=original_dtype)
+        return ArrayUtils.convert_array(decoded.reshape(metadata.shape), array_type)
 
 
     @staticmethod

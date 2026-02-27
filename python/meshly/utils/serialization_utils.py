@@ -10,6 +10,7 @@ import asyncio
 import gzip
 import inspect
 import typing
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
@@ -20,10 +21,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from meshly.array import ArrayUtils, ArrayEncoding
 from meshly.common import AssetProvider
 from meshly.utils.checksum_utils import ChecksumUtils
+from meshly.utils.fork_pool import ForkPool
 
 if TYPE_CHECKING:
     from meshly.packable import Packable
     from meshly.resource import Resource
+
+
+@lru_cache(maxsize=None)
+def _cached_type_hints(cls: type) -> dict[str, Any]:
+    """Cache type hints per class to avoid repeated evaluation."""
+    return typing.get_type_hints(cls, include_extras=True)
 
 
 # =============================================================================
@@ -47,8 +55,6 @@ class ExtractedResult(BaseModel):
     """The extracted/serialized value (with $ref dicts for arrays)"""
     assets: dict[str, bytes] = Field(default_factory=dict)
     """Map of checksum -> encoded bytes"""
-
-
 
 
 # =============================================================================
@@ -110,8 +116,9 @@ class SerializationUtils:
         """Extract an array and return ExtractedResult with $ref dict and asset."""
         extracted = ArrayUtils.extract(value, encoding)
         checksum = ChecksumUtils.compute_bytes_checksum(extracted.data)
-        ref_metadata = extracted.info.model_copy(update={"ref": checksum})
-        ref_dict = ref_metadata.model_dump(by_alias=True, exclude_none=True)
+        # Use model_dump for maintainability - new ArrayRefInfo fields auto-included
+        ref_dict = extracted.info.model_dump(exclude_defaults=True, exclude_none=True, by_alias=True)
+        ref_dict["$ref"] = checksum
         return ExtractedResult(value=ref_dict, assets={checksum: extracted.data})
 
     @staticmethod
@@ -132,17 +139,18 @@ class SerializationUtils:
         if isinstance(value, Resource):
             return SerializationUtils._extract_resource(value)
 
-        # Dicts: recursively extract values
+        # Dicts: recursively extract values (parallelize for Packable values)
         if isinstance(value, dict):
-            items = [SerializationUtils.extract_value(v) for v in value.values()]
+            keys = list(value.keys())
+            items = SerializationUtils._extract_list_items(list(value.values()))
             return ExtractedResult(
-                value=dict(zip(value.keys(), [e.value for e in items])),
+                value=dict(zip(keys, [e.value for e in items])),
                 assets={k: v for e in items for k, v in e.assets.items()},
             )
 
         # Lists/tuples/sets: recursively extract items
         if isinstance(value, (list, tuple, set)):
-            items = [SerializationUtils.extract_value(v) for v in value]
+            items = SerializationUtils._extract_list_items(list(value))
             result_value = [e.value for e in items]
             if isinstance(value, tuple):
                 result_value = tuple(result_value)
@@ -158,6 +166,37 @@ class SerializationUtils:
         # Primitives: pass through unchanged
         return ExtractedResult(value=value)
 
+    @staticmethod
+    def _extract_list_items(items: list) -> list[ExtractedResult]:
+        """Extract list items, parallelizing when items are Packables.
+        
+        Uses fork-based parallelism for lists of Packables (e.g., meshes)
+        which can be independently serialized. Falls back to sequential
+        for mixed types or non-Packable lists.
+        """
+        from meshly.packable import Packable
+        
+        if not items:
+            return []
+        
+        # Check if all items are Packables (common for mesh lists)
+        # Only parallelize for larger lists where overhead is worth it
+        MIN_ITEMS_FOR_PARALLEL = 50
+        all_packables = len(items) >= MIN_ITEMS_FOR_PARALLEL and all(
+            isinstance(item, Packable) for item in items
+        )
+        
+        if all_packables:
+            # Parallel extraction for Packable lists
+            return ForkPool.map(
+                SerializationUtils._extract_subpackable, 
+                items, 
+                min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
+            )
+        
+        # Sequential fallback for mixed types
+        return [SerializationUtils.extract_value(v) for v in items]
+
     # -------------------------------------------------------------------------
     # Type-Specific Extraction Helpers
     # -------------------------------------------------------------------------
@@ -169,8 +208,8 @@ class SerializationUtils:
         
         # Self-contained: encode entire packable as zip bytes
         if value.is_contained:
-            checksum = value.checksum  # Uses cached_property
-            encoded = value.encode()
+            encoded = value.encode()  # Uses cached _encoded property
+            checksum = value.checksum  # Uses cached checksum from same encoded bytes
             ref_dict = PackableRefInfo(ref=checksum).model_dump(by_alias=True)
             return ExtractedResult(value=ref_dict, assets={checksum: encoded})
         
@@ -193,15 +232,21 @@ class SerializationUtils:
             value: BaseModel instance to extract
             include_computed: If True, also extract computed fields
         """
-        hints = typing.get_type_hints(type(value), include_extras=True)
+        hints = _cached_type_hints(type(value))
         data: dict[str, JsonValue] = {}
         assets: dict[str, bytes] = {}
         
-        all_fields = list(type(value).model_fields)
+        model_fields = type(value).model_fields
+        all_fields = list(model_fields)
         if include_computed:
             all_fields += list(type(value).model_computed_fields)
         
         for name in all_fields:
+            # Respect Pydantic's exclude=True on fields
+            field_info = model_fields.get(name)
+            if field_info is not None and field_info.exclude:
+                continue
+            
             field_value = getattr(value, name, None)
             if field_value is None:
                 continue

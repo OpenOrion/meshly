@@ -29,8 +29,6 @@ export interface ArrayRefInfo {
   dtype: string
   /** Bytes per element */
   itemsize: number
-  /** Padding bytes added for meshoptimizer alignment (optional) */
-  pad_bytes?: number
 }
 
 /**
@@ -154,35 +152,7 @@ export class ArrayUtils {
       return new TypedArrayCtor(destUint8Array.buffer)
     }
 
-    // Handle generic "array" encoding with optional padding
-    const padBytes = info.pad_bytes || 0
-
-    if (padBytes > 0) {
-      // Decode with padded itemsize, then strip padding
-      const paddedItemsize = info.itemsize + padBytes
-      const destUint8Array = new Uint8Array(totalItems * paddedItemsize)
-
-      MeshoptDecoder.decodeVertexBuffer(
-        destUint8Array,
-        totalItems,
-        paddedItemsize,
-        data
-      )
-
-      // Strip padding from each element
-      const unpadded = new Uint8Array(totalItems * info.itemsize)
-      for (let i = 0; i < totalItems; i++) {
-        const srcStart = i * paddedItemsize
-        unpadded.set(
-          destUint8Array.subarray(srcStart, srcStart + info.itemsize),
-          i * info.itemsize
-        )
-      }
-
-      return new TypedArrayCtor(unpadded.buffer)
-    }
-
-    // Direct decode without padding
+    // Handle generic "array" encoding
     const destUint8Array = new Uint8Array(totalItems * info.itemsize)
 
     MeshoptDecoder.decodeVertexBuffer(

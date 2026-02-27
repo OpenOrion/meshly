@@ -500,7 +500,7 @@ class TestMeshMarkers:
     def test_marker_auto_sizes(self):
         """Test that marker_sizes is automatically calculated from marker_cell_types."""
         marker_data = np.array([0, 1, 2, 3], dtype=np.uint32)
-        marker_cell_types = np.array([VTKCellType.VTK_LINE, VTKCellType.VTK_LINE], dtype=np.uint8)
+        marker_cell_types = np.array([VTKCellType.VTK_LINE, VTKCellType.VTK_LINE], dtype=np.uint32)
 
         mesh = Mesh(
             vertices=self.vertices,
@@ -525,7 +525,7 @@ class TestMeshMarkers:
             VTKCellType.VTK_VERTEX,
             VTKCellType.VTK_LINE,
             VTKCellType.VTK_TRIANGLE
-        ], dtype=np.uint8)
+        ], dtype=np.uint32)
 
         mesh = Mesh(
             vertices=extended_vertices,
@@ -541,7 +541,7 @@ class TestMeshMarkers:
     def test_marker_manual_sizes_preserved(self):
         """Test that manually provided marker_sizes is preserved."""
         marker_data = np.array([0, 1, 1, 2], dtype=np.uint32)
-        marker_cell_types = np.array([VTKCellType.VTK_LINE, VTKCellType.VTK_LINE], dtype=np.uint8)
+        marker_cell_types = np.array([VTKCellType.VTK_LINE, VTKCellType.VTK_LINE], dtype=np.uint32)
         marker_sizes = np.array([2, 2], dtype=np.uint32)
 
         mesh = Mesh(

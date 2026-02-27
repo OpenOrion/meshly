@@ -6,6 +6,8 @@ import gzip
 import importlib
 import types
 import typing
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Annotated, Union, get_args, get_origin
 
 import numpy as np
@@ -15,11 +17,57 @@ from pydantic import BaseModel
 from meshly.array import ArrayRefInfo, ArrayType, ArrayUtils, ExtractedArray
 from meshly.common import AssetProvider
 from meshly.resource import Resource
+from meshly.utils.fork_pool import ForkPool
 from meshly.utils.json_schema import JsonSchema, JsonSchemaProperty
 from meshly.utils.serialization_utils import SerializationUtils
 
 # JSON-compatible value type
 JsonValue = Union[str, int, float, bool, None, dict, list]
+
+
+# -----------------------------------------------------------------------------
+# Fork-based parallel Packable resolution
+# -----------------------------------------------------------------------------
+# Uses module-level state because fork() copies memory (COW) without
+# serialization, allowing non-picklable objects like assets to be shared.
+
+@dataclass
+class _PackableResolveContext:
+    """Typed context for parallel Packable resolution."""
+    values: list
+    expected_type: type
+    assets: AssetProvider
+    array_type: ArrayType
+
+
+_PACKABLE_CTX: _PackableResolveContext | None = None
+
+
+@contextmanager
+def _packable_context(values: list, expected_type: type, assets: AssetProvider, array_type: ArrayType):
+    """Context manager for fork-based parallel Packable resolution."""
+    global _PACKABLE_CTX
+    _PACKABLE_CTX = _PackableResolveContext(values, expected_type, assets, array_type)
+    try:
+        yield
+    finally:
+        _PACKABLE_CTX = None
+
+
+def _resolve_packable_item(idx: int) -> object:
+    """Worker: reconstruct a single Packable from $ref."""
+    from meshly.packable import Packable
+    
+    ctx = _PACKABLE_CTX
+    if ctx is None:
+        raise RuntimeError("_packable_context not set")
+    
+    checksum = ctx.values[idx]["$ref"]
+    asset_bytes = SerializationUtils.get_asset(ctx.assets, checksum)
+    
+    if isinstance(ctx.expected_type, type) and issubclass(ctx.expected_type, Packable):
+        return ctx.expected_type.decode(asset_bytes, ctx.array_type)
+    return Packable.decode(asset_bytes, ctx.array_type)
 
 
 class SchemaUtils:
@@ -144,7 +192,9 @@ class SchemaUtils:
             # dict[str, X]
             if origin is dict:
                 _, val_type = get_args(expected_type)
-                return {k: SchemaUtils._resolve_with_type(v, val_type, assets, array_type) for k, v in value.items()}
+                keys = list(value.keys())
+                resolved = SchemaUtils._resolve_list_items(list(value.values()), val_type, assets, array_type)
+                return dict(zip(keys, resolved))
             # BaseModel
             if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
                 resolved = SchemaUtils.resolve_from_class(expected_type, value, assets, array_type)
@@ -160,10 +210,47 @@ class SchemaUtils:
         if isinstance(value, (list, tuple)):
             origin = get_origin(expected_type)
             elem_type = get_args(expected_type)[0] if origin in (list, tuple) and get_args(expected_type) else object
-            result = [SchemaUtils._resolve_with_type(v, elem_type, assets, array_type) for v in value]
+            result = SchemaUtils._resolve_list_items(value, elem_type, assets, array_type)
             return result if isinstance(value, list) else tuple(result)
 
         return value
+
+    @staticmethod
+    def _resolve_list_items(
+        items: list,
+        elem_type: type,
+        assets: AssetProvider,
+        array_type: ArrayType,
+    ) -> list:
+        """Resolve list items, parallelizing when items are Packable $refs.
+        
+        Uses fork-based parallelism for lists of Packable references.
+        Falls back to sequential for mixed types.
+        """
+        from meshly.packable import Packable
+        
+        if not items:
+            return []
+        
+        # Check if all items are Packable $refs and type is Packable
+        MIN_ITEMS_FOR_PARALLEL = 50
+        is_packable_type = isinstance(elem_type, type) and issubclass(elem_type, Packable)
+        all_packable_refs = (
+            len(items) >= MIN_ITEMS_FOR_PARALLEL
+            and is_packable_type
+            and all(isinstance(v, dict) and "$ref" in v for v in items)
+        )
+        
+        if all_packable_refs:
+            with _packable_context(items, elem_type, assets, array_type):
+                return ForkPool.map(
+                    _resolve_packable_item,
+                    range(len(items)),
+                    min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
+                )
+        
+        # Sequential fallback
+        return [SchemaUtils._resolve_with_type(v, elem_type, assets, array_type) for v in items]
 
     # -------------------------------------------------------------------------
     # Private: Schema-based resolution (JSON schema)

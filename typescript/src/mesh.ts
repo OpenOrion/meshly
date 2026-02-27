@@ -21,16 +21,18 @@ export interface MeshData {
   indices?: Uint32Array
 
   /**
-   * Size of each polygon (number of vertices per polygon)
+   * Size of each polygon (number of vertices per polygon).
+   * Uses Uint8Array in new versions (values 3-255 can fit in uint8).
    */
-  indexSizes?: Uint32Array
+  indexSizes?: TypedArray
 
   /**
    * Cell type identifier for each polygon, corresponding to indexSizes.
    * Common VTK cell types include:
    * - 1: Vertex, 3: Line, 5: Triangle, 9: Quad, 10: Tetra, 12: Hexahedron, 13: Wedge, 14: Pyramid
+   * Uses Uint8Array in new versions (VTK types fit in uint8).
    */
-  cellTypes?: Uint32Array
+  cellTypes?: TypedArray
 
   /**
    * Mesh dimension (2D or 3D)
@@ -45,12 +47,12 @@ export interface MeshData {
   /**
    * Sizes of each marker element
    */
-  markerSizes?: Record<string, Uint32Array>
+  markerSizes?: Record<string, TypedArray>
 
   /**
    * VTK cell types for each marker element
    */
-  markerCellTypes?: Record<string, Uint32Array>
+  markerCellTypes?: Record<string, TypedArray>
 }
 
 /**
@@ -74,8 +76,8 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   // Declare mesh-specific fields for type safety (assigned via Object.assign in parent)
   declare vertices: Float32Array
   declare indices?: Uint32Array
-  declare indexSizes?: Uint32Array
-  declare cellTypes?: Uint32Array
+  declare indexSizes?: TypedArray
+  declare cellTypes?: TypedArray
   declare dim?: number
   declare markers?: Record<string, Uint32Array>
   declare markerSizes?: Record<string, Uint32Array>

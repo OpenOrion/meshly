@@ -22,7 +22,6 @@ from meshly.array import (
     ArrayEncoding,
     IndexSequence,
     List,
-    VertexBuffer,
 )
 from meshly.cell_types import (
     CellType,
@@ -55,7 +54,6 @@ __all__ = [
     # Array types and utilities
     "Array",
     "List",
-    "VertexBuffer",
     "IndexSequence",
     "ExtractedArray",
     "ArrayEncoding",

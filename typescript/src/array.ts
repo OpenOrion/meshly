@@ -153,12 +153,39 @@ export class ArrayUtils {
     }
 
     // Handle generic "array" encoding
-    const destUint8Array = new Uint8Array(totalItems * info.itemsize)
+    // meshoptimizer requires vertex_size to be multiple of 4, handle padding
+    const originalItemsize = info.itemsize
+
+    if (originalItemsize % 4 !== 0) {
+      // Padded encoding: decode with padded size, then strip padding
+      const paddedSize = Math.ceil(originalItemsize / 4) * 4
+      const destUint8Array = new Uint8Array(totalItems * paddedSize)
+
+      MeshoptDecoder.decodeVertexBuffer(
+        destUint8Array,
+        totalItems,
+        paddedSize,
+        data
+      )
+
+      // Strip padding from each element
+      const unpadded = new Uint8Array(totalItems * originalItemsize)
+      for (let i = 0; i < totalItems; i++) {
+        unpadded.set(
+          destUint8Array.subarray(i * paddedSize, i * paddedSize + originalItemsize),
+          i * originalItemsize
+        )
+      }
+
+      return new TypedArrayCtor(unpadded.buffer)
+    }
+
+    const destUint8Array = new Uint8Array(totalItems * originalItemsize)
 
     MeshoptDecoder.decodeVertexBuffer(
       destUint8Array,
       totalItems,
-      info.itemsize,
+      originalItemsize,
       data
     )
 

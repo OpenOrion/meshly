@@ -7,7 +7,61 @@ using sizes instead of offsets for element reconstruction.
 
 import numpy as np
 from typing import Union, List, Dict, Tuple, Any, Optional
+from pydantic import BaseModel, ConfigDict
 from meshly.cell_types import CellTypeUtils, VTKCellType
+
+
+class ElementData(BaseModel):
+    """Flattened element representation with indices, sizes, and VTK cell types."""
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    indices: np.ndarray  # uint32 - flattened vertex indices
+    sizes: np.ndarray  # uint8 - number of vertices per element
+    cell_types: np.ndarray  # uint8 - VTK cell type per element
+    
+    @classmethod
+    def empty(cls) -> "ElementData":
+        """Create empty element data."""
+        return cls(
+            indices=np.array([], dtype=np.uint32),
+            sizes=np.array([], dtype=np.uint8),
+            cell_types=np.array([], dtype=np.uint8)
+        )
+    
+    @classmethod
+    def from_polygons(cls, polygons: List[List[int]]) -> "ElementData":
+        """
+        Create ElementData from a list of polygons.
+        
+        Args:
+            polygons: List of polygon vertex indices (e.g., [[0,1,2], [3,4,5,6]])
+            
+        Returns:
+            ElementData with flattened indices, sizes, and inferred cell types
+        """
+        if not polygons:
+            return cls.empty()
+        
+        flattened_indices = []
+        sizes = []
+        vtk_types = []
+        
+        for polygon in polygons:
+            polygon_array = np.asarray(polygon, dtype=np.uint32)
+            flattened_indices.extend(polygon_array.flatten())
+            polygon_size = len(polygon_array.flatten())
+            sizes.append(polygon_size)
+            
+            # Determine VTK cell type based on polygon size
+            vtk_type = CellTypeUtils.size_to_vtk_cell_type(polygon_size)
+            vtk_types.append(vtk_type)
+        
+        return cls(
+            indices=np.array(flattened_indices, dtype=np.uint32),
+            sizes=np.array(sizes, dtype=np.uint8),
+            cell_types=np.array(vtk_types, dtype=np.uint8)
+        )
 
 
 class TriangulationUtils:
@@ -203,41 +257,6 @@ class ElementUtils:
     """Utilities for processing mesh elements (indices, markers) in a standardized way."""
     
     @staticmethod
-    def convert_list_to_flattened(elements: List[List[int]]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Convert list of lists to flattened representation with sizes and types.
-        
-        Args:
-            elements: List of element lists (e.g., [[0,1], [1,2,3], [0,2,3,4]])
-            
-        Returns:
-            Tuple of (flattened_indices, sizes, vtk_types)
-        """
-        if not elements:
-            return np.array([], dtype=np.uint32), np.array([], dtype=np.uint32), np.array([], dtype=np.uint8)
-        
-        flattened_indices = []
-        sizes = []
-        vtk_types = []
-        
-        for element in elements:
-            element_array = np.asarray(element, dtype=np.uint32)
-            flattened_indices.extend(element_array.flatten())
-            element_size = len(element_array.flatten())
-            sizes.append(element_size)
-            
-            # Determine VTK cell type based on element size
-            vtk_type = CellTypeUtils.size_to_vtk_cell_type(element_size)
-            # Allow any polygon size - VTK_POLYGON can handle variable sizes
-            vtk_types.append(vtk_type)
-        
-        return (
-            np.array(flattened_indices, dtype=np.uint32),
-            np.array(sizes, dtype=np.uint32),
-            np.array(vtk_types, dtype=np.uint8)
-        )
-    
-    @staticmethod
     def convert_flattened_to_list(
         flattened_indices: np.ndarray,
         sizes: np.ndarray,
@@ -297,7 +316,7 @@ class ElementUtils:
         input_data: Union[np.ndarray, List[Any], None],
         explicit_sizes: Optional[Union[np.ndarray, List[int]]] = None,
         explicit_types: Optional[Union[np.ndarray, List[int]]] = None
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    ) -> Optional[ElementData]:
         """
         Convert various input formats to standardized flattened representation.
         
@@ -305,7 +324,7 @@ class ElementUtils:
         - 2D numpy arrays (uniform elements)
         - List of lists (mixed elements)
         - Flat arrays (requires explicit sizes)
-        - None (returns None for all)
+        - None (returns None)
         
         Args:
             input_data: Input in various formats
@@ -313,24 +332,26 @@ class ElementUtils:
             explicit_types: Explicitly provided VTK types (optional)
             
         Returns:
-            Tuple of (flattened_indices, sizes, vtk_types) or (None, None, None)
+            ElementData or None if input_data is None
         """
         if input_data is None:
-            return None, None, None
+            return None
         
         inferred_sizes = None
+        inferred_vtk_types = None
         
         # Convert various input formats to flattened indices
-        inferred_vtk_types = None
         if isinstance(input_data, (list, tuple)):
             # Handle list of lists (mixed elements) or flat list
             if len(input_data) > 0 and isinstance(input_data[0], (list, tuple, np.ndarray)):
                 # List of lists - mixed element format
-                input_data, inferred_sizes, inferred_vtk_types = ElementUtils.convert_list_to_flattened(input_data)
+                result = ElementData.from_polygons(input_data)
+                input_data = result.indices
+                inferred_sizes = result.sizes
+                inferred_vtk_types = result.cell_types
             else:
                 # Flat list
                 input_data = np.asarray(input_data, dtype=np.uint32).flatten()
-                inferred_sizes = None
         else:
             # Numpy array input
             original_shape = input_data.shape
@@ -339,13 +360,11 @@ class ElementUtils:
             # If it was a 2D array, extract size information
             if len(original_shape) > 1:
                 # Infer uniform elements from 2D array shape
-                inferred_sizes = np.full(original_shape[0], original_shape[1], dtype=np.uint32)
-            else:
-                inferred_sizes = None
+                inferred_sizes = np.full(original_shape[0], original_shape[1], dtype=np.uint8)
         
         # Handle sizes
         if explicit_sizes is not None:
-            sizes = np.asarray(explicit_sizes, dtype=np.uint32)
+            sizes = np.asarray(explicit_sizes, dtype=np.uint8)
             # Validate that explicit sizes matches inferred structure if both exist
             if inferred_sizes is not None:
                 if not np.array_equal(sizes, inferred_sizes):
@@ -360,7 +379,7 @@ class ElementUtils:
             if len(input_data) % 3 == 0:
                 # Assume triangles for legacy compatibility
                 num_triangles = len(input_data) // 3
-                sizes = np.full(num_triangles, 3, dtype=np.uint32)
+                sizes = np.full(num_triangles, 3, dtype=np.uint8)
             else:
                 raise ValueError("Cannot determine element structure without explicit sizes")
         
@@ -390,7 +409,11 @@ class ElementUtils:
             # Infer VTK types from sizes
             vtk_types = CellTypeUtils.infer_vtk_cell_types_from_sizes(sizes)
         
-        return input_data, sizes, vtk_types
+        return ElementData(
+            indices=input_data,
+            sizes=sizes,
+            cell_types=vtk_types
+        )
     
     @staticmethod
     def get_element_structure(

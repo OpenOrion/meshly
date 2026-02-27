@@ -26,7 +26,7 @@ class DynamicModelBuilder:
     """
     Builds Pydantic models dynamically from validated JSON schemas.
     
-    Handles meshly's custom array types (array, vertex_buffer, index_sequence)
+    Handles meshly's custom array types (array, index_sequence)
     and caches models for reuse.
     
     Usage:

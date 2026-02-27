@@ -2,13 +2,12 @@
 Array encoding utilities for meshly.
 
 This module provides:
-- Type annotations: Array, VertexBuffer, IndexSequence for Pydantic models
-- Metadata model: ArrayRefModel for $ref serialization
+- Type annotations: Array, IndexSequence for Pydantic models
+- Metadata model: ArrayRefInfo for $ref serialization
 - ArrayUtils: Encoding/decoding arrays using meshoptimizer compression
 
 Encoding Types:
-- "array": Generic meshoptimizer vertex buffer (works for any array)
-- "vertex_buffer": Optimized for 3D vertex data (N x components)
+- "array": Generic array encoding (meshoptimizer vertex buffer)
 - "index_sequence": Optimized for mesh indices (1D array)
 """
 
@@ -19,13 +18,22 @@ from io import BytesIO
 from typing import Annotated, Any, Callable, Literal, Optional, Union, get_args, get_origin
 
 import numpy as np
-from meshoptimizer import decode_vertex_buffer, decode_index_sequence
-from meshoptimizer import encode_vertex_buffer, encode_index_sequence
 from pydantic import BaseModel, Field, GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
 
 from meshly.common import PathLike, RefInfo
+
+
+# =============================================================================
+# Type Definitions
+# =============================================================================
+
+ArrayEncoding = Literal["array", "index_sequence"]
+"""Array encoding strategies."""
+
+ArrayType = Literal["numpy", "jax"]
+"""Supported array backend types."""
 
 
 # =============================================================================
@@ -41,18 +49,7 @@ except ImportError:
 
 
 # =============================================================================
-# Type Definitions
-# =============================================================================
-
-ArrayType = Literal["numpy", "jax"]
-"""Supported array backend types."""
-
-ArrayEncoding = Literal["array", "vertex_buffer", "index_sequence"]
-"""Array encoding types for serialization."""
-
-
-# =============================================================================
-# Pydantic Array Annotations (Array, VertexBuffer, IndexSequence)
+# Pydantic Array Annotations
 # =============================================================================
 
 class _ArrayAnnotation:
@@ -64,7 +61,6 @@ class _ArrayAnnotation:
     def __get_pydantic_core_schema__(
         self, source_type: Any, handler: GetCoreSchemaHandler
     ) -> CoreSchema:
-        """Validate that input is a numpy or JAX array."""
         return core_schema.no_info_plain_validator_function(self._validate)
     
     def _validate(self, v: Any) -> np.ndarray:
@@ -90,11 +86,7 @@ class _ArrayAnnotation:
 
 
 class _ListAnnotation:
-    """Pydantic annotation marker for numpy arrays serialized as inline JSON lists.
-
-    Same validation as _ArrayAnnotation (accepts numpy, JAX, list/tuple → np.ndarray),
-    but serializes as .tolist() instead of binary $ref assets.
-    """
+    """Pydantic annotation for arrays serialized as inline JSON lists."""
 
     def __get_pydantic_core_schema__(
         self, source_type: Any, handler: GetCoreSchemaHandler
@@ -125,12 +117,9 @@ class _ListAnnotation:
         return isinstance(other, _ListAnnotation)
 
 
-# Public type aliases for use in Pydantic models
+# Public type aliases for Pydantic models
 Array = Annotated[np.ndarray, _ArrayAnnotation("array")]
 """Generic array encoding (meshoptimizer vertex buffer)."""
-
-VertexBuffer = Annotated[np.ndarray, _ArrayAnnotation("vertex_buffer")]
-"""Optimized for 3D vertex data (N x components)."""
 
 IndexSequence = Annotated[np.ndarray, _ArrayAnnotation("index_sequence")]
 """Optimized for mesh indices (1D array)."""
@@ -140,18 +129,15 @@ List = Annotated[np.ndarray, _ListAnnotation()]
 
 
 # =============================================================================
-# Metadata Models (for $ref serialization)
+# Metadata Models
 # =============================================================================
 
 class ArrayRefInfo(RefInfo):
-    """Metadata for encoded arrays (stored in zip files and $ref in data.json).
+    """Metadata for encoded arrays (stored in $ref).
     
-    Example $ref: {"$ref": "abc123", "dtype": "float32", "shape": [100, 3]}
+    Example: {"$ref": "abc123", "dtype": "float32", "shape": [100, 3]}
     """
-    # $ref (for data.json serialization)
     ref: Optional[str] = Field(None, alias="$ref")
-    
-    # Core fields (always present)
     shape: list[int]
     dtype: str
     itemsize: int
@@ -222,8 +208,7 @@ class ArrayUtils:
 
     @staticmethod
     def get_array_encoding(annotation: Any) -> ArrayEncoding:
-        """Extract encoding type from a type annotation (Array, VertexBuffer, etc)."""
-        # Handle Optional/Union - unwrap to find the array type
+        """Extract encoding type from a type annotation (Array, IndexSequence)."""
         origin = get_origin(annotation)
         if origin is Union or isinstance(annotation, types.UnionType):
             for arg in get_args(annotation):
@@ -232,7 +217,6 @@ class ArrayUtils:
                     if result != "array":
                         return result
         
-        # Handle Annotated types
         if get_origin(annotation) is Annotated:
             for arg in get_args(annotation):
                 if isinstance(arg, _ArrayAnnotation):
@@ -245,7 +229,6 @@ class ArrayUtils:
         """Check if a type annotation contains _ListAnnotation."""
         if annotation is None:
             return False
-        # Handle Optional/Union - unwrap to find the inner type
         origin = get_origin(annotation)
         if origin is Union or isinstance(annotation, types.UnionType):
             for arg in get_args(annotation):
@@ -253,7 +236,6 @@ class ArrayUtils:
                     if ArrayUtils.is_list_annotation(arg):
                         return True
             return False
-        # Handle Annotated types
         if get_origin(annotation) is Annotated:
             for arg in get_args(annotation):
                 if isinstance(arg, _ListAnnotation):
@@ -270,10 +252,7 @@ class ArrayUtils:
         prefix: str = "",
         skip: Optional[Callable[[Any], bool]] = None,
     ) -> dict[str, np.ndarray]:
-        """Recursively extract arrays from nested dicts/BaseModels.
-        
-        Returns dict mapping dotted paths to arrays (e.g., "mesh.vertices").
-        """
+        """Recursively extract arrays from nested dicts/BaseModels."""
         if skip and skip(obj):
             return {}
         if ArrayUtils.is_array(obj):
@@ -295,121 +274,84 @@ class ArrayUtils:
         return {}
 
     # -------------------------------------------------------------------------
-    # Core Extract/Reconstruct (meshoptimizer)
+    # Core Extract/Reconstruct
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def extract(
-        array: object,
-        encoding: ArrayEncoding = "array",
-    ) -> ExtractedArray:
-        """Extract array to ExtractedArray with meshoptimizer compression.
+    def extract(array: object, encoding: ArrayEncoding = "array") -> ExtractedArray:
+        """Extract array to ExtractedArray with meshoptimizer compression."""
+        from meshoptimizer import encode_vertex_buffer, encode_index_sequence
         
-        Args:
-            array: Array to extract (numpy or JAX)
-            encoding: Encoding type ("array", "vertex_buffer", "index_sequence")
-            
-        Returns:
-            ExtractedArray with encoded data and metadata
-        """
         array_np = np.ascontiguousarray(ArrayUtils.convert_array(array, "numpy"))
-        original_shape = list(array_np.shape)
-        original_dtype = str(array_np.dtype)
+        original_itemsize = array_np.dtype.itemsize
         
-        # Vertex buffer: optimized for 2D vertex data (N x components)
-        if encoding == "vertex_buffer":
-            if array_np.ndim == 1:
-                raise ValueError("Vertex buffer requires 2D array")
-            vertex_count = array_np.shape[0]
-            vertex_size = array_np.itemsize * array_np.shape[1]
-            data = encode_vertex_buffer(array_np, vertex_count, vertex_size)
-            return ExtractedArray(
-                data=bytes(data),
-                info=ArrayRefInfo(
-                    shape=original_shape,
-                    dtype=original_dtype,
-                    itemsize=array_np.dtype.itemsize,
-                ),
-                encoding=encoding,
-            )
-        
-        # Index sequence: optimized for 1D mesh indices
         if encoding == "index_sequence":
             if array_np.ndim != 1:
                 raise ValueError("Index sequence requires 1D array")
             index_count = len(array_np)
-            data = encode_index_sequence(array_np, index_count, int(array_np.max()) + 1 if index_count > 0 else 0)
-            return ExtractedArray(
-                data=bytes(data),
-                info=ArrayRefInfo(
-                    shape=original_shape,
-                    dtype=original_dtype,
-                    itemsize=array_np.dtype.itemsize,
-                ),
-                encoding=encoding,
-            )
+            vertex_count = int(array_np.max()) + 1 if index_count > 0 else 0
+            data = bytes(encode_index_sequence(array_np, index_count, vertex_count))
+        else:
+            flat = array_np.ravel()
+            # meshoptimizer requires vertex_size to be multiple of 4
+            # Pad elements if needed
+            if original_itemsize % 4 != 0:
+                padded_size = ((original_itemsize + 3) // 4) * 4
+                padding = padded_size - original_itemsize
+                flat_bytes = flat.tobytes()
+                # Pad each element
+                padded_chunks = [flat_bytes[i:i+original_itemsize] + b'\x00' * padding 
+                                 for i in range(0, len(flat_bytes), original_itemsize)]
+                padded_bytes = b''.join(padded_chunks)
+                padded_array = np.frombuffer(padded_bytes, dtype=np.uint8).reshape(-1, padded_size)
+                data = bytes(encode_vertex_buffer(padded_array, len(flat), padded_size))
+            else:
+                data = bytes(encode_vertex_buffer(flat, len(flat), original_itemsize))
         
-        # Generic array: meshoptimizer vertex buffer encoding
-        flattened = array_np.reshape(-1)
-        item_count = len(flattened)
-        item_size = flattened.itemsize
-        data = encode_vertex_buffer(flattened, item_count, item_size)
-
         return ExtractedArray(
-            data=bytes(data),
+            data=data,
             info=ArrayRefInfo(
-                shape=original_shape,
-                dtype=original_dtype,
-                itemsize=array_np.dtype.itemsize,
+                shape=list(array_np.shape),
+                dtype=str(array_np.dtype),
+                itemsize=original_itemsize,
             ),
             encoding=encoding,
         )
-
-
 
     @staticmethod
     def reconstruct(
         extracted: ExtractedArray,
         array_type: ArrayType = "numpy",
     ) -> np.ndarray:
-        """Reconstruct array from ExtractedArray.
+        """Reconstruct array from ExtractedArray."""
+        from meshoptimizer import decode_vertex_buffer, decode_index_sequence
         
-        Args:
-            extracted: ExtractedArray with data, metadata, and encoding
-            array_type: Target array type (defaults to "numpy")
-            
-        Returns:
-            Reconstructed array (numpy or JAX)
-        """
         metadata = extracted.info
-        encoding = extracted.encoding
+        dtype = np.dtype(metadata.dtype)
+        shape = tuple(metadata.shape)
+        original_itemsize = metadata.itemsize
         
-        # Vertex buffer: 2D array optimized encoding
-        if encoding == "vertex_buffer":
-            vertex_count = metadata.shape[0]
-            components = metadata.shape[1] if len(metadata.shape) > 1 else 1
-            vertex_size = metadata.itemsize * components
-            original_dtype = np.dtype(metadata.dtype)
-            
-            row_dtype = np.dtype((original_dtype, components))
-            decoded = decode_vertex_buffer(vertex_count, vertex_size, extracted.data, dtype=row_dtype)
-            return ArrayUtils.convert_array(decoded.reshape(metadata.shape), array_type)
+        if extracted.encoding == "index_sequence":
+            decoded = decode_index_sequence(shape[0], dtype.itemsize, extracted.data)
+            if decoded.dtype != dtype:
+                decoded = decoded.astype(dtype)
+        else:
+            total_items = int(np.prod(shape))
+            # Handle padded data (itemsize not multiple of 4)
+            if original_itemsize % 4 != 0:
+                padded_size = ((original_itemsize + 3) // 4) * 4
+                # Decode as raw bytes (no dtype) - returns float32 by default, reinterpret as uint8
+                decoded_raw = decode_vertex_buffer(total_items, padded_size, extracted.data)
+                # Convert to bytes view
+                decoded_bytes = decoded_raw.view(np.uint8).reshape(total_items, padded_size)
+                # Strip padding from each element
+                unpadded_bytes = decoded_bytes[:, :original_itemsize].tobytes()
+                decoded = np.frombuffer(unpadded_bytes, dtype=dtype).reshape(shape)
+            else:
+                decoded = decode_vertex_buffer(total_items, dtype.itemsize, extracted.data, dtype=dtype)
+                decoded = decoded.reshape(shape)
         
-        # Index sequence: 1D index array encoding
-        if encoding == "index_sequence":
-            index_count = metadata.shape[0]
-            index_size = np.dtype(metadata.dtype).itemsize
-            decoded = decode_index_sequence(index_count, index_size, extracted.data)
-            if str(decoded.dtype) != metadata.dtype:
-                decoded = decoded.astype(metadata.dtype)
-            return ArrayUtils.convert_array(decoded, array_type)
-        
-        # Generic array: meshoptimizer vertex buffer encoding
-        original_dtype = np.dtype(metadata.dtype)
-        total_items = int(np.prod(metadata.shape))
-        decoded = decode_vertex_buffer(total_items, original_dtype.itemsize, extracted.data, dtype=original_dtype)
-        return ArrayUtils.convert_array(decoded.reshape(metadata.shape), array_type)
-
+        return ArrayUtils.convert_array(decoded, array_type)
 
     @staticmethod
     def decode(
@@ -418,21 +360,7 @@ class ArrayUtils:
         encoding: ArrayEncoding,
         array_type: ArrayType = "numpy"
     ) -> Any:
-        """
-        Decode a single array from a zip file.
-
-        Args:
-            zf: ZipFile opened for reading
-            name: Array name (e.g., "normals" or "markerIndices.boundary")
-            encoding: Encoding type used for the array
-            array_type: Target array backend type ("numpy" or "jax")
-
-        Returns:
-            Decoded array (numpy or JAX)
-
-        Raises:
-            KeyError: If array not found
-        """
+        """Decode a single array from a zip file."""
         array_path = name.replace(".", "/")
         bin_path = f"arrays/{array_path}/array.bin"
         meta_path = f"arrays/{array_path}/metadata.json"
@@ -441,18 +369,12 @@ class ArrayUtils:
             metadata_text = zf.read(meta_path).decode("utf-8")
             metadata_dict = json.loads(metadata_text)
             metadata = ArrayRefInfo(**metadata_dict)
-
             encoded_bytes = zf.read(bin_path)
         except KeyError as e:
             raise KeyError(f"Array '{name}' not found") from e
 
-        encoded_array = ExtractedArray(
-            data=encoded_bytes,
-            info=metadata,
-            encoding=encoding,
-        )
-
-        return ArrayUtils.reconstruct(encoded_array, array_type)
+        extracted = ExtractedArray(data=encoded_bytes, info=metadata, encoding=encoding)
+        return ArrayUtils.reconstruct(extracted, array_type)
 
     # -------------------------------------------------------------------------
     # Zip File I/O
@@ -465,15 +387,7 @@ class ArrayUtils:
         encoded_array: ExtractedArray,
         date_time: tuple[int, int, int, int, int, int] = (2020, 1, 1, 0, 0, 0),
     ) -> None:
-        """
-        Save a single encoded array to a zip file.
-
-        Args:
-            zf: ZipFile opened for writing
-            name: Array name (e.g., "normals" or "markerIndices.boundary")
-            encoded_array: ExtractedArray to save
-            date_time: Timestamp for deterministic output (default: 2020-01-01 00:00:00)
-        """
+        """Save a single encoded array to a zip file."""
         array_path = name.replace(".", "/")
         
         info = zipfile.ZipInfo(f"arrays/{array_path}/array.bin", date_time=date_time)
@@ -482,21 +396,13 @@ class ArrayUtils:
         info = zipfile.ZipInfo(f"arrays/{array_path}/metadata.json", date_time=date_time)
         zf.writestr(info, json.dumps(encoded_array.info.model_dump(), indent=2, sort_keys=True))
 
-
     @staticmethod
     def save_to_zip(
         array: Array,
         destination: Union[PathLike, BytesIO],
         name: str = "array",
     ) -> None:
-        """
-        Save a single array to a zip file.
-
-        Args:
-            array: Array to save (numpy or JAX)
-            destination: Path to the output zip file or BytesIO buffer
-            name: Array name in the zip file (default: "array")
-        """
+        """Save a single array to a zip file."""
         extracted = ArrayUtils.extract(array)
 
         zip_buffer = BytesIO()
@@ -515,17 +421,7 @@ class ArrayUtils:
         name: str = "array",
         array_type: ArrayType = "numpy",
     ) -> Array:
-        """
-        Load a single array from a zip file.
-
-        Args:
-            source: Path to the input zip file or BytesIO buffer
-            name: Array name in the zip file (default: "array")
-            array_type: Target array backend type ("numpy" or "jax")
-
-        Returns:
-            Decoded array (numpy or JAX)
-        """
+        """Load a single array from a zip file."""
         if isinstance(source, BytesIO):
             source.seek(0)
             buf = BytesIO(source.read())

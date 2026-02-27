@@ -12,16 +12,12 @@ The Mesh class inherits from Packable and adds:
 - Marker support for boundary conditions and regions
 """
 
-from meshly.array import Array, ArrayUtils, IndexSequence, VertexBuffer
+from meshly.array import Array, ArrayUtils, IndexSequence
 from meshly.cell_types import CellTypeUtils, VTKCellType
 from meshly.packable import Packable
-from meshly.utils import ElementUtils, MeshUtils, TriangulationUtils
-from meshoptimizer import (
-    optimize_vertex_cache as meshopt_optimize_vertex_cache,
-    optimize_overdraw as meshopt_optimize_overdraw,
-    optimize_vertex_fetch as meshopt_optimize_vertex_fetch,
-    simplify as meshopt_simplify,
-)
+from meshly.utils import ElementUtils, MeshUtils, TriangulationUtils, ElementData
+
+import meshoptimizer
 from pathlib import Path
 from typing import (
     ClassVar,
@@ -52,7 +48,7 @@ class Mesh(Packable):
 
     Inherits from Packable for automatic array serialization. Mesh uses
     specialized meshoptimizer encoding for vertices and indices via Annotated
-    types (VertexBuffer, IndexSequence).
+    types (Array, IndexSequence).
     """
 
     is_contained: ClassVar[bool] = True
@@ -72,7 +68,7 @@ class Mesh(Packable):
     # Field definitions with encoding specified via Annotated types
     # ============================================================
 
-    vertices: VertexBuffer = Field(
+    vertices: Array = Field(
         ...,
         description="Vertex data as a numpy or JAX array",
     )
@@ -200,10 +196,14 @@ class Mesh(Packable):
 
         # Process indices through ElementUtils
         if self.indices is not None:
-            self.indices, self.index_sizes, self.cell_types = ElementUtils.convert_array_input(
+            result = ElementUtils.convert_array_input(
                 to_numpy(self.indices), to_numpy(
                     self.index_sizes), to_numpy(self.cell_types)
             )
+            if result is not None:
+                self.indices = result.indices
+                self.index_sizes = result.sizes
+                self.cell_types = result.cell_types
 
         # Auto-compute dimension from cell types
         if self.dim is None:
@@ -225,12 +225,11 @@ class Mesh(Packable):
                         raise ValueError(
                             f"Marker '{name}' missing marker_sizes or marker_cell_types")
                 else:
-                    # Convert list of lists to flattened structure
-                    indices, sizes, types = ElementUtils.convert_list_to_flattened(
-                        [list(el) for el in data])
-                    converted_markers[name] = indices
-                    self.marker_sizes[name] = sizes
-                    self.marker_cell_types[name] = types
+                    # Convert list of polygons to flattened structure
+                    result = ElementData.from_polygons([list(el) for el in data])
+                    converted_markers[name] = result.indices
+                    self.marker_sizes[name] = result.sizes
+                    self.marker_cell_types[name] = result.cell_types
             self.markers = converted_markers
 
         return self
@@ -491,9 +490,9 @@ class Mesh(Packable):
         return Mesh(
             vertices=self.vertices.copy(),
             indices=triangulated_indices_flat,
-            index_sizes=np.full(num_triangles, 3, dtype=np.uint32),
+            index_sizes=np.full(num_triangles, 3, dtype=np.uint8),
             cell_types=np.full(
-                num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32),
+                num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8),
             dim=self.dim,
             markers={name: data.copy() for name, data in self.markers.items()},
             marker_sizes={name: data.copy()
@@ -509,7 +508,7 @@ class Mesh(Packable):
 
         result_mesh = self.model_copy(deep=True)
         optimized_indices = np.zeros_like(result_mesh.indices)
-        meshopt_optimize_vertex_cache(
+        meshoptimizer.optimize_vertex_cache(
             optimized_indices, result_mesh.indices, result_mesh.index_count, result_mesh.vertex_count
         )
         result_mesh.indices = optimized_indices
@@ -522,7 +521,7 @@ class Mesh(Packable):
 
         result_mesh = self.model_copy(deep=True)
         optimized_indices = np.zeros_like(result_mesh.indices)
-        meshopt_optimize_overdraw(
+        meshoptimizer.optimize_overdraw(
             optimized_indices,
             result_mesh.indices,
             result_mesh.vertices,
@@ -541,7 +540,7 @@ class Mesh(Packable):
 
         result_mesh = self.model_copy(deep=True)
         optimized_vertices = np.zeros_like(result_mesh.vertices)
-        unique_vertex_count = meshopt_optimize_vertex_fetch(
+        unique_vertex_count = meshoptimizer.optimize_vertex_fetch(
             optimized_vertices,
             result_mesh.indices,
             result_mesh.vertices,
@@ -566,7 +565,7 @@ class Mesh(Packable):
         simplified_indices = np.zeros(result_mesh.index_count, dtype=np.uint32)
 
         result_error = np.array([0.0], dtype=np.float32)
-        new_index_count = meshopt_simplify(
+        new_index_count = meshoptimizer.simplify(
             simplified_indices,
             result_mesh.indices,
             result_mesh.vertices,
@@ -582,7 +581,7 @@ class Mesh(Packable):
 
         # Update index_sizes and cell_types for new triangle count
         num_triangles = new_index_count // 3
-        result_mesh.index_sizes = np.full(num_triangles, 3, dtype=np.uint32)
+        result_mesh.index_sizes = np.full(num_triangles, 3, dtype=np.uint8)
         result_mesh.cell_types = np.full(
             num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
 

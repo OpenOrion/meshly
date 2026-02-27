@@ -25,12 +25,11 @@ pip install meshly
 ### Array Type Annotations
 
 - **`Array`**: Generic array type with meshoptimizer compression
-- **`VertexBuffer`**: Optimized encoding for 3D vertex data (N × components)
 - **`IndexSequence`**: Optimized encoding for mesh indices (1D array)
 
 ### Key Capabilities
 
-- Automatic encoding/decoding of numpy array attributes via `Array`, `VertexBuffer`, `IndexSequence` type annotations
+- Automatic encoding/decoding of numpy array attributes via `Array`, `IndexSequence` type annotations
 - Custom subclasses with additional array fields are automatically serialized
 - **Extract/Reconstruct API** for content-addressable storage with deduplication
 - **PackableStore** for file-based persistent storage with automatic deduplication
@@ -130,22 +129,22 @@ loaded = TexturedMesh.load_from_zip("textured.zip")
 Use specialized array types for optimized encoding:
 
 ```python
-from meshly import Packable, Array, VertexBuffer, IndexSequence
+from meshly import Packable, Array, IndexSequence
 from pydantic import Field
 
 class OptimizedMesh(Packable):
     """Mesh with optimized array encodings."""
     
-    # VertexBuffer: optimized for 3D vertex data
-    vertices: VertexBuffer = Field(..., description="Vertex positions")
+    # Array: generic compression for vertex/normal data
+    vertices: Array = Field(..., description="Vertex positions")
+    normals: Array = Field(..., description="Vertex normals")
+    uvs: Array = Field(..., description="Texture coordinates")
     
     # IndexSequence: optimized for mesh indices
     indices: IndexSequence = Field(..., description="Triangle indices")
-    
-    # Array: generic compression for other data
-    normals: Array = Field(..., description="Vertex normals")
-    uvs: Array = Field(..., description="Texture coordinates")
 ```
+
+> **Note:** All dtypes are supported. Arrays with non-4-byte dtypes (e.g., `float16`, `int8`, `uint8`) are automatically padded to 4-byte alignment during encoding and unpadded during decoding (meshoptimizer requirement). For best performance, prefer 4-byte aligned dtypes like `float32`, `int32`, or `float64`.
 
 ### Dict of Pydantic BaseModel Objects
 
@@ -403,7 +402,7 @@ extracted_path/
 
 ```
 Packable (base class)
-├── Mesh (3D mesh with meshoptimizer encoding via VertexBuffer/IndexSequence)
+├── Mesh (3D mesh with meshoptimizer encoding via Array/IndexSequence)
 └── Your custom classes...
 ```
 
@@ -411,7 +410,6 @@ Packable (base class)
 
 ```
 Array          → Generic meshoptimizer compression
-VertexBuffer   → Optimized for 3D vertex data
 IndexSequence  → Optimized for mesh indices
 ```
 
@@ -569,12 +567,12 @@ jax_mesh = mesh.convert_to("jax")
 ### Array Type Annotations
 
 ```python
-from meshly import Array, VertexBuffer, IndexSequence
+from meshly import Array, IndexSequence
 
 # Use in Pydantic models for automatic encoding
 class MyData(Packable):
     generic_data: Array           # Generic meshoptimizer compression
-    vertices: VertexBuffer        # Optimized for 3D vertex data
+    vertices: Array               # All arrays use meshoptimizer compression
     indices: IndexSequence        # Optimized for mesh indices
 ```
 
@@ -682,7 +680,7 @@ class ExtractedArray(BaseModel):
     """Result of extracting an array."""
     data: bytes                    # Meshoptimizer-compressed array data
     info: ArrayRefInfo             # Metadata (shape, dtype, itemsize, etc.)
-    encoding: ArrayEncoding        # Encoding used ("array", "vertex_buffer", "index_sequence")
+    encoding: ArrayEncoding        # Encoding used ("array" or "index_sequence")
 ```
 
 ### LazyModel
@@ -755,7 +753,7 @@ class Mesh(Packable):
     is_contained: ClassVar[bool] = True  # Mesh extracts as single zip blob
     
     # Fields with specialized encoding via type annotations
-    vertices: VertexBuffer        # Required (meshoptimizer vertex buffer encoding)
+    vertices: Array               # Required (meshoptimizer array encoding)
     indices: Optional[IndexSequence]  # Optional (meshoptimizer index sequence encoding)
     index_sizes: Optional[Array]  # Auto-inferred
     cell_types: Optional[Array]   # Auto-inferred

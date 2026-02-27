@@ -7,7 +7,7 @@ triangulation, checksums, serialization, and schema operations.
 
 from .checksum_utils import ChecksumUtils
 from .dynamic_model import DynamicModelBuilder, LazyModel
-from .element_utils import ElementUtils, TriangulationUtils
+from .element_utils import ElementData, ElementUtils, TriangulationUtils
 from .fork_pool import ForkPool
 from .json_schema import JsonSchema, JsonSchemaProperty
 from .mesh_utils import MeshUtils
@@ -17,6 +17,7 @@ from .serialization_utils import SerializationUtils
 __all__ = [
     "ChecksumUtils",
     "DynamicModelBuilder",
+    "ElementData",
     "ElementUtils",
     "ForkPool",
     "JsonSchema",

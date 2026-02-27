@@ -229,7 +229,7 @@ class CellTypeUtils:
             Array of VTK cell type identifiers
         """
         sizes_array = np.asarray(sizes)
-        cell_types = np.zeros(len(sizes_array), dtype=np.uint32)
+        cell_types = np.zeros(len(sizes_array), dtype=np.uint8)
         
         for i, size in enumerate(sizes_array):
             cell_types[i] = CellTypeUtils.size_to_vtk_cell_type(size)
@@ -248,7 +248,7 @@ class CellTypeUtils:
             Array of element sizes
         """
         vtk_cell_types = np.asarray(vtk_cell_types)
-        sizes = np.zeros(len(vtk_cell_types), dtype=np.uint32)
+        sizes = np.zeros(len(vtk_cell_types), dtype=np.uint8)
         
         for i, vtk_type in enumerate(vtk_cell_types):
             size = CellTypeUtils.vtk_cell_type_to_size(vtk_type)

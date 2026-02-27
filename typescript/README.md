@@ -105,7 +105,7 @@ mesh.zip
     "x-module": "meshly.mesh.Mesh",
     "x-base": "Mesh",
     "properties": {
-      "vertices": { "type": "vertex_buffer" },
+      "vertices": { "type": "array" },
       "indices": { "type": "index_sequence" }
     }
   }
@@ -244,12 +244,12 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   // Properties
   vertices: Float32Array
   indices?: Uint32Array
-  indexSizes?: Uint32Array
-  cellTypes?: Uint32Array
+  indexSizes?: TypedArray
+  cellTypes?: TypedArray
   dim?: number
   markers?: Record<string, Uint32Array>
-  markerSizes?: Record<string, Uint32Array>
-  markerCellTypes?: Record<string, Uint32Array>
+  markerSizes?: Record<string, TypedArray>
+  markerCellTypes?: Record<string, TypedArray>
   
   // Utility methods
   getPolygonCount(): number
@@ -274,12 +274,12 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
 interface MeshData {
   vertices: Float32Array
   indices?: Uint32Array
-  indexSizes?: Uint32Array
-  cellTypes?: Uint32Array
+  indexSizes?: TypedArray
+  cellTypes?: TypedArray
   dim?: number
   markers?: Record<string, Uint32Array>
-  markerSizes?: Record<string, Uint32Array>
-  markerCellTypes?: Record<string, Uint32Array>
+  markerSizes?: Record<string, TypedArray>
+  markerCellTypes?: Record<string, TypedArray>
 }
 ```
 
@@ -292,9 +292,10 @@ interface ArrayRefInfo {
   shape: number[]     // Array shape
   dtype: string       // Data type ('float32', 'uint32', etc.)
   itemsize: number    // Bytes per element
-  pad_bytes?: number  // Optional padding bytes
 }
 ```
+
+> **Note:** All dtypes are supported. Arrays with non-4-byte dtypes (e.g., `float16`, `int8`, `uint8`) are automatically padded during encoding and unpadded during decoding. For best performance, prefer 4-byte aligned dtypes like `float32`, `int32`, or `float64`.
 
 ### JSON Schema Types
 
@@ -307,7 +308,7 @@ interface JsonSchema {
 }
 
 interface JsonSchemaProperty {
-  type?: string | 'array' | 'vertex_buffer' | 'index_sequence'
+  type?: string | 'array' | 'index_sequence'
   items?: JsonSchemaProperty
   properties?: Record<string, JsonSchemaProperty>
   $ref?: string
@@ -315,7 +316,7 @@ interface JsonSchemaProperty {
 }
 
 // Array encoding types
-type ArrayEncoding = 'array' | 'vertex_buffer' | 'index_sequence'
+type ArrayEncoding = 'array' | 'index_sequence'
 ```
 
 ### Reconstruct Schema Types
@@ -385,8 +386,7 @@ interface ArrayRefInfo {
   $ref?: string      // Checksum reference
   shape: number[]
   dtype: string
-  itemsize: number
-  pad_bytes?: number
+  itemsize: number   // Must be multiple of 4 (meshoptimizer requirement)
 }
 ```
 

@@ -18,8 +18,8 @@ interface TexturedMeshData {
     // Base mesh fields
     vertices: Float32Array
     indices?: Uint32Array
-    indexSizes?: Uint32Array
-    cellTypes?: Uint32Array
+    indexSizes?: Uint8Array
+    cellTypes?: Uint8Array
     dim?: number
 
     // TexturedMesh-specific fields
@@ -79,12 +79,12 @@ describe('Python Integration Tests', () => {
             expect(mesh.indices!.length).toBe(36) // 12 triangles * 3 indices
 
             // Verify index sizes (should be all 3s for triangles)
-            expect(mesh.indexSizes).toBeInstanceOf(Uint32Array)
+            expect(mesh.indexSizes).toBeInstanceOf(Uint8Array)
             expect(mesh.indexSizes!.length).toBe(12) // 12 polygons
             expect(Array.from(mesh.indexSizes!).every(s => s === 3)).toBe(true)
 
             // Verify cell types (5 = VTK_TRIANGLE)
-            expect(mesh.cellTypes).toBeInstanceOf(Uint32Array)
+            expect(mesh.cellTypes).toBeInstanceOf(Uint8Array)
             expect(mesh.cellTypes!.length).toBe(12)
             expect(Array.from(mesh.cellTypes!).every(t => t === 5)).toBe(true)
 

@@ -16,7 +16,7 @@ def test_dynamic_model_base_mesh():
         "x-base": "Mesh",
         "properties": {
             "vertices": {
-                "type": "vertex_buffer",
+                "type": "array",
                 "description": "Vertex positions"
             },
             "indices": {
@@ -144,7 +144,7 @@ def test_dynamic_model_instantiate_with_mesh_base():
         "type": "object",
         "x-base": "Mesh",
         "properties": {
-            "vertices": {"type": "vertex_buffer"},
+            "vertices": {"type": "array"},
             "indices": {"type": "index_sequence"},
             "label": {"type": "string"}
         },
@@ -183,7 +183,7 @@ def test_dynamic_model_cache_respects_xbase():
         "title": "TestModel",
         "type": "object",
         "x-base": "Mesh",
-        "properties": {"vertices": {"type": "vertex_buffer"}},
+        "properties": {"vertices": {"type": "array"}},
         "required": ["vertices"]
     })
     
@@ -212,7 +212,7 @@ def test_mesh_subclass_has_combine_method():
         "type": "object",
         "x-base": "Mesh",
         "properties": {
-            "vertices": {"type": "vertex_buffer"},
+            "vertices": {"type": "array"},
             "indices": {"type": "index_sequence"},
             "temperature": {"type": "number"}
         },

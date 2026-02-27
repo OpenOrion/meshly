@@ -126,11 +126,11 @@ class TestMeshTriangulation:
         
         np.testing.assert_array_equal(
             tri_mesh.index_sizes,
-            np.full(expected_triangle_count, 3, dtype=np.uint32)
+            np.full(expected_triangle_count, 3, dtype=np.uint8)
         )
         np.testing.assert_array_equal(
             tri_mesh.cell_types,
-            np.full(expected_triangle_count, VTKCellType.VTK_TRIANGLE, dtype=np.uint32)
+            np.full(expected_triangle_count, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
         )
         
         quad_triangles = tri_mesh.indices[3:9]
@@ -232,11 +232,11 @@ class TestMeshTriangulation:
         
         np.testing.assert_array_equal(
             tri_mesh.index_sizes,
-            np.full(expected_triangles, 3, dtype=np.uint32)
+            np.full(expected_triangles, 3, dtype=np.uint8)
         )
         np.testing.assert_array_equal(
             tri_mesh.cell_types,
-            np.full(expected_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32)
+            np.full(expected_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
         )
         
         assert np.all(tri_mesh.indices < len(vertices))

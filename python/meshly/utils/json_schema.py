@@ -15,7 +15,7 @@ class JsonSchemaProperty(BaseModel):
     """A single property in a JSON schema."""
     
     type: Union[str, None] = None
-    """The type of the property (string, integer, number, boolean, array, object, null, or custom like vertex_buffer)."""
+    """The type of the property (string, integer, number, boolean, array, object, null, or custom like index_sequence)."""
     
     title: str | None = None
     """Human-readable title."""
@@ -83,8 +83,7 @@ class JsonSchemaProperty(BaseModel):
     
     def is_array_type(self) -> bool:
         """Check if this is a meshly array type (not a JSON Schema array like list[str])."""
-        # vertex_buffer and index_sequence are always meshly types
-        if self.type in {"vertex_buffer", "index_sequence"}:
+        if self.type == "index_sequence":
             return True
         # type="array" with items is a JSON Schema list, without items is a meshly array
         if self.type == "array":
@@ -181,7 +180,7 @@ class JsonSchema(BaseModel):
         return prop
     
     def get_encoding(self, field_name: str) -> str:
-        """Get the encoding type for a field (array, vertex_buffer, index_sequence)."""
+        """Get the encoding type for a field (array or index_sequence)."""
         prop = self.get_resolved_property(field_name)
         if not prop:
             return "array"

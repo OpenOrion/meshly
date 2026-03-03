@@ -220,7 +220,8 @@ class SerializationUtils:
     def _extract_resource(value: "Resource") -> ExtractedResult:
         """Extract a ResourceRef - gzip compress and store by checksum."""
         checksum = value.checksum
-        compressed = gzip.compress(value.data, compresslevel=6)
+        # Use mtime=0 for deterministic compression (no timestamp in header)
+        compressed = gzip.compress(value.data, compresslevel=6, mtime=0)
         ref_dict = value.model_dump(by_alias=True, exclude_defaults=True)
         return ExtractedResult(value=ref_dict, assets={checksum: compressed})
 

@@ -21,7 +21,7 @@ class TestConversion:
 
     def test_convert_to_numpy(self):
         """Test converting mesh to NumPy arrays."""
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
 
         numpy_mesh = mesh.convert_to("numpy")
 
@@ -36,7 +36,7 @@ class TestConversion:
         """Test converting mesh to JAX arrays."""
         import jax.numpy as jnp
 
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
         jax_mesh = mesh.convert_to("jax")
 
         assert hasattr(jax_mesh.vertices, 'device'), "Vertices should be JAX arrays"
@@ -51,7 +51,7 @@ class TestConversion:
         """Test converting between NumPy and JAX arrays."""
         import jax.numpy as jnp
 
-        numpy_mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        numpy_mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
         jax_mesh = numpy_mesh.convert_to("jax")
         assert hasattr(jax_mesh.vertices, 'device')
 
@@ -73,7 +73,7 @@ class TestConversion:
             normals: Optional[Array] = Field(None, description="Normal vectors")
 
         normals = np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1]], dtype=np.float32)
-        mesh = CustomMesh(vertices=self.vertices, indices=self.indices, normals=normals)
+        mesh = CustomMesh.create(vertices=self.vertices, indices=self.indices, normals=normals)
 
         jax_mesh = mesh.convert_to("jax")
 
@@ -98,7 +98,7 @@ class TestConversion:
             }
         }
 
-        jax_mesh = CustomMesh(
+        jax_mesh = CustomMesh.create(
             vertices=jnp.array(self.vertices),
             indices=jnp.array(self.indices),
             materials=materials
@@ -112,7 +112,7 @@ class TestConversion:
     @pytest.mark.skipif(HAS_JAX, reason="JAX is available, cannot test unavailable scenario")
     def test_convert_to_jax_without_jax_raises_error(self):
         """Test that convert_to("jax") raises error when JAX is unavailable."""
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
 
         with pytest.raises(AssertionError, match="JAX is not available"):
             mesh.convert_to("jax")

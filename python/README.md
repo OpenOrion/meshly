@@ -13,7 +13,7 @@ pip install meshly
 ### Core Classes
 
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
-- **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
+- **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding. Use factory methods: `from_triangles()`, `from_polygons()`, `create()`
 - **`ArrayUtils`**: Utility class for extracting/reconstructing individual arrays
 - **`PackableStore`**: File-based store for persistent storage with deduplication
 - **`LazyModel`**: Lazy proxy that defers asset loading until field access
@@ -64,30 +64,59 @@ reconstructed = ArrayUtils.reconstruct(extracted)
 
 ### Basic Mesh Usage
 
+Use factory methods to create meshes from various input formats:
+
 ```python
 import numpy as np
 from meshly import Mesh
 
-# Create a simple triangle mesh
+# Vertices shared by all examples
 vertices = np.array([
     [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]
 ], dtype=np.float32)
 
-indices = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
+# Method 1: from_triangles() - Nx3 triangle index array (most common)
+triangles = np.array([[0, 1, 2], [1, 3, 2]], dtype=np.uint32)
+mesh = Mesh.from_triangles(vertices=vertices, triangles=triangles)
 
-mesh = Mesh(vertices=vertices, indices=indices)
+# Method 2: from_polygons() - list of polygon vertex indices (mixed sizes OK)
+polygons = [[0, 1, 2], [0, 2, 3]]  # Can mix triangles, quads, etc.
+mesh = Mesh.from_polygons(vertices=vertices, polygons=polygons)
+
+# Method 3: create() - flexible convenience wrapper (auto-detects format)
+mesh = Mesh.create(vertices=vertices, indices=triangles)  # 2D array
+mesh = Mesh.create(vertices=vertices, indices=polygons)   # List of lists
 
 # Save to zip (uses meshoptimizer compression)
 mesh.save_to_zip("mesh.zip")
 
 # Load from zip
 loaded = Mesh.load_from_zip("mesh.zip")
-print(f"Loaded {loaded.vertex_count} vertices")
+print(f"Loaded {loaded.vertex_count} vertices, {loaded.polygon_count} polygons")
 
 # Or use encode/decode for in-memory operations
 encoded = mesh.encode()  # Returns bytes
 decoded = Mesh.decode(encoded)
 ```
+
+#### Direct Constructor (Advanced)
+
+The direct constructor requires canonical fields with pre-computed `index_sizes` and `cell_types`:
+
+```python
+from meshly.cell_types import VTKCellType
+
+# Direct constructor for maximum performance (no validation overhead)
+mesh = Mesh(
+    vertices=vertices,
+    indices=np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32),  # Flattened 1D
+    index_sizes=np.array([3, 3], dtype=np.uint8),           # 2 triangles
+    cell_types=np.array([VTKCellType.VTK_TRIANGLE, VTKCellType.VTK_TRIANGLE], dtype=np.uint8),
+)
+```
+
+> **Note:** Use factory methods (`from_triangles`, `from_polygons`, `create`) for convenience. 
+> Use the direct constructor only when you need maximum performance with pre-processed data.
 
 ### Custom Mesh Subclasses
 

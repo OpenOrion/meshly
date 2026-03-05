@@ -10,6 +10,11 @@ The Mesh class inherits from Packable and adds:
 - Specialized meshoptimizer encoding for vertices and indices via Annotated types
 - Mesh operations: triangulate, optimize, simplify
 - Marker support for boundary conditions and regions
+
+Design principles:
+- Fields use canonical types only (numpy arrays)
+- Factory classmethods handle flexible input formats
+- No complex validation/conversion in __init__
 """
 
 from meshly.array import Array, ArrayUtils, IndexSequence
@@ -23,20 +28,23 @@ from typing import (
     ClassVar,
     Dict,
     Optional,
-    Any,
     TypeVar,
     List,
     Sequence,
     Union,
+    overload,
 )
 import numpy as np
-from pydantic import Field, model_validator
-from pydantic.json_schema import JsonSchemaValue, GetJsonSchemaHandler
+from pydantic import Field
+from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import core_schema as pydantic_core_schema
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pydantic import GetJsonSchemaHandler
 
 
-# Type variable for the Mesh class
-TMesh = TypeVar("T", bound="Mesh")
+TMesh = TypeVar("TMesh", bound="Mesh")
 
 
 class Mesh(Packable):
@@ -49,6 +57,10 @@ class Mesh(Packable):
     Inherits from Packable for automatic array serialization. Mesh uses
     specialized meshoptimizer encoding for vertices and indices via Annotated
     types (Array, IndexSequence).
+    
+    For flexible input formats, use factory methods:
+    - Mesh.from_polygons() - create from list of polygon vertex indices
+    - Mesh.from_triangles() - create from Nx3 triangle array
     """
 
     is_contained: ClassVar[bool] = True
@@ -56,7 +68,7 @@ class Mesh(Packable):
 
     @classmethod
     def __get_pydantic_json_schema__(
-        cls, core_schema_obj: pydantic_core_schema.CoreSchema, handler: GetJsonSchemaHandler
+        cls, core_schema_obj: pydantic_core_schema.CoreSchema, handler: "GetJsonSchemaHandler"
     ) -> JsonSchemaValue:
         """Inject x-base hint into JSON schema indicating this is a Mesh."""
         json_schema = handler(core_schema_obj)
@@ -65,49 +77,228 @@ class Mesh(Packable):
         return json_schema
 
     # ============================================================
-    # Field definitions with encoding specified via Annotated types
+    # Field definitions - canonical types only (no Optional)
     # ============================================================
 
-    vertices: Array = Field(
-        ...,
-        description="Vertex data as a numpy or JAX array",
-    )
-    indices: Optional[Union[IndexSequence, List[Any]]] = Field(
-        None,
-        description="Index data as a flattened 1D numpy/JAX array",
-    )
-    index_sizes: Optional[Union[Array, List[int]]] = None
-    """
-    Size of each polygon (number of vertices per polygon).
-    If not provided, will be automatically inferred from indices structure:
-    - For 2D numpy/JAX arrays: uniform polygon size from array shape
-    - For list of lists: individual polygon sizes
-    If explicitly provided, will be validated against inferred structure.
-    """
+    vertices: Array = Field(..., description="Vertex positions as Nx3 float32 array")
+    indices: IndexSequence = Field(..., description="Flattened 1D index array (uint32)")
+    index_sizes: Array = Field(..., description="Number of vertices per cell (uint8)")
+    cell_types: Array = Field(..., description="VTK cell type per cell (uint8)")
+    dim: int = Field(default=3, description="Mesh dimension (2D or 3D)")
+    
+    # Markers - all canonical numpy arrays
+    markers: Dict[str, Array] = Field(default_factory=dict, description="Marker indices (flattened)")
+    marker_sizes: Dict[str, Array] = Field(default_factory=dict, description="Marker cell sizes")
+    marker_cell_types: Dict[str, Array] = Field(default_factory=dict, description="Marker VTK cell types")
 
-    cell_types: Optional[Union[Array, List[int]]] = None
-    """
-    Cell type identifier for each polygon, corresponding to index_sizes.
-    Common VTK cell types include:
-    - 1: Vertex, 3: Line, 5: Triangle, 9: Quad, 10: Tetra, 12: Hexahedron, 13: Wedge, 14: Pyramid
-    If not provided, will be automatically inferred from polygon sizes:
-    - Size 1: Vertex (1), Size 2: Line (3), Size 3: Triangle (5), Size 4: Quad (9)
-    If explicitly provided, must have same length as index_sizes.
-    """
+    # ============================================================
+    # Factory methods for flexible input
+    # ============================================================
 
-    # Mesh dimension - auto-computed from cell_types if not provided
-    dim: Optional[int] = Field(
-        default=None, description="Mesh dimension (2D or 3D). Auto-computed from cell types if not provided.")
+    @classmethod
+    def from_polygons(
+        cls: type[TMesh],
+        vertices: np.ndarray,
+        polygons: Sequence[Sequence[int]],
+        *,
+        dim: Optional[int] = None,
+        markers: Optional[Dict[str, Sequence[Sequence[int]]]] = None,
+        **kwargs,
+    ) -> TMesh:
+        """Create mesh from list of polygon vertex indices.
+        
+        Args:
+            vertices: Nx3 vertex positions
+            polygons: List of polygons, each polygon is a list of vertex indices
+            dim: Mesh dimension (auto-detected if None)
+            markers: Optional dict of marker name -> list of element indices
+            **kwargs: Additional fields for subclasses
+            
+        Returns:
+            New Mesh instance
+            
+        Example:
+            >>> mesh = Mesh.from_polygons(
+            ...     vertices=np.array([[0,0,0], [1,0,0], [1,1,0], [0,1,0]]),
+            ...     polygons=[[0, 1, 2], [0, 2, 3]]
+            ... )
+        """
+        vertices = np.asarray(vertices, dtype=np.float32)
+        result = ElementData.from_polygons([list(p) for p in polygons])
+        
+        # Process markers
+        marker_dict: Dict[str, Array] = {}
+        marker_sizes_dict: Dict[str, Array] = {}
+        marker_cell_types_dict: Dict[str, Array] = {}
+        
+        if markers:
+            for name, elements in markers.items():
+                marker_result = ElementData.from_polygons([list(e) for e in elements])
+                marker_dict[name] = marker_result.indices
+                marker_sizes_dict[name] = marker_result.sizes
+                marker_cell_types_dict[name] = marker_result.cell_types
+        
+        # Auto-compute dimension
+        if dim is None:
+            dim = CellTypeUtils.get_mesh_dimension(result.cell_types) if len(result.cell_types) > 0 else 3
+        
+        return cls(
+            vertices=vertices,
+            indices=result.indices,
+            index_sizes=result.sizes,
+            cell_types=result.cell_types,
+            dim=dim,
+            markers=marker_dict,
+            marker_sizes=marker_sizes_dict,
+            marker_cell_types=marker_cell_types_dict,
+            **kwargs,
+        )
 
-    # Marker structure - accepts both sequence of sequences and flattened arrays, converts to flattened internally
-    markers: Dict[str, Union[Sequence[Union[Sequence[int], Array]], Array]] = Field(
-        default_factory=dict, description="marker node indices - accepts sequence of sequences or flattened arrays")
-    # sizes of each marker element (standardized approach like index_sizes)
-    marker_sizes: dict[str, Array] = Field(
-        default_factory=dict, description="sizes of each marker element")
-    # VTK cell types for each marker element, map to GMSH types with VTK_TO_GMSH_ELEMENT_TYPE
-    marker_cell_types: dict[str, Array] = Field(
-        default_factory=dict, description="VTK cell types for each marker element")
+    @classmethod
+    def from_triangles(
+        cls: type[TMesh],
+        vertices: np.ndarray,
+        triangles: np.ndarray,
+        *,
+        dim: int = 3,
+        markers: Optional[Dict[str, Sequence[Sequence[int]]]] = None,
+        **kwargs,
+    ) -> TMesh:
+        """Create mesh from Nx3 triangle index array.
+        
+        Args:
+            vertices: Mx3 vertex positions
+            triangles: Nx3 triangle indices
+            dim: Mesh dimension (default 3)
+            markers: Optional dict of marker name -> list of element indices
+            **kwargs: Additional fields for subclasses
+            
+        Returns:
+            New Mesh instance
+            
+        Example:
+            >>> mesh = Mesh.from_triangles(
+            ...     vertices=np.array([[0,0,0], [1,0,0], [0,1,0]]),
+            ...     triangles=np.array([[0, 1, 2]])
+            ... )
+        """
+        vertices = np.asarray(vertices, dtype=np.float32)
+        triangles = np.asarray(triangles, dtype=np.uint32).reshape(-1, 3)
+        
+        if triangles.ndim != 2 or triangles.shape[1] != 3:
+            raise ValueError(f"triangles must be Nx3 array, got shape {triangles.shape}")
+        
+        num_triangles = len(triangles)
+        
+        # Process markers
+        marker_dict: Dict[str, Array] = {}
+        marker_sizes_dict: Dict[str, Array] = {}
+        marker_cell_types_dict: Dict[str, Array] = {}
+        
+        if markers:
+            for name, elements in markers.items():
+                marker_result = ElementData.from_polygons([list(e) for e in elements])
+                marker_dict[name] = marker_result.indices
+                marker_sizes_dict[name] = marker_result.sizes
+                marker_cell_types_dict[name] = marker_result.cell_types
+        
+        return cls(
+            vertices=vertices,
+            indices=triangles.flatten(),
+            index_sizes=np.full(num_triangles, 3, dtype=np.uint8),
+            cell_types=np.full(num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8),
+            dim=dim,
+            markers=marker_dict,
+            marker_sizes=marker_sizes_dict,
+            marker_cell_types=marker_cell_types_dict,
+            **kwargs,
+        )
+
+    @classmethod
+    def create(
+        cls: type[TMesh],
+        vertices: np.ndarray,
+        indices: Union[np.ndarray, Sequence[Sequence[int]], None] = None,
+        *,
+        index_sizes: Optional[np.ndarray] = None,
+        cell_types: Optional[np.ndarray] = None,
+        dim: Optional[int] = None,
+        markers: Optional[Dict[str, Union[np.ndarray, Sequence[Sequence[int]]]]] = None,
+        marker_sizes: Optional[Dict[str, np.ndarray]] = None,
+        marker_cell_types: Optional[Dict[str, np.ndarray]] = None,
+        **kwargs,
+    ) -> TMesh:
+        """Create mesh from various input formats (convenience wrapper).
+        
+        Handles:
+        - 2D index arrays (uniform polygons)
+        - List of lists (mixed polygons)
+        - Flat arrays with explicit sizes
+        - Markers in list or array format
+        
+        For best performance, use the direct constructor with pre-processed arrays.
+        """
+        vertices = np.asarray(vertices, dtype=np.float32)
+        
+        # Process indices
+        if indices is None:
+            final_indices = np.array([], dtype=np.uint32)
+            final_sizes = np.array([], dtype=np.uint8)
+            final_types = np.array([], dtype=np.uint8)
+        else:
+            result = ElementUtils.convert_array_input(indices, index_sizes, cell_types)
+            if result is not None:
+                final_indices = result.indices
+                final_sizes = result.sizes
+                final_types = result.cell_types
+            else:
+                final_indices = np.array([], dtype=np.uint32)
+                final_sizes = np.array([], dtype=np.uint8)
+                final_types = np.array([], dtype=np.uint8)
+        
+        # Auto-compute dimension
+        if dim is None and len(final_types) > 0:
+            dim = CellTypeUtils.get_mesh_dimension(final_types)
+        dim = dim or 3
+        
+        # Process markers
+        final_markers: Dict[str, Array] = {}
+        final_marker_sizes: Dict[str, Array] = {}
+        final_marker_cell_types: Dict[str, Array] = {}
+        
+        if markers:
+            for name, data in markers.items():
+                if isinstance(data, np.ndarray):
+                    final_markers[name] = data.astype(np.uint32)
+                    if marker_sizes and name in marker_sizes:
+                        final_marker_sizes[name] = marker_sizes[name]
+                    if marker_cell_types and name in marker_cell_types:
+                        final_marker_cell_types[name] = marker_cell_types[name]
+                    # Validate required fields present
+                    if name not in final_marker_sizes or name not in final_marker_cell_types:
+                        raise ValueError(f"Marker '{name}' given as array requires marker_sizes and marker_cell_types")
+                else:
+                    # List of lists - convert
+                    marker_result = ElementData.from_polygons([list(el) for el in data])
+                    final_markers[name] = marker_result.indices
+                    final_marker_sizes[name] = marker_result.sizes
+                    final_marker_cell_types[name] = marker_result.cell_types
+        
+        return cls(
+            vertices=vertices,
+            indices=final_indices,
+            index_sizes=final_sizes,
+            cell_types=final_types,
+            dim=dim,
+            markers=final_markers,
+            marker_sizes=final_marker_sizes,
+            marker_cell_types=final_marker_cell_types,
+            **kwargs,
+        )
+
+    # ============================================================
+    # Properties
+    # ============================================================
 
     @property
     def vertex_count(self) -> int:
@@ -117,154 +308,68 @@ class Mesh(Packable):
     @property
     def index_count(self) -> int:
         """Get the number of indices."""
-        return len(self.indices) if self.indices is not None else 0
+        return len(self.indices)
 
     @property
     def polygon_count(self) -> int:
-        """Get the number of polygons."""
-        return len(self.index_sizes) if self.index_sizes is not None else 0
+        """Get the number of polygons/cells."""
+        return len(self.index_sizes)
 
     @property
     def is_uniform_polygons(self) -> bool:
         """Check if all polygons have the same number of vertices."""
-        if self.index_sizes is None:
-            return True  # No polygon info means uniform (legacy)
+        if len(self.index_sizes) == 0:
+            return True
         return ElementUtils.is_uniform_elements(self.index_sizes)
 
-    def get_polygon_indices(self) -> Union[Array, list]:
-        """
-        Get indices in their original polygon structure.
+    def get_polygon_indices(self) -> Union[np.ndarray, List[List[int]]]:
+        """Get indices in their original polygon structure.
 
         Returns:
-            For uniform polygons: 2D numpy/JAX array where each row is a polygon
+            For uniform polygons: 2D numpy array where each row is a polygon
             For mixed polygons: List of lists where each sublist is a polygon
         """
-        if self.indices is None:
-            return None
+        if len(self.indices) == 0:
+            return np.array([], dtype=np.uint32).reshape(0, 3)
 
-        if self.index_sizes is None:
+        if len(self.index_sizes) == 0:
             # Legacy format - assume triangles
             if len(self.indices) % 3 == 0:
                 return self.indices.reshape(-1, 3)
-            else:
-                raise ValueError(
-                    "Cannot determine polygon structure without index_sizes")
+            raise ValueError("Cannot determine polygon structure without index_sizes")
 
-        # Use ElementUtils for consistent reconstruction
         return ElementUtils.get_element_structure(self.indices, self.index_sizes)
 
     def get_reconstructed_markers(self) -> Dict[str, List[List[int]]]:
-        """Reconstruct marker elements from flattened structure back to list of lists"""
+        """Reconstruct marker elements from flattened structure back to list of lists."""
         reconstructed = {}
-
-        for marker_name, flattened_indices in self.markers.items():
-            sizes = self.marker_sizes[marker_name]
-            marker_cell_types = self.marker_cell_types.get(marker_name, None)
-
-            # Use ElementUtils to reconstruct elements
-            try:
-                elements = ElementUtils.convert_flattened_to_list(
-                    flattened_indices, sizes, marker_cell_types
-                )
-                reconstructed[marker_name] = elements
-            except ValueError as e:
-                raise ValueError(
-                    f"Error reconstructing marker '{marker_name}': {e}")
-
+        for name, flattened_indices in self.markers.items():
+            sizes = self.marker_sizes[name]
+            cell_types = self.marker_cell_types.get(name)
+            elements = ElementUtils.convert_flattened_to_list(flattened_indices, sizes, cell_types)
+            reconstructed[name] = elements
         return reconstructed
 
-    class Config:
-        arbitrary_types_allowed = True
-
-    @model_validator(mode="after")
-    def validate_arrays(self) -> "Mesh":
-        """
-        Validate and convert arrays to the correct types.
-
-        Handles various input formats for indices and automatically infers
-        index_sizes and cell_types when not explicitly provided.
-        """
-        # Helper to convert arrays to numpy (needed for meshoptimizer)
-        def to_numpy(arr):
-            return ArrayUtils.convert_array(arr, "numpy") if ArrayUtils.is_array(arr) else arr
-
-        # Ensure vertices is float32, preserving JAX type if present
-        if self.vertices is not None:
-            vertex_type = ArrayUtils.detect_array_type(self.vertices)
-            self.vertices = ArrayUtils.convert_array(
-                np.asarray(self.vertices, dtype=np.float32), vertex_type)
-
-        # Process indices through ElementUtils
-        if self.indices is not None:
-            result = ElementUtils.convert_array_input(
-                to_numpy(self.indices), to_numpy(
-                    self.index_sizes), to_numpy(self.cell_types)
-            )
-            if result is not None:
-                self.indices = result.indices
-                self.index_sizes = result.sizes
-                self.cell_types = result.cell_types
-
-        # Auto-compute dimension from cell types
-        if self.dim is None:
-            self.dim = CellTypeUtils.get_mesh_dimension(self.cell_types) \
-                if self.cell_types is not None and len(self.cell_types) > 0 else 3
-
-        # Convert markers to flattened arrays
-        if self.markers:
-            converted_markers = {}
-            for name, data in self.markers.items():
-                data = to_numpy(data)
-                if isinstance(data, np.ndarray):
-                    converted_markers[name] = data.astype(np.uint32)
-                    # Auto-calculate sizes from cell_types if missing
-                    if name in self.marker_cell_types and name not in self.marker_sizes:
-                        self.marker_sizes[name] = CellTypeUtils.infer_sizes_from_vtk_cell_types(
-                            self.marker_cell_types[name])
-                    if name not in self.marker_sizes or name not in self.marker_cell_types:
-                        raise ValueError(
-                            f"Marker '{name}' missing marker_sizes or marker_cell_types")
-                else:
-                    # Convert list of polygons to flattened structure
-                    result = ElementData.from_polygons([list(el) for el in data])
-                    converted_markers[name] = result.indices
-                    self.marker_sizes[name] = result.sizes
-                    self.marker_cell_types[name] = result.cell_types
-            self.markers = converted_markers
-
-        return self
+    # ============================================================
+    # Class methods
+    # ============================================================
 
     @classmethod
     def combine(
         cls: type[TMesh],
-        meshes: List[TMesh],
+        meshes: Sequence[TMesh],
         marker_names: Optional[List[str]] = None,
         preserve_markers: bool = True,
     ) -> TMesh:
-        """
-        Combine multiple meshes into a single mesh.
+        """Combine multiple meshes into a single mesh.
 
         Args:
             meshes: List of Mesh objects to combine
-            marker_names: Optional list of marker names to assign to each mesh.
-                         If provided, each mesh is assigned exclusively to its corresponding marker name,
-                         completely replacing any existing markers from that mesh.
-                         Must have same length as meshes list.
-            preserve_markers: Whether to preserve existing markers from source meshes (default: True).
-                            Only applies when marker_names is None. If marker_names is provided, this is ignored.
-                            If True, existing markers are kept with their original names.
-                            If multiple meshes have the same marker name, their elements are combined.
+            marker_names: Optional marker names to assign to each mesh
+            preserve_markers: Whether to preserve existing markers (default: True)
 
         Returns:
             A new combined Mesh object
-
-        Raises:
-            ValueError: If meshes list is empty or if marker_names length doesn't match meshes length
-
-        Example:
-            >>> mesh1 = Mesh(vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]]), indices=np.array([0, 1, 2]))
-            >>> mesh2 = Mesh(vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]]), indices=np.array([0, 1, 2]))
-            >>> combined = Mesh.combine([mesh1, mesh2], marker_names=["part1", "part2"])
         """
         if not meshes:
             raise ValueError("Cannot combine empty list of meshes")
@@ -274,56 +379,43 @@ class Mesh(Packable):
                 f"marker_names length ({len(marker_names)}) must match meshes length ({len(meshes)})"
             )
 
-        # Pre-compute vertex offsets for all meshes
-        vertex_offsets = MeshUtils.compute_vertex_offsets(meshes)
+        vertex_offsets = MeshUtils.compute_vertex_offsets(list(meshes))
 
-        # Collect vertices and indices from all meshes
         all_vertices = [mesh.vertices for mesh in meshes]
-        all_indices = [mesh.indices + vertex_offsets[i]
-                       for i, mesh in enumerate(meshes) if mesh.indices is not None]
-        all_index_sizes = [
-            mesh.index_sizes for mesh in meshes if mesh.index_sizes is not None]
-        all_cell_types = [
-            mesh.cell_types for mesh in meshes if mesh.cell_types is not None]
+        all_indices = [
+            mesh.indices + vertex_offsets[i]
+            for i, mesh in enumerate(meshes) if len(mesh.indices) > 0
+        ]
+        all_index_sizes = [mesh.index_sizes for mesh in meshes if len(mesh.index_sizes) > 0]
+        all_cell_types = [mesh.cell_types for mesh in meshes if len(mesh.cell_types) > 0]
 
-        # Build markers using utility methods
         if marker_names is not None:
             combined_markers, combined_marker_sizes, combined_marker_cell_types = \
-                MeshUtils.combine_markers_with_names(
-                    meshes, marker_names, vertex_offsets)
+                MeshUtils.combine_markers_with_names(list(meshes), marker_names, vertex_offsets)
         elif preserve_markers:
             combined_markers, combined_marker_sizes, combined_marker_cell_types = \
-                MeshUtils.preserve_existing_markers(meshes, vertex_offsets)
+                MeshUtils.preserve_existing_markers(list(meshes), vertex_offsets)
         else:
             combined_markers = {}
             combined_marker_sizes = {}
             combined_marker_cell_types = {}
 
-        # Concatenate all arrays
         combined_vertices = np.concatenate(all_vertices, axis=0)
-        combined_indices = np.concatenate(
-            all_indices, axis=0) if all_indices else None
-        combined_index_sizes = np.concatenate(
-            all_index_sizes, axis=0) if all_index_sizes else None
-        combined_cell_types_array = np.concatenate(
-            all_cell_types, axis=0) if all_cell_types else None
+        combined_indices = np.concatenate(all_indices, axis=0) if all_indices else np.array([], dtype=np.uint32)
+        combined_index_sizes = np.concatenate(all_index_sizes, axis=0) if all_index_sizes else np.array([], dtype=np.uint8)
+        combined_cell_types = np.concatenate(all_cell_types, axis=0) if all_cell_types else np.array([], dtype=np.uint8)
 
-        # Get dimension from first mesh
-        dim = meshes[0].dim
-
-        # Collect extra fields from subclass (take from first mesh)
         extra_fields = {
             name: getattr(meshes[0], name)
             for name in cls.model_fields.keys() - Mesh.model_fields.keys()
         }
 
-        # Create combined mesh
         return cls(
             vertices=combined_vertices,
             indices=combined_indices,
             index_sizes=combined_index_sizes,
-            cell_types=combined_cell_types_array,
-            dim=dim,
+            cell_types=combined_cell_types,
+            dim=meshes[0].dim,
             markers=combined_markers,
             marker_sizes=combined_marker_sizes,
             marker_cell_types=combined_marker_cell_types,
@@ -331,57 +423,30 @@ class Mesh(Packable):
         )
 
     def extract_by_marker(self, marker_name: str) -> "Mesh":
-        """
-        Extract a submesh containing only the elements referenced by a specific marker.
-
-        This method creates a new mesh containing only the vertices and elements (if any)
-        that are referenced by the specified marker.
+        """Extract a submesh containing only elements referenced by a marker.
 
         Args:
             marker_name: Name of the marker to extract
 
         Returns:
-            A new Mesh object containing only the vertices/elements from the marker
-
-        Raises:
-            ValueError: If marker_name doesn't exist in the mesh
-
-        Example:
-            >>> mesh = Mesh(vertices=vertices, indices=indices, markers={"boundary": [0, 1, 2]})
-            >>> boundary_mesh = mesh.extract_by_marker("boundary")
+            A new Mesh object containing only the marker's vertices/elements
         """
         if marker_name not in self.markers:
             raise ValueError(
-                f"Marker '{marker_name}' not found. Available markers: {list(self.markers.keys())}"
+                f"Marker '{marker_name}' not found. Available: {list(self.markers.keys())}"
             )
 
-        # Get marker data
         marker_indices = self.markers[marker_name]
         marker_sizes = self.marker_sizes.get(marker_name)
         marker_cell_types = self.marker_cell_types.get(marker_name)
 
         if marker_sizes is None or marker_cell_types is None:
-            raise ValueError(
-                f"Marker '{marker_name}' is missing size or cell type information"
-            )
+            raise ValueError(f"Marker '{marker_name}' missing size or cell type info")
 
-        # Reconstruct marker elements
-        marker_elements = ElementUtils.get_element_structure(
-            marker_indices, marker_sizes
-        )
-
-        # Find all unique vertex indices referenced by the marker
         unique_vertices = np.unique(marker_indices)
-
-        # Extract vertices
         extracted_vertices = self.vertices[unique_vertices]
+        remapped_indices = np.searchsorted(unique_vertices, marker_indices).astype(np.uint32)
 
-        # Create vectorized mapping using searchsorted for O(n log n) instead of O(n^2)
-        # searchsorted finds where each marker_index would be inserted in the sorted unique_vertices array
-        remapped_indices = np.searchsorted(
-            unique_vertices, marker_indices).astype(np.uint32)
-
-        # Create new mesh with extracted data
         return Mesh(
             vertices=extracted_vertices,
             indices=remapped_indices,
@@ -390,38 +455,27 @@ class Mesh(Packable):
             dim=self.dim,
         )
 
+    # ============================================================
     # Mesh operations
+    # ============================================================
+
     def triangulate(self) -> "Mesh":
-        """
-        Convert mesh to pure triangle surface mesh.
-
-        For polygon meshes (2D surface cells like triangles, quads, polygons):
-            Uses fan triangulation: for each polygon with n vertices (n >= 3),
-            creates (n-2) triangles by connecting the first vertex to all
-            non-adjacent vertex pairs.
-
-        For volume meshes (3D cells like hexahedra, tetrahedra, wedges, pyramids):
-            Extracts the surface faces of each cell and triangulates them.
+        """Convert mesh to pure triangle surface mesh.
 
         Returns:
             A new mesh with all cells converted to triangles
         """
-        if self.indices is None or self.index_sizes is None:
-            raise ValueError(
-                "Mesh must have indices and index_sizes to triangulate")
+        if len(self.indices) == 0 or len(self.index_sizes) == 0:
+            raise ValueError("Mesh must have indices and index_sizes to triangulate")
 
-        # Check if already all triangles
         if np.all(self.index_sizes == 3) and np.all(self.cell_types == VTKCellType.VTK_TRIANGLE):
             return self.model_copy(deep=True)
 
-        # Compute cell offsets once
-        cell_offsets = np.concatenate(
-            [[0], np.cumsum(self.index_sizes[:-1])]).astype(np.uint32)
+        cell_offsets = np.concatenate([[0], np.cumsum(self.index_sizes[:-1])]).astype(np.uint32)
 
-        # Pre-check planarity for volume cells to reclassify them as polygons
-        volume_types = set(
-            TriangulationUtils._get_volume_cell_patterns().keys())
+        volume_types = set(TriangulationUtils._get_volume_cell_patterns().keys())
         effective_types = self.cell_types.copy()
+        
         for i, (cell_type, size, offset) in enumerate(zip(self.cell_types, self.index_sizes, cell_offsets)):
             if cell_type in volume_types:
                 cell_indices = self.indices[offset:offset + size]
@@ -430,7 +484,7 @@ class Mesh(Packable):
 
         result_chunks = []
 
-        # Process triangles (already done, just copy)
+        # Process triangles
         tri_mask = effective_types == VTKCellType.VTK_TRIANGLE
         if np.any(tri_mask):
             tri_offsets = cell_offsets[tri_mask]
@@ -438,7 +492,7 @@ class Mesh(Packable):
             for offset, size in zip(tri_offsets, tri_sizes):
                 result_chunks.append(self.indices[offset:offset + size].copy())
 
-        # Process all polygon types
+        # Process polygons
         polygon_types = {VTKCellType.VTK_QUAD, VTKCellType.VTK_POLYGON}
         polygon_mask = np.isin(effective_types, list(polygon_types))
         if np.any(polygon_mask):
@@ -447,15 +501,13 @@ class Mesh(Packable):
 
             if np.any(poly_sizes < 3):
                 invalid_idx = np.where(poly_sizes < 3)[0][0]
-                raise ValueError(
-                    f"Polygon with {poly_sizes[invalid_idx]} vertices cannot be triangulated")
+                raise ValueError(f"Polygon with {poly_sizes[invalid_idx]} vertices cannot be triangulated")
 
             for size in np.unique(poly_sizes):
                 size_mask = poly_sizes == size
                 size_offsets = poly_offsets[size_mask]
                 if len(size_offsets) > 0:
-                    tris = TriangulationUtils.triangulate_polygons(
-                        self.indices, size_offsets, size)
+                    tris = TriangulationUtils.triangulate_polygons(self.indices, size_offsets, size)
                     if len(tris) > 0:
                         result_chunks.append(tris)
 
@@ -467,14 +519,14 @@ class Mesh(Packable):
                 offsets = cell_offsets[mask]
                 if len(offsets) > 0:
                     tris = TriangulationUtils.triangulate_uniform_cells(
-                        self.indices, offsets, cell_size, tri_pattern)
+                        self.indices, offsets, cell_size, tri_pattern
+                    )
                     if len(tris) > 0:
                         result_chunks.append(tris)
 
-        # Check for unsupported types
+        # Validate all types handled
         skip_types = {VTKCellType.VTK_VERTEX, VTKCellType.VTK_LINE}
-        supported_types = {
-            VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
+        supported_types = {VTKCellType.VTK_TRIANGLE} | polygon_types | volume_types
         all_handled = supported_types | skip_types
 
         for i, ct in enumerate(effective_types):
@@ -484,26 +536,23 @@ class Mesh(Packable):
         if not result_chunks:
             raise ValueError("No triangulatable cells found in mesh")
 
-        triangulated_indices_flat = np.concatenate(result_chunks)
-        num_triangles = len(triangulated_indices_flat) // 3
+        triangulated_indices = np.concatenate(result_chunks)
+        num_triangles = len(triangulated_indices) // 3
 
         return Mesh(
             vertices=self.vertices.copy(),
-            indices=triangulated_indices_flat,
+            indices=triangulated_indices,
             index_sizes=np.full(num_triangles, 3, dtype=np.uint8),
-            cell_types=np.full(
-                num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8),
+            cell_types=np.full(num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8),
             dim=self.dim,
             markers={name: data.copy() for name, data in self.markers.items()},
-            marker_sizes={name: data.copy()
-                          for name, data in self.marker_sizes.items()},
-            marker_cell_types={name: data.copy()
-                               for name, data in self.marker_cell_types.items()},
+            marker_sizes={name: data.copy() for name, data in self.marker_sizes.items()},
+            marker_cell_types={name: data.copy() for name, data in self.marker_cell_types.items()},
         )
 
     def optimize_vertex_cache(self) -> "Mesh":
         """Optimize mesh for vertex cache efficiency."""
-        if self.indices is None:
+        if len(self.indices) == 0:
             raise ValueError("Mesh has no indices to optimize")
 
         result_mesh = self.model_copy(deep=True)
@@ -516,7 +565,7 @@ class Mesh(Packable):
 
     def optimize_overdraw(self, threshold: float = 1.05) -> "Mesh":
         """Optimize mesh to reduce overdraw."""
-        if self.indices is None:
+        if len(self.indices) == 0:
             raise ValueError("Mesh has no indices to optimize")
 
         result_mesh = self.model_copy(deep=True)
@@ -535,7 +584,7 @@ class Mesh(Packable):
 
     def optimize_vertex_fetch(self) -> "Mesh":
         """Optimize mesh for vertex fetch efficiency."""
-        if self.indices is None:
+        if len(self.indices) == 0:
             raise ValueError("Mesh has no indices to optimize")
 
         result_mesh = self.model_copy(deep=True)
@@ -554,10 +603,9 @@ class Mesh(Packable):
     def simplify(self, target_ratio: float = 0.25, target_error: float = 0.01, options: int = 0) -> "Mesh":
         """Simplify mesh to reduce complexity.
 
-        Note: Simplification only works on triangle meshes. The simplified result
-        will have updated index_sizes and cell_types for the new triangle count.
+        Note: Simplification only works on triangle meshes.
         """
-        if self.indices is None:
+        if len(self.indices) == 0:
             raise ValueError("Mesh has no indices to simplify")
 
         result_mesh = self.model_copy(deep=True)
@@ -579,29 +627,20 @@ class Mesh(Packable):
         )
         result_mesh.indices = simplified_indices[:new_index_count]
 
-        # Update index_sizes and cell_types for new triangle count
         num_triangles = new_index_count // 3
         result_mesh.index_sizes = np.full(num_triangles, 3, dtype=np.uint8)
-        result_mesh.cell_types = np.full(
-            num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
+        result_mesh.cell_types = np.full(num_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
 
         return result_mesh
+
+    # ============================================================
+    # Export methods
+    # ============================================================
 
     def to_pyvista(self):
         """Convert mesh to a PyVista UnstructuredGrid.
         
-        Requires pyvista to be installed (available in dev dependencies).
-        
-        Returns:
-            pv.UnstructuredGrid: PyVista mesh object
-            
-        Raises:
-            ImportError: If pyvista is not installed
-            
-        Example:
-            >>> mesh = Mesh(vertices=vertices, indices=indices)
-            >>> pv_mesh = mesh.to_pyvista()
-            >>> pv_mesh.plot()
+        Requires pyvista to be installed.
         """
         try:
             import pyvista as pv
@@ -611,10 +650,9 @@ class Mesh(Packable):
                 "Install with: pip install meshly[dev] or pip install pyvista"
             )
         
-        if self.indices is None or self.index_sizes is None or self.cell_types is None:
+        if len(self.indices) == 0 or len(self.index_sizes) == 0 or len(self.cell_types) == 0:
             raise ValueError("Mesh must have indices, index_sizes, and cell_types for VTK export")
         
-        # Build VTK cell array: [size0, idx0, idx1, ..., size1, idx0, idx1, ...]
         cells = []
         offset = 0
         for size in self.index_sizes:
@@ -631,15 +669,7 @@ class Mesh(Packable):
     def save_vtk(self, path: Union[str, Path]) -> None:
         """Save mesh to a VTK file.
         
-        Requires pyvista to be installed (available in dev dependencies).
         Supports .vtk, .vtu, .ply, .stl and other formats supported by PyVista.
-        
-        Args:
-            path: Output file path. Format determined by extension.
-            
-        Example:
-            >>> mesh.save_vtk("output.vtu")
-            >>> mesh.save_vtk("output.stl")  # For triangle meshes
         """
         pv_mesh = self.to_pyvista()
         pv_mesh.save(str(path))

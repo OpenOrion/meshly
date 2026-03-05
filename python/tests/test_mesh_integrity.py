@@ -39,7 +39,7 @@ class TestMeshIntegrity:
             4, 5, 1, 1, 0, 4   # bottom
         ], dtype=np.uint32)
 
-        self.mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        self.mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
 
     def get_triangles_set(self, vertices, indices):
         """
@@ -73,7 +73,7 @@ class TestMeshIntegrity:
 
     def test_mesh_integrity_optimize_encode_decode(self):
         """Test that mesh vertices indexed by indices are preserved during optimization, encoding, and decoding."""
-        mesh = Mesh(vertices=self.vertices.copy(), indices=self.indices.copy())
+        mesh = Mesh.create(vertices=self.vertices.copy(), indices=self.indices.copy())
 
         optimized_mesh = mesh.optimize_vertex_cache()
         optimized_mesh = optimized_mesh.optimize_overdraw()
@@ -123,9 +123,9 @@ class TestMeshIntegrity:
 
         sphere_vertices = np.array(vertices, dtype=np.float32)
         sphere_indices = np.array(indices, dtype=np.uint32)
-        sphere_mesh = Mesh(vertices=sphere_vertices, indices=sphere_indices)
+        sphere_mesh = Mesh.create(vertices=sphere_vertices, indices=sphere_indices)
 
-        simplified_mesh = Mesh(vertices=sphere_vertices.copy(), indices=sphere_indices.copy())
+        simplified_mesh = Mesh.create(vertices=sphere_vertices.copy(), indices=sphere_indices.copy())
         simplified_mesh = simplified_mesh.simplify(target_ratio=0.5)
 
         simplified_triangles = self.get_triangles_set(simplified_mesh.vertices, simplified_mesh.indices)

@@ -12,12 +12,12 @@ class TestMeshCombine:
 
     def test_combine_simple_meshes(self):
         """Test combining two simple meshes without markers."""
-        mesh1 = Mesh(
+        mesh1 = Mesh.create(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
 
-        mesh2 = Mesh(
+        mesh2 = Mesh.create(
             vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
@@ -33,12 +33,12 @@ class TestMeshCombine:
 
     def test_combine_with_marker_names(self):
         """Test combining meshes with marker names."""
-        mesh1 = Mesh(
+        mesh1 = Mesh.create(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
 
-        mesh2 = Mesh(
+        mesh2 = Mesh.create(
             vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
@@ -55,20 +55,16 @@ class TestMeshCombine:
 
     def test_combine_preserve_existing_markers(self):
         """Test combining meshes while preserving existing markers."""
-        mesh1 = Mesh(
+        mesh1 = Mesh.from_triangles(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.uint32),
-            markers={"boundary": np.array([0, 1], dtype=np.uint32)},
-            marker_sizes={"boundary": np.array([1, 1], dtype=np.uint32)},
-            marker_cell_types={"boundary": np.array([1, 1], dtype=np.uint32)},
+            triangles=np.array([[0, 1, 2]], dtype=np.uint32),
+            markers={"boundary": [[0, 1]]},
         )
 
-        mesh2 = Mesh(
+        mesh2 = Mesh.from_triangles(
             vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.uint32),
-            markers={"edge": np.array([1, 2], dtype=np.uint32)},
-            marker_sizes={"edge": np.array([1, 1], dtype=np.uint32)},
-            marker_cell_types={"edge": np.array([1, 1], dtype=np.uint32)},
+            triangles=np.array([[0, 1, 2]], dtype=np.uint32),
+            markers={"edge": [[1, 2]]},
         )
 
         combined = Mesh.combine([mesh1, mesh2], preserve_markers=True)
@@ -83,15 +79,13 @@ class TestMeshCombine:
 
     def test_combine_with_marker_names_and_preserve(self):
         """Test that marker_names takes precedence over existing markers."""
-        mesh1 = Mesh(
+        mesh1 = Mesh.from_triangles(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.uint32),
-            markers={"top": np.array([2], dtype=np.uint32)},
-            marker_sizes={"top": np.array([1], dtype=np.uint32)},
-            marker_cell_types={"top": np.array([1], dtype=np.uint32)},
+            triangles=np.array([[0, 1, 2]], dtype=np.uint32),
+            markers={"top": [[2]]},
         )
 
-        mesh2 = Mesh(
+        mesh2 = Mesh.create(
             vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
@@ -107,20 +101,16 @@ class TestMeshCombine:
 
     def test_combine_same_marker_names(self):
         """Test combining meshes with same marker names - should merge them."""
-        mesh1 = Mesh(
+        mesh1 = Mesh.from_triangles(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.uint32),
-            markers={"boundary": np.array([0, 1], dtype=np.uint32)},
-            marker_sizes={"boundary": np.array([1, 1], dtype=np.uint32)},
-            marker_cell_types={"boundary": np.array([1, 1], dtype=np.uint32)},
+            triangles=np.array([[0, 1, 2]], dtype=np.uint32),
+            markers={"boundary": [[0], [1]]},
         )
 
-        mesh2 = Mesh(
+        mesh2 = Mesh.from_triangles(
             vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.uint32),
-            markers={"boundary": np.array([1, 2], dtype=np.uint32)},
-            marker_sizes={"boundary": np.array([1, 1], dtype=np.uint32)},
-            marker_cell_types={"boundary": np.array([1, 1], dtype=np.uint32)},
+            triangles=np.array([[0, 1, 2]], dtype=np.uint32),
+            markers={"boundary": [[1], [2]]},
         )
 
         combined = Mesh.combine([mesh1, mesh2], preserve_markers=True)
@@ -138,7 +128,7 @@ class TestMeshCombine:
 
     def test_combine_marker_names_length_mismatch(self):
         """Test that mismatched marker_names length raises error."""
-        mesh1 = Mesh(
+        mesh1 = Mesh.create(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
@@ -154,14 +144,11 @@ class TestMeshExtract:
         """Test extracting a submesh by marker name."""
         vertices = np.array(
             [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float32)
-        indices = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
-
-        mesh = Mesh(
+        
+        mesh = Mesh.from_triangles(
             vertices=vertices,
-            indices=indices,
-            markers={"edge": np.array([0, 1], dtype=np.uint32)},
-            marker_sizes={"edge": np.array([1, 1], dtype=np.uint32)},
-            marker_cell_types={"edge": np.array([1, 1], dtype=np.uint32)},
+            triangles=np.array([[0, 1, 2], [1, 3, 2]], dtype=np.uint32),
+            markers={"edge": [[0], [1]]},
         )
 
         extracted = mesh.extract_by_marker("edge")
@@ -177,11 +164,9 @@ class TestMeshExtract:
         vertices = np.array(
             [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 0]], dtype=np.float32)
 
-        mesh = Mesh(
+        mesh = Mesh.create(
             vertices=vertices,
-            markers={"boundary": np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)},
-            marker_sizes={"boundary": np.array([3, 3], dtype=np.uint32)},
-            marker_cell_types={"boundary": np.array([5, 5], dtype=np.uint32)},
+            markers={"boundary": [[0, 1, 2], [1, 3, 2]]},
         )
 
         extracted = mesh.extract_by_marker("boundary")
@@ -194,7 +179,7 @@ class TestMeshExtract:
 
     def test_extract_by_marker_nonexistent(self):
         """Test that extracting by nonexistent marker raises error."""
-        mesh = Mesh(
+        mesh = Mesh.create(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
@@ -208,12 +193,12 @@ class TestMeshCombineAndExtract:
 
     def test_combine_and_extract_roundtrip(self):
         """Test combining meshes and extracting them back."""
-        mesh1 = Mesh(
+        mesh1 = Mesh.create(
             vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )
 
-        mesh2 = Mesh(
+        mesh2 = Mesh.create(
             vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
             indices=np.array([0, 1, 2], dtype=np.uint32),
         )

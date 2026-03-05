@@ -47,7 +47,7 @@ def test_dynamic_model_base_mesh():
     # Create an instance and verify it works
     vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
     indices = np.array([0, 1, 2], dtype=np.uint32)
-    instance = ModelClass(vertices=vertices, indices=indices, custom_field="test")
+    instance = ModelClass.create(vertices=vertices, indices=indices, custom_field="test")
     
     assert isinstance(instance, Mesh)
     assert instance.vertex_count == 3
@@ -223,13 +223,13 @@ def test_mesh_subclass_has_combine_method():
     CustomMesh = DynamicModelBuilder.build_model(schema)
     
     # Create test meshes
-    mesh1 = CustomMesh(
+    mesh1 = CustomMesh.create(
         vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
         indices=np.array([0, 1, 2], dtype=np.uint32),
         temperature=20.0
     )
     
-    mesh2 = CustomMesh(
+    mesh2 = CustomMesh.create(
         vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
         indices=np.array([0, 1, 2], dtype=np.uint32),
         temperature=25.0

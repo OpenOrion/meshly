@@ -174,13 +174,19 @@ class SerializationUtils:
             ref_dict = PackableRefInfo(ref=checksum).model_dump(by_alias=True)
             return ExtractedResult(value=ref_dict, assets={checksum: encoded})
         
-        # Expanded: recursively extract each field
-        dumped = value.model_dump(mode='python')
-        items = [(k, SerializationUtils.extract_value(v)) for k, v in dumped.items()]
-        return ExtractedResult(
-            value={k: e.value for k, e in items},
-            assets={k: v for _, e in items for k, v in e.assets.items()},
-        )
+        # Expanded: recursively extract each field by accessing attributes directly
+        # Using getattr instead of model_dump preserves nested model instances
+        # so their cached properties (checksum, encode) are used
+        data: dict[str, Any] = {}
+        assets: dict[str, bytes] = {}
+        for field_name in type(value).model_fields:
+            field_value = getattr(value, field_name, None)
+            if field_value is None:
+                continue
+            extracted = SerializationUtils.extract_value(field_value)
+            data[field_name] = extracted.value
+            assets.update(extracted.assets)
+        return ExtractedResult(value=data, assets=assets)
 
     @staticmethod
     def _extract_resource(value: "Resource") -> ExtractedResult:

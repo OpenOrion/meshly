@@ -175,7 +175,7 @@ def _round_trip_zip_dynamic(packable: Packable):
 def _round_trip_store(packable: Packable, cls: type):
     """Save/load via PackableStore."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = PackableStore(assets_path=Path(tmpdir) / "assets")
+        store = PackableStore(root_dir=Path(tmpdir), extracted_dir="extracted")
         key = packable.save(store, "test_key")
         return cls.load(store, key)
 
@@ -183,7 +183,7 @@ def _round_trip_store(packable: Packable, cls: type):
 def _round_trip_store_dynamic(packable: Packable):
     """Save/load via PackableStore with base Packable."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        store = PackableStore(assets_path=Path(tmpdir) / "assets")
+        store = PackableStore(root_dir=Path(tmpdir), extracted_dir="extracted")
         key = packable.save(store, "test_key")
         return Packable.load(store, key)
 
@@ -688,7 +688,7 @@ class TestChecksumPreservation:
             fields={"f": ScalarField(type="s", data=np.array([1.0]))},
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir) / "a")
+            store = PackableStore(root_dir=Path(tmpdir), extracted_dir="extracted")
             snap.save(store, "k")
             loaded = Snapshot.load(store, "k")
             assert loaded.checksum == snap.checksum

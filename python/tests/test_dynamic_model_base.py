@@ -146,16 +146,20 @@ def test_dynamic_model_instantiate_with_mesh_base():
         "properties": {
             "vertices": {"type": "array"},
             "indices": {"type": "index_sequence"},
+            "index_sizes": {"type": "array"},
+            "cell_types": {"type": "array"},
             "label": {"type": "string"}
         },
-        "required": ["vertices"]
+        "required": ["vertices", "indices", "index_sizes", "cell_types"]
     }
     
     schema = JsonSchema.model_validate(schema_dict)
     
-    # Create test data
+    # Create test data (single triangle)
     vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
     indices = np.array([0, 1, 2], dtype=np.uint32)
+    index_sizes = np.array([3], dtype=np.uint8)  # One triangle with 3 vertices
+    cell_types = np.array([5], dtype=np.uint8)   # VTK_TRIANGLE = 5
     
     # Instantiate directly (without $refs, so no assets needed)
     instance = DynamicModelBuilder.instantiate(
@@ -163,6 +167,8 @@ def test_dynamic_model_instantiate_with_mesh_base():
         {
             "vertices": vertices,
             "indices": indices,
+            "index_sizes": index_sizes,
+            "cell_types": cell_types,
             "label": "triangle"
         },
         assets={},

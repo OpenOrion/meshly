@@ -203,6 +203,52 @@ const cachedFetcher = await createCachedProvider(async (checksum) => {
 const result = await Packable.reconstruct(data, cachedFetcher, schema)
 ```
 
+## Web Worker Offloading
+
+Offload CPU-intensive Packable reconstruction to a background thread:
+
+```typescript
+import { PackableWorkerClient } from 'meshly'
+
+// Create a worker client (handles worker lifecycle)
+const client = new PackableWorkerClient()
+
+// Reconstruct in background thread
+const assets = new Map<string, Uint8Array>()
+// ... populate assets ...
+const result = await client.reconstruct(data, assets, jsonSchema)
+
+// Decode a full zip in the worker
+const decoded = await client.decode(zipArrayBuffer)
+
+// Decode individual arrays
+const vertices = await client.decodeArray(vertexBuffer, {
+  shape: [100, 3],
+  dtype: 'float32',
+  itemsize: 4
+})
+
+// Clean up when done
+client.terminate()
+```
+
+### Worker Entry Point
+
+Import the worker entry point in your bundler:
+
+```typescript
+// Vite/Rollup
+const worker = new Worker(
+  new URL('meshly/worker', import.meta.url), 
+  { type: 'module' }
+)
+
+// Or use the worker directly
+import { initPackableWorker } from 'meshly'
+// In worker file:
+initPackableWorker()
+```
+
 ## API Reference
 
 ### AssetProvider
@@ -487,6 +533,37 @@ interface AssetCacheConfig {
 // Convenience functions
 function getDefaultAssetCache(): AssetCache
 async function createCachedProvider(fetcher: AssetFetcher): Promise<AssetFetcher>
+```
+
+### PackableWorkerClient
+
+```typescript
+// Client for offloading Packable reconstruction to a Web Worker
+class PackableWorkerClient {
+  constructor(workerUrl?: URL)
+  
+  // Reconstruct data with pre-fetched assets (runs in worker)
+  async reconstruct<T>(
+    data: Record<string, unknown>,
+    assets: Map<string, Uint8Array> | Record<string, Uint8Array>,
+    jsonSchema?: JsonSchema
+  ): Promise<T>
+  
+  // Decode a Packable zip blob (runs in worker)
+  async decode<T>(zipData: ArrayBuffer): Promise<T>
+  
+  // Decode an array from binary data (runs in worker)
+  async decodeArray(
+    data: ArrayBuffer,
+    info: ArrayRefInfo
+  ): Promise<Float32Array | Int32Array | Uint32Array>
+  
+  // Terminate the worker
+  terminate(): void
+}
+
+// Initialize the worker-side message handler (call in worker file)
+function initPackableWorker(): void
 ```
 
 ## Python Compatibility

@@ -393,10 +393,10 @@ Use `PackableStore` for persistent file-based storage with automatic deduplicati
 from pathlib import Path
 from meshly import PackableStore, Mesh
 
-# Create a store with separate paths for assets and extracted data
+# Create a store with a root directory and extracted subdirectory
 store = PackableStore(
-    assets_path=Path("/data/assets"),      # Binary blobs stored by checksum
-    extracted_path=Path("/data/runs")      # Extracted JSON stored at user keys
+    root_dir=Path("/data/my_project"),
+    extracted_dir="runs"               # Subdirectory for extracted JSON
 )
 
 # Save a packable (auto-generates key from content checksum)
@@ -416,14 +416,43 @@ lazy = Mesh.load(store, key, is_lazy=True)
 
 Directory structure:
 ```
-assets_path/
-    <checksum1>.bin
-    <checksum2>.bin
-extracted_path/
-    experiment_001/
-        geometry.json   # Contains data + json_schema
-        result.json
+root_dir/
+    assets/               # Binary blobs stored by checksum
+        <checksum1>.bin
+        <checksum2>.bin
+    runs/                 # Extracted JSON at user keys
+        experiment_001/
+            geometry.json
+            result.json
 ```
+
+### In-Memory Caching with PackableCache
+
+Use `PackableCache` for high-performance two-tier caching (in-memory LRU + disk):
+
+```python
+from meshly import PackableCache, PackableStore, Mesh
+from pathlib import Path
+
+# Create a cache backed by a PackableStore
+store = PackableStore(root_dir=Path("/data/cache"), extracted_dir="meshes")
+cache = PackableCache(
+    store=store,
+    decoder=Mesh,           # Type to decode from disk
+    prefix="meshes",        # Namespace within the store
+    max_memory=10_000,      # Max entries in memory LRU
+)
+
+# Single item operations
+cache.put("my_mesh", mesh)
+loaded = cache.get("my_mesh")  # Memory -> disk -> None
+
+# Batch operations (parallelized disk I/O via ForkPool)
+cache.put_many({"mesh1": m1, "mesh2": m2, "mesh3": m3})
+found = cache.get_many({"mesh1", "mesh2", "mesh4"})  # Returns dict of found items
+```
+
+Lookup order: memory cache → disk → miss. Disk I/O uses `ForkPool` for parallel reads/writes on POSIX systems.
 
 ## Architecture
 
@@ -756,8 +785,14 @@ class PackableStore(BaseModel):
     Extracted packable data is stored at user-specified keys as JSON files.
     """
     
-    assets_path: Path              # Directory for binary assets
-    extracted_path: Path = None    # Directory for extracted JSON files (defaults to assets_path)
+    root_dir: Path                     # Root directory for all storage
+    extracted_dir: str = "runs"        # Subdirectory name for extracted JSON files
+    
+    # Properties
+    @property
+    def assets_path(self) -> Path      # root_dir / "assets"
+    @property
+    def extracted_path(self) -> Path   # root_dir / extracted_dir
     
     # Path helpers
     def asset_file(self, checksum: str) -> Path       # Get path for binary asset
@@ -772,6 +807,37 @@ class PackableStore(BaseModel):
     def save_extracted(self, key: str, extracted: ExtractedPackable) -> None
     def load_extracted(self, key: str) -> ExtractedPackable
     def extracted_exists(self, key: str) -> bool
+```
+
+### PackableCache
+
+```python
+class PackableCache(Generic[T]):
+    """Two-tier LRU cache: in-memory + disk via PackableStore.
+    
+    Lookup order: memory -> disk -> miss.
+    New entries written to both tiers.
+    Disk I/O uses ForkPool for parallelism on batch operations.
+    """
+    
+    def __init__(
+        self,
+        store: PackableStore,     # Underlying disk storage
+        decoder: type[T],         # Packable subclass for decoding
+        prefix: str = "",         # Key namespace within store
+        max_memory: int = 10_000, # Max in-memory entries
+    ): ...
+    
+    # Single item operations
+    def get(self, key: str) -> T | None
+    def put(self, key: str, value: T) -> None
+    
+    # Batch operations (parallelized disk I/O)
+    def get_many(self, keys: set[str]) -> dict[str, T]
+    def put_many(self, items: dict[str, T]) -> None
+    
+    def clear(self) -> None                # Clear in-memory cache
+    def __len__(self) -> int               # Number of in-memory entries
 ```
 
 ### Mesh

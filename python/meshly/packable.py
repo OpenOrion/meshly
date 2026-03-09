@@ -122,7 +122,7 @@ class PackableStore(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
     root_dir: PathLike = Field(..., description="Root directory for all storage")
-    extracted_dir: str
+    extracted_dir: str = Field(default="runs", description="Subdirectory for extracted JSON files")
 
     @property
     def assets_path(self) -> Path:

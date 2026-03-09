@@ -99,6 +99,16 @@ class SchemaUtils:
         return False
 
     @staticmethod
+    def _matches_discriminator(model_type: type[BaseModel], value: dict) -> bool:
+        """Check if a BaseModel type matches data via a Literal discriminator field."""
+        from typing import Literal
+        for field_name, field_info in model_type.model_fields.items():
+            if field_name in value and get_origin(field_info.annotation) is Literal:
+                if value[field_name] in get_args(field_info.annotation):
+                    return True
+        return False
+
+    @staticmethod
     def _load_class(module_path: str) -> Union[type, None]:
         """Load a class from 'package.module.ClassName'."""
         path, name = module_path.rsplit(".", 1)
@@ -202,24 +212,20 @@ class SchemaUtils:
             # Union types - match via Literal discriminator fields
             if origin is Union or isinstance(expected_type, types.UnionType):
                 union_args = [a for a in get_args(expected_type) if a is not type(None)]
-                # Auto-discover: find any Literal field whose value matches a key in the data
-                for arg_type in union_args:
-                    if not (isinstance(arg_type, type) and issubclass(arg_type, BaseModel)):
+                model_args = [a for a in union_args if isinstance(a, type) and issubclass(a, BaseModel)]
+                
+                # Try discriminator match first, then fallback to trial instantiation
+                for arg_type in model_args:
+                    if SchemaUtils._matches_discriminator(arg_type, value):
+                        resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
+                        return arg_type(**resolved)
+                
+                for arg_type in model_args:
+                    try:
+                        resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
+                        return arg_type(**resolved)
+                    except Exception:
                         continue
-                    for fname, finfo in arg_type.model_fields.items():
-                        if fname not in value or get_origin(finfo.annotation) is not Literal:
-                            continue
-                        if value[fname] in get_args(finfo.annotation):
-                            resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
-                            return arg_type(**resolved)
-                # Fallback: try each BaseModel type
-                for arg_type in union_args:
-                    if isinstance(arg_type, type) and issubclass(arg_type, BaseModel):
-                        try:
-                            resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
-                            return arg_type(**resolved)
-                        except Exception:
-                            continue
             # Untyped dict
             return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
 

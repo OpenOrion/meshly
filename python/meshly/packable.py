@@ -68,6 +68,7 @@ class ExtractedPackable(BaseModel):
 
     data: dict[str, Any] = Field(..., description="Serializable dict with primitive fields and checksum refs for arrays")
     json_schema: Optional[dict[str, Any]] = Field(default=None, description="JSON Schema with encoding info")
+    checksum: Optional[str] = Field(default=None, description="Content checksum of the source Packable")
     assets: dict[str, bytes] = Field(default_factory=dict, exclude=True, description="Map of checksum -> encoded bytes for all arrays")
 
     def extract_checksums(self) -> list[str]:
@@ -208,6 +209,7 @@ class PackableStore(BaseModel):
         return ExtractedPackable(
             data=extracted_data["data"],
             json_schema=extracted_data.get("json_schema"),
+            checksum=extracted_data.get("checksum"),
         )
     
     def extracted_exists(self, key: str) -> bool:
@@ -260,6 +262,9 @@ class Packable(BaseModel):
 
     _cached_extract: Optional["ExtractedPackable"] = PrivateAttr(default=None)
     """Cached result of extract() to avoid recomputation."""
+
+    _cached_encode: Optional[bytes] = PrivateAttr(default=None)
+    """Cached encoded bytes for reconstructed Packables to avoid re-encoding."""
 
     class Config:
         arbitrary_types_allowed = True
@@ -349,6 +354,10 @@ class Packable(BaseModel):
         """SHA256 checksum of this Packable's encoded bytes (cached)."""
         return ChecksumUtils.compute_bytes_checksum(self._encoded)
 
+    def set_checksum(self, checksum: str) -> None:
+        """Pre-populate the cached checksum to avoid re-encoding."""
+        self.__dict__["checksum"] = checksum
+
     @classmethod
     def decode(
         cls,
@@ -362,7 +371,7 @@ class Packable(BaseModel):
             array_type: Target array backend type ("numpy" or "jax")
         
         Returns:
-            Reconstructed Packable instance.
+            Reconstructed Packable instance with cached encode/checksum.
         """
         with zipfile.ZipFile(BytesIO(buf), "r") as zf:
             # Read extracted data (data + schema)
@@ -381,7 +390,13 @@ class Packable(BaseModel):
             json_schema=extracted_json.get("json_schema"),
             assets=assets,
         )
-        return cls.reconstruct(extracted, array_type=array_type)
+        result = cls.reconstruct(extracted, array_type=array_type)
+        
+        # Cache to ensure consistent checksums on re-encoding
+        result._cached_encode = buf
+        result.set_checksum(ChecksumUtils.compute_bytes_checksum(buf))
+        result._cached_extract = extracted
+        return result
 
     @classmethod
     def reconstruct(
@@ -422,15 +437,17 @@ class Packable(BaseModel):
             if extracted.json_schema is None:
                 raise ValueError("Cannot reconstruct on base Packable without json_schema")
             json_schema = JsonSchema.model_validate(extracted.json_schema)
-            return DynamicModelBuilder.instantiate(json_schema, extracted.data, asset_provider, array_type, is_lazy)
-        
-        # For typed model classes, generate schema and use DynamicModelBuilder for lazy loading
-        if is_lazy:
+            result = DynamicModelBuilder.instantiate(json_schema, extracted.data, asset_provider, array_type, is_lazy)
+        elif is_lazy:
             schema = JsonSchema.model_validate(cls.model_json_schema())
-            return DynamicModelBuilder.instantiate(schema, extracted.data, asset_provider, array_type, is_lazy=True)
-    
-        resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
-        return cls(**resolved_data)
+            result = DynamicModelBuilder.instantiate(schema, extracted.data, asset_provider, array_type, is_lazy=True)
+        else:
+            resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
+            result = cls(**resolved_data)
+        
+        if extracted.checksum and isinstance(result, Packable):
+            result.set_checksum(extracted.checksum)
+        return result
 
     @staticmethod
     def reconstruct_polymorphic(
@@ -542,7 +559,7 @@ class Packable(BaseModel):
             if not store.asset_exists(asset_checksum):
                 store.save_asset(asset_bytes, asset_checksum)
         
-        # Save extracted data (data + schema) as JSON
+        # Save extracted data (data + schema + checksum) as JSON
         store.save_extracted(result_key, extracted)
         
         return result_key

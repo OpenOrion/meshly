@@ -199,6 +199,27 @@ class SchemaUtils:
             if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
                 resolved = SchemaUtils.resolve_from_class(expected_type, value, assets, array_type)
                 return expected_type(**resolved)
+            # Union types - match via Literal discriminator fields
+            if origin is Union or isinstance(expected_type, types.UnionType):
+                union_args = [a for a in get_args(expected_type) if a is not type(None)]
+                # Auto-discover: find any Literal field whose value matches a key in the data
+                for arg_type in union_args:
+                    if not (isinstance(arg_type, type) and issubclass(arg_type, BaseModel)):
+                        continue
+                    for fname, finfo in arg_type.model_fields.items():
+                        if fname not in value or get_origin(finfo.annotation) is not Literal:
+                            continue
+                        if value[fname] in get_args(finfo.annotation):
+                            resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
+                            return arg_type(**resolved)
+                # Fallback: try each BaseModel type
+                for arg_type in union_args:
+                    if isinstance(arg_type, type) and issubclass(arg_type, BaseModel):
+                        try:
+                            resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
+                            return arg_type(**resolved)
+                        except Exception:
+                            continue
             # Untyped dict
             return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
 
@@ -315,12 +336,19 @@ class SchemaUtils:
                 if item_prop.ref:
                     item_prop = schema.resolve_ref(item_prop.ref) or item_prop
                 return {k: SchemaUtils._resolve_with_prop(v, item_prop, schema, assets, array_type) for k, v in value.items()}
-            # Named properties
+            # Named properties - reconstruct as a nested model
             if prop.properties:
-                return {
-                    k: SchemaUtils._resolve_with_prop(v, prop.properties.get(k), schema, assets, array_type)
-                    for k, v in value.items() if not k.startswith("$")
-                }
+                from meshly.utils.dynamic_model import DynamicModelBuilder
+                from meshly.utils.json_schema import JsonSchema as _JsonSchema
+                nested_schema = _JsonSchema(
+                    title=prop.title or "NestedModel",
+                    properties=prop.properties,
+                    required=prop.required or [],
+                    x_base=prop.x_base,
+                    x_module=prop.x_module,
+                    **{"$defs": dict(schema.defs)},
+                )
+                return DynamicModelBuilder.instantiate(nested_schema, value, assets, array_type)
             return value
 
         # List annotation → reconstruct numpy array from inline JSON list

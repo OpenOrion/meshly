@@ -27,12 +27,12 @@ from pathlib import Path
 from typing import (
     ClassVar,
     Dict,
+    Mapping,
     Optional,
     TypeVar,
     List,
     Sequence,
     Union,
-    overload,
 )
 import numpy as np
 from pydantic import Field
@@ -161,7 +161,7 @@ class Mesh(Packable):
         triangles: np.ndarray,
         *,
         dim: int = 3,
-        markers: Optional[Dict[str, Sequence[Sequence[int]]]] = None,
+        markers: Optional[Mapping[str, Union[np.ndarray, Sequence[Sequence[int]]]]] = None,
         **kwargs,
     ) -> TMesh:
         """Create mesh from Nx3 triangle index array.
@@ -170,7 +170,7 @@ class Mesh(Packable):
             vertices: Mx3 vertex positions
             triangles: Nx3 triangle indices
             dim: Mesh dimension (default 3)
-            markers: Optional dict of marker name -> list of element indices
+            markers: Optional dict of marker name -> Nx3 numpy array or list of triangles
             **kwargs: Additional fields for subclasses
             
         Returns:
@@ -197,10 +197,19 @@ class Mesh(Packable):
         
         if markers:
             for name, elements in markers.items():
-                marker_result = ElementData.from_polygons([list(e) for e in elements])
-                marker_dict[name] = marker_result.indices
-                marker_sizes_dict[name] = marker_result.sizes
-                marker_cell_types_dict[name] = marker_result.cell_types
+                if isinstance(elements, np.ndarray):
+                    # Direct numpy array - assume triangles (Nx3 or flattened)
+                    arr = elements.reshape(-1, 3).astype(np.uint32)
+                    num_marker_tris = len(arr)
+                    marker_dict[name] = arr.flatten()
+                    marker_sizes_dict[name] = np.full(num_marker_tris, 3, dtype=np.uint8)
+                    marker_cell_types_dict[name] = np.full(num_marker_tris, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
+                else:
+                    # List of lists - use ElementData for flexibility
+                    marker_result = ElementData.from_polygons([list(e) for e in elements])
+                    marker_dict[name] = marker_result.indices
+                    marker_sizes_dict[name] = marker_result.sizes
+                    marker_cell_types_dict[name] = marker_result.cell_types
         
         return cls(
             vertices=vertices,

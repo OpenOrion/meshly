@@ -5,9 +5,6 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-import xxhash
-
-
 class ChecksumUtils:
     """Utility class for computing checksums."""
 
@@ -17,15 +14,15 @@ class ChecksumUtils:
 
     @staticmethod
     def compute_bytes_checksum(data: bytes) -> str:
-        """Compute xxhash64 checksum for bytes.
+        """Compute SHA256 checksum for bytes.
 
         Args:
             data: Bytes to hash
 
         Returns:
-            16-character hex string (xxhash64)
+            16-character hex string (SHA256)
         """
-        return xxhash.xxh64_hexdigest(data)
+        return hashlib.sha256(data).hexdigest()[:16]
 
     @staticmethod
     def compute_dict_checksum(data: dict[str, Any], assets: dict[str, bytes] = {}) -> str:

@@ -140,18 +140,27 @@ export interface JsonSchema {
  */
 export class JsonSchemaUtils {
     /**
-     * Check if a property is a meshly array type (not a JSON Schema array like list[str]).
+     * Check if a property is a meshly binary array type (uses $ref for serialization).
+     * Note: inline_array is NOT included here - it serializes inline as JSON, not as $ref.
      */
     static isArrayType(prop: JsonSchemaProperty): boolean {
         // vertex_buffer and index_sequence are always meshly types
         if (prop.type === "vertex_buffer" || prop.type === "index_sequence") {
             return true
         }
-        // type="array" with items is a JSON Schema list, without items is a meshly array
+        // type="array" with items is a JSON Schema list[T], without items is a meshly array
         if (prop.type === "array") {
             return prop.items === undefined
         }
         return false
+    }
+
+    /**
+     * Check if a property is an inline array type (serialized as JSON list, no $ref).
+     * This matches Python's InlineArray annotation.
+     */
+    static isInlineArrayType(prop: JsonSchemaProperty): boolean {
+        return prop.type === "inline_array"
     }
 
     /**

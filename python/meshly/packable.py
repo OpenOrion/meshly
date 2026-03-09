@@ -15,15 +15,33 @@ as a single zip blob reference instead.
 Serialization options:
 - save_to_zip() / load_from_zip(): Single self-contained zip file
 - save() / load(): File-based asset store with deduplication
+
+Checksum Scheme:
+    Packable checksums are computed from the JSON representation of extracted data.
+    This makes checksum recreation straightforward outside this library.
+    
+    Format: SHA256 of compact JSON: {"data":<data>,"json_schema":<schema>}
+            Keys are sorted, no whitespace (single line).
+    
+    The `data` dict contains $ref entries (e.g. {"$ref":"abc123..."}) pointing
+    to asset checksums, so the packable checksum transitively covers all binary
+    content without embedding the actual bytes.
+    
+    To recreate a checksum externally:
+        import hashlib, json
+        payload = {"data": packable_data, "json_schema": schema}
+        compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+        checksum = hashlib.sha256(compact_json.encode()).hexdigest()
 """
 
-import json
+import time
 import zipfile
-from functools import cached_property
+from functools import cached_property, lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional, TypeVar, Union
 
+import orjson
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic.json_schema import JsonSchemaValue, GetJsonSchemaHandler
 from pydantic_core import core_schema as pydantic_core_schema
@@ -41,6 +59,11 @@ if TYPE_CHECKING:
     pass
 
 TModel = TypeVar("TModel", bound=BaseModel)
+
+
+def _reconstruct_packable(cls, data: dict):
+    """Helper function for pickle reconstruction of Packable objects."""
+    return cls.model_construct(**data)
 
 
 class PackableRefInfo(RefInfo):
@@ -64,7 +87,33 @@ class ExtractedPackable(BaseModel):
     json_schema: Optional[dict[str, Any]] = Field(default=None, description="JSON Schema with encoding info")
     assets: dict[str, bytes] = Field(default_factory=dict, exclude=True, description="Map of checksum -> encoded bytes for all arrays")
 
-    def extract_checksums(self) -> list[str]:
+    @cached_property
+    def checksum(self) -> str:
+        """SHA256 checksum computed from data and json_schema.
+        
+        Checksum Format:
+            SHA256 of compact JSON: {"data":<data>,"json_schema":<schema>}
+            Keys are sorted, no whitespace (single line).
+        
+        Why JSON-based:
+            The data dict contains $ref entries pointing to asset checksums,
+            so this checksum transitively covers all array/binary content.
+            This format makes checksum recreation straightforward outside meshly:
+            
+                import hashlib, json
+                payload = {"data": extracted_data, "json_schema": schema}
+                compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+                checksum = hashlib.sha256(compact_json.encode()).hexdigest()
+            
+        Returns:
+            SHA256 hex digest string
+        """
+        payload = {"data": self.data, "json_schema": self.json_schema}
+        json_bytes = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
+        return ChecksumUtils.compute_bytes_checksum(json_bytes)
+
+    @staticmethod
+    def extract_checksums(data: dict[str, Any]) -> list[str]:
         """Extract all $ref checksums from a serialized data dict.
 
         Recursively walks the data structure to find all {"$ref": checksum} entries.
@@ -88,7 +137,7 @@ class ExtractedPackable(BaseModel):
                 for item in obj:
                     _extract(item)
 
-        _extract(self.data)
+        _extract(data)
         return list(checksums)
 
 
@@ -99,31 +148,42 @@ class PackableStore(BaseModel):
     Extracted packable data is stored at user-specified keys as JSON files.
     
     Directory structure:
-        assets_path/
-            <checksum1>.bin
-            <checksum2>.bin
-        extracted_path/
-            <key>.json  (contains both data and json_schema)
+        root_dir/
+            assets/           (ExportConstants.ASSETS_DIR)
+                <checksum1>.bin
+                <checksum2>.bin
+            runs/             (ExportConstants.EXTRACTED_DIR)
+                <key>.json
     
     Example:
-        store = PackableStore(assets_path=Path("/data/assets"), extracted_path=Path("/data/runs"))
+        store = PackableStore(root_dir=Path("/data/my_package"))
         my_mesh.save(store, "experiment/result")
         loaded = Mesh.load(store, "experiment/result")
     """
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
-    assets_path: Path = Field(..., description="Directory for binary assets")
-    extracted_path: Optional[Path] = Field(default=None, description="Directory for extracted JSON files. If None, uses assets_path")
-    
+    root_dir: PathLike = Field(..., description="Root directory for all storage")
+    extracted_dir: str = Field(default="runs", description="Subdirectory for extracted JSON files")
+
+    @property
+    def assets_path(self) -> Path:
+        """Directory for binary assets."""
+        return Path(self.root_dir) / ExportConstants.ASSETS_DIR
+
+    @property
+    def extracted_path(self) -> Path:
+        """Directory for extracted JSON files."""
+        return Path(self.root_dir) / self.extracted_dir
+
     def asset_file(self, checksum: str) -> Path:
         """Get the filesystem path for a binary asset."""
-        return self.assets_path / f"{checksum}.bin"
+        return Path(self.root_dir) / ExportConstants.get_rel_asset_path(checksum)
+    
     
     def get_extracted_path(self, key: str) -> Path:
         """Get the filesystem path for an extracted packable's JSON file."""
-        extracted_dir = self.extracted_path if self.extracted_path is not None else self.assets_path
-        return extracted_dir / f"{key}.json"
+        return self.extracted_path / f"{key}.json"
     
     def save_asset(self, data: bytes, checksum: str) -> None:
         """Save binary asset data to storage.
@@ -170,7 +230,7 @@ class PackableStore(BaseModel):
         """
         extracted_json_path = self.get_extracted_path(key)
         extracted_json_path.parent.mkdir(parents=True, exist_ok=True)
-        extracted_json_path.write_text(json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
+        extracted_json_path.write_bytes(orjson.dumps(extracted.model_dump()))
     
     def load_extracted(self, key: str) -> "ExtractedPackable":
         """Load extracted packable from storage.
@@ -187,7 +247,7 @@ class PackableStore(BaseModel):
         extracted_json_path = self.get_extracted_path(key)
         if not extracted_json_path.exists():
             raise FileNotFoundError(f"Extracted packable not found: {key}")
-        extracted_data = json.loads(extracted_json_path.read_text())
+        extracted_data = orjson.loads(extracted_json_path.read_bytes())
         return ExtractedPackable(
             data=extracted_data["data"],
             json_schema=extracted_data.get("json_schema"),
@@ -244,6 +304,9 @@ class Packable(BaseModel):
     _cached_extract: Optional["ExtractedPackable"] = PrivateAttr(default=None)
     """Cached result of extract() to avoid recomputation."""
 
+    _cached_encode: Optional[bytes] = PrivateAttr(default=None)
+    """Cached encoded bytes for reconstructed Packables to avoid re-encoding."""
+
     class Config:
         arbitrary_types_allowed = True
 
@@ -260,13 +323,23 @@ class Packable(BaseModel):
         json_schema['x-module'] = f"{cls.__module__}.{cls.__qualname__}"
         return json_schema
 
+    @classmethod
+    @lru_cache(maxsize=None)
+    def cached_json_schema(cls) -> dict[str, Any]:
+        """Get cached JSON schema for this class.
+        
+        This caches model_json_schema() at the class level to avoid
+        regenerating it for every instance during extraction.
+        """
+        return cls.model_json_schema()
+
     def extract(self) -> "ExtractedPackable":
         """Extract arrays and Packables from this model into serializable data and assets.
         
         Results are cached for efficiency. Subsequent calls return the cached result.
         
         Returns:
-            ExtractedPackable with metadata (data + schema) and binary assets.
+            ExtractedPackable with metadata (data + schema + checksum) and binary assets.
         """
         if self._cached_extract is not None:
             return self._cached_extract
@@ -278,41 +351,69 @@ class Packable(BaseModel):
 
         assert isinstance(extracted_result.value, dict), "Extracted value must be a dict for Packable models"
 
-        self._cached_extract = ExtractedPackable(
+        extracted = ExtractedPackable(
             data=extracted_result.value,
-            json_schema=type(self).model_json_schema(),
+            json_schema=type(self).cached_json_schema(),
             assets=extracted_result.assets,
         )
+        
+        self._cached_extract = extracted
         return self._cached_extract
+
+    @cached_property
+    def _encoded(self) -> bytes:
+        """Cached encoded bytes (zip format)."""
+        extracted = self.extract()
+        
+        destination = BytesIO()
+        
+        # Use ZIP_STORED for assets (already compressed by meshoptimizer)
+        # This avoids double-compression overhead
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as zf:
+            # Write extracted data (data + schema) as single JSON
+            info = zipfile.ZipInfo(ExportConstants.EXTRACTED_FILE_NAME, date_time=ExportConstants.EXPORT_TIME)
+            zf.writestr(info, orjson.dumps(extracted.model_dump()))
+
+            # Write assets by checksum (already compressed, skip compression)
+            for checksum in sorted(extracted.assets.keys()):
+                info = zipfile.ZipInfo(ExportConstants.get_rel_asset_path(checksum), date_time=ExportConstants.EXPORT_TIME)
+                zf.writestr(info, extracted.assets[checksum])
+
+        return destination.getvalue()
 
     def encode(self) -> bytes:
         """Encode this Packable to bytes (zip format).
         
         Calls extract() internally to serialize all fields and assets.
+        Results are cached for efficiency.
             
         Returns:
             Encoded bytes in zip format.
         """
-        extracted = self.extract()
-        
-        destination = BytesIO()
-        
-        with zipfile.ZipFile(destination, "w") as zf:
-            # Write extracted data (data + schema) as single JSON
-            info = zipfile.ZipInfo(ExportConstants.EXTRACTED_FILE, date_time=ExportConstants.EXPORT_TIME)
-            zf.writestr(info, json.dumps(extracted.model_dump(), indent=2, sort_keys=True))
-
-            # Write assets by checksum
-            for checksum in sorted(extracted.assets.keys()):
-                info = zipfile.ZipInfo(ExportConstants.asset_path(checksum), date_time=ExportConstants.EXPORT_TIME)
-                zf.writestr(info, extracted.assets[checksum])
-
-        return destination.getvalue()
+        return self._encoded
 
     @cached_property
     def checksum(self) -> str:
-        """SHA256 checksum of this Packable's encoded bytes (cached)."""
-        return ChecksumUtils.compute_bytes_checksum(self.encode())
+        """SHA256 checksum of this Packable's extracted JSON representation (cached).
+        
+        Checksum Format:
+            SHA256 of compact JSON: {"data":<extracted_data>,"json_schema":<schema>}
+            Keys are sorted, no whitespace (single line).
+        
+        The data dict contains $ref entries pointing to asset checksums (e.g., 
+        {"$ref":"abc123..."}), so this checksum transitively covers all binary content.
+        
+        To recreate this checksum outside meshly:
+            import hashlib, json
+            payload = {"data": packable_data, "json_schema": schema}
+            compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            checksum = hashlib.sha256(compact_json.encode()).hexdigest()
+        """
+        return self.extract().checksum
+
+    def set_checksum(self, checksum: str) -> None:
+        """Pre-populate the cached checksum to avoid re-encoding."""
+        self.__dict__["checksum"] = checksum
 
     @classmethod
     def decode(
@@ -327,17 +428,17 @@ class Packable(BaseModel):
             array_type: Target array backend type ("numpy" or "jax")
         
         Returns:
-            Reconstructed Packable instance.
+            Reconstructed Packable instance with cached encode/checksum.
         """
         with zipfile.ZipFile(BytesIO(buf), "r") as zf:
             # Read extracted data (data + schema)
-            extracted_json = json.loads(zf.read(ExportConstants.EXTRACTED_FILE).decode("utf-8"))
+            extracted_json = orjson.loads(zf.read(ExportConstants.EXTRACTED_FILE_NAME))
 
             # Build assets dict from files
             assets: dict[str, bytes] = {}
             for file_path in zf.namelist():
                 if file_path.startswith(ExportConstants.ASSETS_DIR) and file_path.endswith(ExportConstants.ASSET_EXT):
-                    checksum = ExportConstants.checksum_from_path(file_path)
+                    checksum = ExportConstants.get_relative_asset_checksum(file_path)
                     assets[checksum] = zf.read(file_path)
 
         # Create ExtractedPackable from zip contents
@@ -346,7 +447,12 @@ class Packable(BaseModel):
             json_schema=extracted_json.get("json_schema"),
             assets=assets,
         )
-        return cls.reconstruct(extracted, array_type=array_type)
+        result = cls.reconstruct(extracted, array_type=array_type)
+        
+        # Cache for efficiency
+        result._cached_encode = buf
+        result._cached_extract = extracted
+        return result
 
     @classmethod
     def reconstruct(
@@ -387,15 +493,17 @@ class Packable(BaseModel):
             if extracted.json_schema is None:
                 raise ValueError("Cannot reconstruct on base Packable without json_schema")
             json_schema = JsonSchema.model_validate(extracted.json_schema)
-            return DynamicModelBuilder.instantiate(json_schema, extracted.data, asset_provider, array_type, is_lazy)
-        
-        # For typed model classes, generate schema and use DynamicModelBuilder for lazy loading
-        if is_lazy:
+            result = DynamicModelBuilder.instantiate(json_schema, extracted.data, asset_provider, array_type, is_lazy)
+        elif is_lazy:
             schema = JsonSchema.model_validate(cls.model_json_schema())
-            return DynamicModelBuilder.instantiate(schema, extracted.data, asset_provider, array_type, is_lazy=True)
-    
-        resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
-        return cls(**resolved_data)
+            result = DynamicModelBuilder.instantiate(schema, extracted.data, asset_provider, array_type, is_lazy=True)
+        else:
+            resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
+            result = cls(**resolved_data)
+        
+        if isinstance(result, Packable):
+            result.set_checksum(extracted.checksum)
+        return result
 
     @staticmethod
     def reconstruct_polymorphic(
@@ -486,7 +594,7 @@ class Packable(BaseModel):
         Example:
             from meshly import PackableStore
             
-            store = PackableStore(assets_path=Path("/path/to/assets"))
+            store = PackableStore(root_dir=Path("/path/to/data"))
             
             # Save with auto-generated checksum key
             key = my_mesh.save(store)
@@ -495,7 +603,11 @@ class Packable(BaseModel):
             settings.save(store, f"{checksum}/settings")
             result.save(store, f"{checksum}/result")
         """
-        extracted = self.extract()
+        start_time = time.time()
+
+        extracted = self.extract()   
+        elapsed_ms = (time.time() - start_time) * 1000
+        # print(f"Extracted packable in {elapsed_ms:.1f} ms with {len(extracted.assets)} assets")
         result_key = key or self.checksum
         
         # Save all binary assets (deduplicated by checksum)
@@ -503,7 +615,7 @@ class Packable(BaseModel):
             if not store.asset_exists(asset_checksum):
                 store.save_asset(asset_bytes, asset_checksum)
         
-        # Save extracted data (data + schema) as JSON
+        # Save extracted data (data + schema + checksum) as JSON
         store.save_extracted(result_key, extracted)
         
         return result_key
@@ -530,7 +642,7 @@ class Packable(BaseModel):
         Example:
             from meshly import PackableStore, Mesh
             
-            store = PackableStore(assets_path=Path("/path/to/assets"))
+            store = PackableStore(root_dir=Path("/path/to/data"))
             mesh = Mesh.load(store, "abc123")
             
             # Load from specific key
@@ -542,9 +654,11 @@ class Packable(BaseModel):
         return cls.reconstruct(extracted, assets=store.load_asset, array_type=array_type, is_lazy=is_lazy)
 
     def __reduce__(self):
-        """Support for pickle serialization."""
-        encoded = self.encode()
-        return (self.__class__.load_from_zip, (BytesIO(encoded),))
+        """Support for pickle serialization using standard dict approach."""
+        return (
+            _reconstruct_packable,
+            (self.__class__, dict(self)),
+        )
 
     def convert_to(self, array_type: ArrayType):
         """Create a new Packable with all arrays converted to the specified type."""

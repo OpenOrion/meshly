@@ -34,7 +34,7 @@ class TestJAXSupport:
     def test_numpy_functionality_preserved(self):
         """Test that existing numpy functionality still works."""
         # Create mesh with numpy arrays
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
 
         # Verify arrays are numpy arrays
         assert isinstance(mesh.vertices, np.ndarray)
@@ -61,7 +61,7 @@ class TestJAXSupport:
         import jax.numpy as jnp
 
         # Create mesh with numpy arrays
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
 
         # Test encoding/decoding with JAX via zip round-trip
         buffer = BytesIO()
@@ -71,8 +71,8 @@ class TestJAXSupport:
 
         # Verify vertices are JAX arrays
         assert hasattr(decoded_jax.vertices, 'device'), "Vertices should be JAX arrays"
-        # Indices stay as numpy for meshoptimizer compatibility
-        assert isinstance(decoded_jax.indices, np.ndarray), "Indices are numpy for meshoptimizer"
+        # Indices are also JAX arrays when loaded with array_type="jax"
+        assert hasattr(decoded_jax.indices, 'device'), "Indices should be JAX arrays"
 
         # Verify data is preserved
         np.testing.assert_array_equal(np.array(decoded_jax.vertices), self.vertices)
@@ -88,7 +88,7 @@ class TestJAXSupport:
         jax_indices = jnp.array(self.indices)
 
         # Create mesh with JAX arrays
-        mesh = Mesh(vertices=jax_vertices, indices=jax_indices)
+        mesh = Mesh.create(vertices=jax_vertices, indices=jax_indices)
 
         # Vertices should remain JAX, indices converted to numpy for meshoptimizer
         assert hasattr(mesh.vertices, 'device'), "Vertices should remain JAX arrays"
@@ -98,7 +98,7 @@ class TestJAXSupport:
     @pytest.mark.skipif(HAS_JAX, reason="JAX is available, cannot test unavailable scenario")
     def test_jax_unavailable_error(self):
         """Test error handling when JAX is requested but unavailable."""
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
 
         buffer = BytesIO()
         mesh.save_to_zip(buffer)
@@ -113,7 +113,7 @@ class TestJAXSupport:
         import jax.numpy as jnp
 
         jax_vertices = jnp.array(self.vertices)
-        mesh = Mesh(vertices=jax_vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=jax_vertices, indices=self.indices)
 
         copied_mesh = mesh.model_copy(deep=True)
 
@@ -131,7 +131,7 @@ class TestJAXSupport:
             normals: Optional[Array] = Field(None, description="Normal vectors")
 
         normals = np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1]], dtype=np.float32)
-        mesh = CustomMesh(vertices=self.vertices, indices=self.indices, normals=normals)
+        mesh = CustomMesh.create(vertices=self.vertices, indices=self.indices, normals=normals)
 
         buffer = BytesIO()
         mesh.save_to_zip(buffer)

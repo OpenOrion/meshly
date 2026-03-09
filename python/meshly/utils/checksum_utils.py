@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-
 class ChecksumUtils:
     """Utility class for computing checksums."""
 
@@ -21,7 +20,7 @@ class ChecksumUtils:
             data: Bytes to hash
 
         Returns:
-            16-character hex string (first 64 bits of SHA256)
+            16-character hex string (SHA256)
         """
         return hashlib.sha256(data).hexdigest()[:16]
 

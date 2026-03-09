@@ -26,7 +26,7 @@ class DynamicModelBuilder:
     """
     Builds Pydantic models dynamically from validated JSON schemas.
     
-    Handles meshly's custom array types (array, vertex_buffer, index_sequence)
+    Handles meshly's custom array types (array, index_sequence)
     and caches models for reuse.
     
     Usage:
@@ -223,7 +223,23 @@ class DynamicModelBuilder:
             return (list_type, default) if is_required else (Union[list_type, None], default)
         
         if prop.type == "object":
-            # Check for x-base hints (Mesh, Packable)
+            # Nested object with properties - create nested model from schema
+            # This takes priority over x_base to avoid dynamic class loading (security)
+            # and ensures proper reconstruction using schema structure
+            if prop.properties:
+                nested_name = prop.title or f"{field_name.title()}Model"
+                # Create a nested JsonSchema for the property
+                nested_schema = JsonSchema(
+                    title=nested_name,
+                    properties=prop.properties,
+                    required=prop.required or [],
+                    x_base=prop.x_base,  # Preserve x_base for proper base class
+                )
+                nested_model = cls.build_model(nested_schema, nested_name)
+                return (nested_model, ...) if is_required else (Union[nested_model, None], None)
+            
+            # Check for x-base hints (Mesh, Packable) - only when no inline properties
+            # This handles $ref-style contained packables
             if prop.x_base == "Mesh":
                 from meshly.mesh import Mesh
                 return (Mesh, ...) if is_required else (Union[Mesh, None], None)
@@ -239,18 +255,6 @@ class DynamicModelBuilder:
                 if default is ...:
                     return (dict_type, ...)
                 return (dict_type, default)
-            
-            # Nested object with properties - create nested model
-            if prop.properties:
-                nested_name = prop.title or f"{field_name.title()}Model"
-                # Create a nested JsonSchema for the property
-                nested_schema = JsonSchema(
-                    title=nested_name,
-                    properties=prop.properties,
-                    required=prop.required or [],
-                )
-                nested_model = cls.build_model(nested_schema, nested_name)
-                return (nested_model, ...) if is_required else (Union[nested_model, None], None)
             
             # Generic dict
             return (dict, ...) if is_required else (Union[dict, None], None)

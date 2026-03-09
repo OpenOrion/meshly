@@ -56,7 +56,7 @@ class TestDictArrays:
 
     def test_dict_array_detection(self):
         """Test that dictionary arrays are correctly detected."""
-        mesh = TexturedMesh(
+        mesh = TexturedMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             textures={
@@ -78,7 +78,7 @@ class TestDictArrays:
 
     def test_dict_array_encoding_decoding(self):
         """Test that dictionary arrays can be encoded and decoded."""
-        mesh = TexturedMesh(
+        mesh = TexturedMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             textures={
@@ -140,7 +140,7 @@ class TestDictArrays:
 
     def test_dict_array_zip_serialization(self):
         """Test that dictionary arrays work with zip file serialization."""
-        mesh = TexturedMesh(
+        mesh = TexturedMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             textures={
@@ -184,7 +184,7 @@ class TestDictArrays:
 
     def test_empty_dict_fields(self):
         """Test handling of empty dictionary fields."""
-        mesh = TexturedMesh(
+        mesh = TexturedMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             material_name="empty_dict_test"
@@ -202,7 +202,7 @@ class TestDictArrays:
 
     def test_dict_with_non_array_values(self):
         """Test that dictionaries containing non-array values are preserved."""
-        mesh = TexturedMesh(
+        mesh = TexturedMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             textures={
@@ -263,7 +263,7 @@ class TestDictArrays:
 
     def test_dict_with_non_array_values_zip_round_trip(self):
         """Test that non-array dict values survive zip save/load."""
-        mesh = TexturedMesh(
+        mesh = TexturedMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             material_data={

@@ -4,7 +4,7 @@ ResourceRef allows bytes data to be serialized by checksum when extracted/recons
 """
 
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 from pydantic import ConfigDict, Field, computed_field
 
@@ -43,8 +43,8 @@ class Resource(RefInfo):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     data: bytes = Field(exclude=True)
-    ext: str = ""
-    name: str = ""
+    ext: Optional[str] = None
+    name: Optional[str] = None
 
     @staticmethod
     def from_path(path: Union[str, Path]) -> "Resource":

@@ -13,7 +13,7 @@ pip install meshly
 ### Core Classes
 
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
-- **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding for vertices/indices
+- **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding. Use factory methods: `from_triangles()`, `from_polygons()`, `create()`
 - **`ArrayUtils`**: Utility class for extracting/reconstructing individual arrays
 - **`PackableStore`**: File-based store for persistent storage with deduplication
 - **`LazyModel`**: Lazy proxy that defers asset loading until field access
@@ -25,12 +25,12 @@ pip install meshly
 ### Array Type Annotations
 
 - **`Array`**: Generic array type with meshoptimizer compression
-- **`VertexBuffer`**: Optimized encoding for 3D vertex data (N × components)
 - **`IndexSequence`**: Optimized encoding for mesh indices (1D array)
+- **`InlineArray`**: Array serialized as inline JSON list (no binary compression)
 
 ### Key Capabilities
 
-- Automatic encoding/decoding of numpy array attributes via `Array`, `VertexBuffer`, `IndexSequence` type annotations
+- Automatic encoding/decoding of numpy array attributes via `Array`, `IndexSequence`, `InlineArray` type annotations
 - Custom subclasses with additional array fields are automatically serialized
 - **Extract/Reconstruct API** for content-addressable storage with deduplication
 - **PackableStore** for file-based persistent storage with automatic deduplication
@@ -65,30 +65,59 @@ reconstructed = ArrayUtils.reconstruct(extracted)
 
 ### Basic Mesh Usage
 
+Use factory methods to create meshes from various input formats:
+
 ```python
 import numpy as np
 from meshly import Mesh
 
-# Create a simple triangle mesh
+# Vertices shared by all examples
 vertices = np.array([
     [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]
 ], dtype=np.float32)
 
-indices = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
+# Method 1: from_triangles() - Nx3 triangle index array (most common)
+triangles = np.array([[0, 1, 2], [1, 3, 2]], dtype=np.uint32)
+mesh = Mesh.from_triangles(vertices=vertices, triangles=triangles)
 
-mesh = Mesh(vertices=vertices, indices=indices)
+# Method 2: from_polygons() - list of polygon vertex indices (mixed sizes OK)
+polygons = [[0, 1, 2], [0, 2, 3]]  # Can mix triangles, quads, etc.
+mesh = Mesh.from_polygons(vertices=vertices, polygons=polygons)
+
+# Method 3: create() - flexible convenience wrapper (auto-detects format)
+mesh = Mesh.create(vertices=vertices, indices=triangles)  # 2D array
+mesh = Mesh.create(vertices=vertices, indices=polygons)   # List of lists
 
 # Save to zip (uses meshoptimizer compression)
 mesh.save_to_zip("mesh.zip")
 
 # Load from zip
 loaded = Mesh.load_from_zip("mesh.zip")
-print(f"Loaded {loaded.vertex_count} vertices")
+print(f"Loaded {loaded.vertex_count} vertices, {loaded.polygon_count} polygons")
 
 # Or use encode/decode for in-memory operations
 encoded = mesh.encode()  # Returns bytes
 decoded = Mesh.decode(encoded)
 ```
+
+#### Direct Constructor (Advanced)
+
+The direct constructor requires canonical fields with pre-computed `index_sizes` and `cell_types`:
+
+```python
+from meshly.cell_types import VTKCellType
+
+# Direct constructor for maximum performance (no validation overhead)
+mesh = Mesh(
+    vertices=vertices,
+    indices=np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32),  # Flattened 1D
+    index_sizes=np.array([3, 3], dtype=np.uint8),           # 2 triangles
+    cell_types=np.array([VTKCellType.VTK_TRIANGLE, VTKCellType.VTK_TRIANGLE], dtype=np.uint8),
+)
+```
+
+> **Note:** Use factory methods (`from_triangles`, `from_polygons`, `create`) for convenience. 
+> Use the direct constructor only when you need maximum performance with pre-processed data.
 
 ### Custom Mesh Subclasses
 
@@ -130,22 +159,25 @@ loaded = TexturedMesh.load_from_zip("textured.zip")
 Use specialized array types for optimized encoding:
 
 ```python
-from meshly import Packable, Array, VertexBuffer, IndexSequence
+from meshly import Packable, Array, IndexSequence, InlineArray
 from pydantic import Field
 
 class OptimizedMesh(Packable):
     """Mesh with optimized array encodings."""
     
-    # VertexBuffer: optimized for 3D vertex data
-    vertices: VertexBuffer = Field(..., description="Vertex positions")
+    # Array: generic compression for vertex/normal data
+    vertices: Array = Field(..., description="Vertex positions")
+    normals: Array = Field(..., description="Vertex normals")
+    uvs: Array = Field(..., description="Texture coordinates")
     
     # IndexSequence: optimized for mesh indices
     indices: IndexSequence = Field(..., description="Triangle indices")
     
-    # Array: generic compression for other data
-    normals: Array = Field(..., description="Vertex normals")
-    uvs: Array = Field(..., description="Texture coordinates")
+    # InlineArray: small arrays serialized inline (no binary compression)
+    color: InlineArray = Field(..., description="RGB color")
 ```
+
+> **Note:** All dtypes are supported. Arrays with non-4-byte dtypes (e.g., `float16`, `int8`, `uint8`) are automatically padded to 4-byte alignment during encoding and unpadded during decoding (meshoptimizer requirement). For best performance, prefer 4-byte aligned dtypes like `float32`, `int32`, or `float64`.
 
 ### Dict of Pydantic BaseModel Objects
 
@@ -365,10 +397,10 @@ Use `PackableStore` for persistent file-based storage with automatic deduplicati
 from pathlib import Path
 from meshly import PackableStore, Mesh
 
-# Create a store with separate paths for assets and extracted data
+# Create a store with a root directory and extracted subdirectory
 store = PackableStore(
-    assets_path=Path("/data/assets"),      # Binary blobs stored by checksum
-    extracted_path=Path("/data/runs")      # Extracted JSON stored at user keys
+    root_dir=Path("/data/my_project"),
+    extracted_dir="runs"               # Subdirectory for extracted JSON
 )
 
 # Save a packable (auto-generates key from content checksum)
@@ -388,14 +420,43 @@ lazy = Mesh.load(store, key, is_lazy=True)
 
 Directory structure:
 ```
-assets_path/
-    <checksum1>.bin
-    <checksum2>.bin
-extracted_path/
-    experiment_001/
-        geometry.json   # Contains data + json_schema
-        result.json
+root_dir/
+    assets/               # Binary blobs stored by checksum
+        <checksum1>.bin
+        <checksum2>.bin
+    runs/                 # Extracted JSON at user keys
+        experiment_001/
+            geometry.json
+            result.json
 ```
+
+### In-Memory Caching with PackableCache
+
+Use `PackableCache` for high-performance two-tier caching (in-memory LRU + disk):
+
+```python
+from meshly import PackableCache, PackableStore, Mesh
+from pathlib import Path
+
+# Create a cache backed by a PackableStore
+store = PackableStore(root_dir=Path("/data/cache"), extracted_dir="meshes")
+cache = PackableCache(
+    store=store,
+    decoder=Mesh,           # Type to decode from disk
+    prefix="meshes",        # Namespace within the store
+    max_memory=10_000,      # Max entries in memory LRU
+)
+
+# Single item operations
+cache.put("my_mesh", mesh)
+loaded = cache.get("my_mesh")  # Memory -> disk -> None
+
+# Batch operations (parallelized disk I/O via ForkPool)
+cache.put_many({"mesh1": m1, "mesh2": m2, "mesh3": m3})
+found = cache.get_many({"mesh1", "mesh2", "mesh4"})  # Returns dict of found items
+```
+
+Lookup order: memory cache → disk → miss. Disk I/O uses `ForkPool` for parallel reads/writes on POSIX systems.
 
 ## Architecture
 
@@ -403,7 +464,7 @@ extracted_path/
 
 ```
 Packable (base class)
-├── Mesh (3D mesh with meshoptimizer encoding via VertexBuffer/IndexSequence)
+├── Mesh (3D mesh with meshoptimizer encoding via Array/IndexSequence)
 └── Your custom classes...
 ```
 
@@ -411,8 +472,8 @@ Packable (base class)
 
 ```
 Array          → Generic meshoptimizer compression
-VertexBuffer   → Optimized for 3D vertex data
 IndexSequence  → Optimized for mesh indices
+InlineArray    → Serialized as inline JSON list (no binary $ref)
 ```
 
 The `Packable` base class provides:
@@ -569,13 +630,14 @@ jax_mesh = mesh.convert_to("jax")
 ### Array Type Annotations
 
 ```python
-from meshly import Array, VertexBuffer, IndexSequence
+from meshly import Array, IndexSequence, InlineArray
 
 # Use in Pydantic models for automatic encoding
 class MyData(Packable):
     generic_data: Array           # Generic meshoptimizer compression
-    vertices: VertexBuffer        # Optimized for 3D vertex data
+    vertices: Array               # All arrays use meshoptimizer compression
     indices: IndexSequence        # Optimized for mesh indices
+    color: InlineArray            # Small arrays as inline JSON (no $ref)
 ```
 
 ### ArrayUtils
@@ -672,7 +734,8 @@ class ExtractedPackable(BaseModel):
     json_schema: Optional[Dict[str, Any]]  # JSON Schema with x-module and x-base hints
     assets: Dict[str, bytes]       # Map of checksum -> encoded bytes (excluded from model_dump)
     
-    def extract_checksums(self) -> list[str]  # Extract checksums from self.data
+    @staticmethod
+    def extract_checksums(data: dict) -> list[str]  # Extract $ref checksums from any data dict
 ```
 
 ### ExtractedArray
@@ -682,7 +745,7 @@ class ExtractedArray(BaseModel):
     """Result of extracting an array."""
     data: bytes                    # Meshoptimizer-compressed array data
     info: ArrayRefInfo             # Metadata (shape, dtype, itemsize, etc.)
-    encoding: ArrayEncoding        # Encoding used ("array", "vertex_buffer", "index_sequence")
+    encoding: ArrayEncoding        # Encoding used ("array" or "index_sequence")
 ```
 
 ### LazyModel
@@ -729,8 +792,14 @@ class PackableStore(BaseModel):
     Extracted packable data is stored at user-specified keys as JSON files.
     """
     
-    assets_path: Path              # Directory for binary assets
-    extracted_path: Path = None    # Directory for extracted JSON files (defaults to assets_path)
+    root_dir: Path                     # Root directory for all storage
+    extracted_dir: str = "runs"        # Subdirectory name for extracted JSON files
+    
+    # Properties
+    @property
+    def assets_path(self) -> Path      # root_dir / "assets"
+    @property
+    def extracted_path(self) -> Path   # root_dir / extracted_dir
     
     # Path helpers
     def asset_file(self, checksum: str) -> Path       # Get path for binary asset
@@ -747,6 +816,37 @@ class PackableStore(BaseModel):
     def extracted_exists(self, key: str) -> bool
 ```
 
+### PackableCache
+
+```python
+class PackableCache(Generic[T]):
+    """Two-tier LRU cache: in-memory + disk via PackableStore.
+    
+    Lookup order: memory -> disk -> miss.
+    New entries written to both tiers.
+    Disk I/O uses ForkPool for parallelism on batch operations.
+    """
+    
+    def __init__(
+        self,
+        store: PackableStore,     # Underlying disk storage
+        decoder: type[T],         # Packable subclass for decoding
+        prefix: str = "",         # Key namespace within store
+        max_memory: int = 10_000, # Max in-memory entries
+    ): ...
+    
+    # Single item operations
+    def get(self, key: str) -> T | None
+    def put(self, key: str, value: T) -> None
+    
+    # Batch operations (parallelized disk I/O)
+    def get_many(self, keys: set[str]) -> dict[str, T]
+    def put_many(self, items: dict[str, T]) -> None
+    
+    def clear(self) -> None                # Clear in-memory cache
+    def __len__(self) -> int               # Number of in-memory entries
+```
+
 ### Mesh
 
 ```python
@@ -755,7 +855,7 @@ class Mesh(Packable):
     is_contained: ClassVar[bool] = True  # Mesh extracts as single zip blob
     
     # Fields with specialized encoding via type annotations
-    vertices: VertexBuffer        # Required (meshoptimizer vertex buffer encoding)
+    vertices: Array               # Required (meshoptimizer array encoding)
     indices: Optional[IndexSequence]  # Optional (meshoptimizer index sequence encoding)
     index_sizes: Optional[Array]  # Auto-inferred
     cell_types: Optional[Array]   # Auto-inferred

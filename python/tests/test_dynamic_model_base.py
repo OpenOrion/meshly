@@ -16,7 +16,7 @@ def test_dynamic_model_base_mesh():
         "x-base": "Mesh",
         "properties": {
             "vertices": {
-                "type": "vertex_buffer",
+                "type": "array",
                 "description": "Vertex positions"
             },
             "indices": {
@@ -47,7 +47,7 @@ def test_dynamic_model_base_mesh():
     # Create an instance and verify it works
     vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
     indices = np.array([0, 1, 2], dtype=np.uint32)
-    instance = ModelClass(vertices=vertices, indices=indices, custom_field="test")
+    instance = ModelClass.create(vertices=vertices, indices=indices, custom_field="test")
     
     assert isinstance(instance, Mesh)
     assert instance.vertex_count == 3
@@ -144,18 +144,22 @@ def test_dynamic_model_instantiate_with_mesh_base():
         "type": "object",
         "x-base": "Mesh",
         "properties": {
-            "vertices": {"type": "vertex_buffer"},
+            "vertices": {"type": "array"},
             "indices": {"type": "index_sequence"},
+            "index_sizes": {"type": "array"},
+            "cell_types": {"type": "array"},
             "label": {"type": "string"}
         },
-        "required": ["vertices"]
+        "required": ["vertices", "indices", "index_sizes", "cell_types"]
     }
     
     schema = JsonSchema.model_validate(schema_dict)
     
-    # Create test data
+    # Create test data (single triangle)
     vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
     indices = np.array([0, 1, 2], dtype=np.uint32)
+    index_sizes = np.array([3], dtype=np.uint8)  # One triangle with 3 vertices
+    cell_types = np.array([5], dtype=np.uint8)   # VTK_TRIANGLE = 5
     
     # Instantiate directly (without $refs, so no assets needed)
     instance = DynamicModelBuilder.instantiate(
@@ -163,6 +167,8 @@ def test_dynamic_model_instantiate_with_mesh_base():
         {
             "vertices": vertices,
             "indices": indices,
+            "index_sizes": index_sizes,
+            "cell_types": cell_types,
             "label": "triangle"
         },
         assets={},
@@ -183,7 +189,7 @@ def test_dynamic_model_cache_respects_xbase():
         "title": "TestModel",
         "type": "object",
         "x-base": "Mesh",
-        "properties": {"vertices": {"type": "vertex_buffer"}},
+        "properties": {"vertices": {"type": "array"}},
         "required": ["vertices"]
     })
     
@@ -212,7 +218,7 @@ def test_mesh_subclass_has_combine_method():
         "type": "object",
         "x-base": "Mesh",
         "properties": {
-            "vertices": {"type": "vertex_buffer"},
+            "vertices": {"type": "array"},
             "indices": {"type": "index_sequence"},
             "temperature": {"type": "number"}
         },
@@ -223,13 +229,13 @@ def test_mesh_subclass_has_combine_method():
     CustomMesh = DynamicModelBuilder.build_model(schema)
     
     # Create test meshes
-    mesh1 = CustomMesh(
+    mesh1 = CustomMesh.create(
         vertices=np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
         indices=np.array([0, 1, 2], dtype=np.uint32),
         temperature=20.0
     )
     
-    mesh2 = CustomMesh(
+    mesh2 = CustomMesh.create(
         vertices=np.array([[2, 0, 0], [3, 0, 0], [2, 1, 0]], dtype=np.float32),
         indices=np.array([0, 1, 2], dtype=np.uint32),
         temperature=25.0

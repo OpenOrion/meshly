@@ -6,18 +6,68 @@ import gzip
 import importlib
 import types
 import typing
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Annotated, Union, get_args, get_origin
+
+import numpy as np
 
 from pydantic import BaseModel
 
 from meshly.array import ArrayRefInfo, ArrayType, ArrayUtils, ExtractedArray
 from meshly.common import AssetProvider
 from meshly.resource import Resource
+from meshly.utils.fork_pool import ForkPool
 from meshly.utils.json_schema import JsonSchema, JsonSchemaProperty
 from meshly.utils.serialization_utils import SerializationUtils
 
 # JSON-compatible value type
 JsonValue = Union[str, int, float, bool, None, dict, list]
+
+
+# -----------------------------------------------------------------------------
+# Fork-based parallel Packable resolution
+# -----------------------------------------------------------------------------
+# Uses module-level state because fork() copies memory (COW) without
+# serialization, allowing non-picklable objects like assets to be shared.
+
+@dataclass
+class _PackableResolveContext:
+    """Typed context for parallel Packable resolution."""
+    values: list
+    expected_type: type
+    assets: AssetProvider
+    array_type: ArrayType
+
+
+_PACKABLE_CTX: _PackableResolveContext | None = None
+
+
+@contextmanager
+def _packable_context(values: list, expected_type: type, assets: AssetProvider, array_type: ArrayType):
+    """Context manager for fork-based parallel Packable resolution."""
+    global _PACKABLE_CTX
+    _PACKABLE_CTX = _PackableResolveContext(values, expected_type, assets, array_type)
+    try:
+        yield
+    finally:
+        _PACKABLE_CTX = None
+
+
+def _resolve_packable_item(idx: int) -> object:
+    """Worker: reconstruct a single Packable from $ref."""
+    from meshly.packable import Packable
+    
+    ctx = _PACKABLE_CTX
+    if ctx is None:
+        raise RuntimeError("_packable_context not set")
+    
+    checksum = ctx.values[idx]["$ref"]
+    asset_bytes = SerializationUtils.get_asset(ctx.assets, checksum)
+    
+    if isinstance(ctx.expected_type, type) and issubclass(ctx.expected_type, Packable):
+        return ctx.expected_type.decode(asset_bytes, ctx.array_type)
+    return Packable.decode(asset_bytes, ctx.array_type)
 
 
 class SchemaUtils:
@@ -46,6 +96,16 @@ class SchemaUtils:
         if get_origin(t) is Annotated:
             args = get_args(t)
             return bool(args and args[0] is Resource)
+        return False
+
+    @staticmethod
+    def _matches_discriminator(model_type: type[BaseModel], value: dict) -> bool:
+        """Check if a BaseModel type matches data via a Literal discriminator field."""
+        from typing import Literal
+        for field_name, field_info in model_type.model_fields.items():
+            if field_name in value and get_origin(field_info.annotation) is Literal:
+                if value[field_name] in get_args(field_info.annotation):
+                    return True
         return False
 
     @staticmethod
@@ -120,7 +180,7 @@ class SchemaUtils:
             if SchemaUtils._is_resource_ref(expected_type):
                 asset_bytes = SerializationUtils.get_asset(assets, value["$ref"])
                 data = gzip.decompress(asset_bytes)
-                return Resource(data=data, ext=value.get("ext", ""), name=value.get("name", ""))
+                return Resource(data=data, ext=value.get("ext"), name=value.get("name"))
             if isinstance(expected_type, type) and issubclass(expected_type, Packable):
                 return expected_type.decode(
                     SerializationUtils.get_asset(assets, value["$ref"]), array_type
@@ -142,22 +202,82 @@ class SchemaUtils:
             # dict[str, X]
             if origin is dict:
                 _, val_type = get_args(expected_type)
-                return {k: SchemaUtils._resolve_with_type(v, val_type, assets, array_type) for k, v in value.items()}
+                keys = list(value.keys())
+                resolved = SchemaUtils._resolve_list_items(list(value.values()), val_type, assets, array_type)
+                return dict(zip(keys, resolved))
             # BaseModel
             if isinstance(expected_type, type) and issubclass(expected_type, BaseModel):
                 resolved = SchemaUtils.resolve_from_class(expected_type, value, assets, array_type)
                 return expected_type(**resolved)
+            # Union types - match via Literal discriminator fields
+            if origin is Union or isinstance(expected_type, types.UnionType):
+                union_args = [a for a in get_args(expected_type) if a is not type(None)]
+                model_args = [a for a in union_args if isinstance(a, type) and issubclass(a, BaseModel)]
+                
+                # Try discriminator match first, then fallback to trial instantiation
+                for arg_type in model_args:
+                    if SchemaUtils._matches_discriminator(arg_type, value):
+                        resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
+                        return arg_type(**resolved)
+                
+                for arg_type in model_args:
+                    try:
+                        resolved = SchemaUtils.resolve_from_class(arg_type, value, assets, array_type)
+                        return arg_type(**resolved)
+                    except Exception:
+                        continue
             # Untyped dict
             return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
+
+        # List annotation → reconstruct numpy array from inline JSON list
+        if isinstance(value, list) and ArrayUtils.is_inlined_array_annotation(expected_type):
+            return ArrayUtils.convert_array(np.array(value), array_type)
 
         # List/tuple
         if isinstance(value, (list, tuple)):
             origin = get_origin(expected_type)
             elem_type = get_args(expected_type)[0] if origin in (list, tuple) and get_args(expected_type) else object
-            result = [SchemaUtils._resolve_with_type(v, elem_type, assets, array_type) for v in value]
+            result = SchemaUtils._resolve_list_items(value, elem_type, assets, array_type)
             return result if isinstance(value, list) else tuple(result)
 
         return value
+
+    @staticmethod
+    def _resolve_list_items(
+        items: list,
+        elem_type: type,
+        assets: AssetProvider,
+        array_type: ArrayType,
+    ) -> list:
+        """Resolve list items, parallelizing when items are Packable $refs.
+        
+        Uses fork-based parallelism for lists of Packable references.
+        Falls back to sequential for mixed types.
+        """
+        from meshly.packable import Packable
+        
+        if not items:
+            return []
+        
+        # Check if all items are Packable $refs and type is Packable
+        MIN_ITEMS_FOR_PARALLEL = 50
+        is_packable_type = isinstance(elem_type, type) and issubclass(elem_type, Packable)
+        all_packable_refs = (
+            len(items) >= MIN_ITEMS_FOR_PARALLEL
+            and is_packable_type
+            and all(isinstance(v, dict) and "$ref" in v for v in items)
+        )
+        
+        if all_packable_refs:
+            with _packable_context(items, elem_type, assets, array_type):
+                return ForkPool.map(
+                    _resolve_packable_item,
+                    range(len(items)),
+                    min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
+                )
+        
+        # Sequential fallback
+        return [SchemaUtils._resolve_with_type(v, elem_type, assets, array_type) for v in items]
 
     # -------------------------------------------------------------------------
     # Private: Schema-based resolution (JSON schema)
@@ -189,15 +309,15 @@ class SchemaUtils:
             metadata = {k: v for k, v in value.items() if k != "$ref"}
             asset_bytes = SerializationUtils.get_asset(assets, checksum)
 
-            # Resource - assets from _extract_resource are always gzip compressed
-            is_resource = (prop and prop.is_resource_type()) or "ext" in metadata
-            if is_resource:
+            # Use schema to determine type
+            if prop and prop.is_resource_type():
+                # Resource - assets from _extract_resource are always gzip compressed
                 data = gzip.decompress(asset_bytes)
-                return Resource(data=data, ext=metadata.get("ext", ""), name=metadata.get("name", ""))
-
-            # Array
-            if "dtype" in metadata and "shape" in metadata:
-                encoding = prop.type if prop and prop.is_array_type() else "array"
+                return Resource(data=data, ext=metadata.get("ext"), name=metadata.get("name"))
+            
+            if prop and prop.is_array_type():
+                # Array
+                encoding = prop.type
                 return ArrayUtils.reconstruct(
                     ExtractedArray(
                         data=asset_bytes, 
@@ -206,8 +326,8 @@ class SchemaUtils:
                     ), 
                     array_type,
                 )
-
-            # Packable
+            
+            # Packable (default)
             return Packable.decode(asset_bytes, array_type)
 
         # No schema info - fallback
@@ -222,13 +342,24 @@ class SchemaUtils:
                 if item_prop.ref:
                     item_prop = schema.resolve_ref(item_prop.ref) or item_prop
                 return {k: SchemaUtils._resolve_with_prop(v, item_prop, schema, assets, array_type) for k, v in value.items()}
-            # Named properties
+            # Named properties - reconstruct as a nested model
             if prop.properties:
-                return {
-                    k: SchemaUtils._resolve_with_prop(v, prop.properties.get(k), schema, assets, array_type)
-                    for k, v in value.items() if not k.startswith("$")
-                }
+                from meshly.utils.dynamic_model import DynamicModelBuilder
+                from meshly.utils.json_schema import JsonSchema as _JsonSchema
+                nested_schema = _JsonSchema(
+                    title=prop.title or "NestedModel",
+                    properties=prop.properties,
+                    required=prop.required or [],
+                    x_base=prop.x_base,
+                    x_module=prop.x_module,
+                    **{"$defs": dict(schema.defs)},
+                )
+                return DynamicModelBuilder.instantiate(nested_schema, value, assets, array_type)
             return value
+
+        # List annotation → reconstruct numpy array from inline JSON list
+        if isinstance(value, list) and prop and prop.type == "list":
+            return ArrayUtils.convert_array(np.array(value), array_type)
 
         # List
         if isinstance(value, list):

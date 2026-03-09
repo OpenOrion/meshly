@@ -235,9 +235,9 @@ export class LazyModel<T extends Record<string, unknown> = Record<string, unknow
     const zip = await JSZip.loadAsync(zipData)
 
     // Read extracted.json (contains data + json_schema)
-    const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE)
+    const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE_NAME)
     if (!extractedFile) {
-      throw new Error(`${ExportConstants.EXTRACTED_FILE} not found in zip file`)
+      throw new Error(`${ExportConstants.EXTRACTED_FILE_NAME} not found in zip file`)
     }
     const extractedText = await extractedFile.async("text")
     const extracted: { data: Record<string, unknown>; json_schema?: JsonSchema } = JSON.parse(extractedText)
@@ -249,7 +249,7 @@ export class LazyModel<T extends Record<string, unknown> = Record<string, unknow
       if (assetCache[checksum]) {
         return assetCache[checksum]
       }
-      const assetPath = ExportConstants.assetPath(checksum)
+      const assetPath = ExportConstants.getRelativeAssetPath(checksum)
       const file = zip.file(assetPath)
       if (!file) {
         throw new Error(`Asset '${checksum}' not found at ${assetPath}`)

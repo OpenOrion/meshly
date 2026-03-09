@@ -21,7 +21,7 @@ from meshly.array import (
     ExtractedArray,
     ArrayEncoding,
     IndexSequence,
-    VertexBuffer,
+    InlineArray,
 )
 from meshly.cell_types import (
     CellType,
@@ -34,6 +34,7 @@ from meshly.common import (
 from meshly.constants import ExportConstants
 from meshly.mesh import Mesh, TMesh
 from meshly.packable import ExtractedPackable, Packable, PackableRefInfo, PackableStore
+from meshly.cache import PackableCache
 from meshly.utils.dynamic_model import LazyModel
 from meshly.resource import Resource
 from meshly.utils import ElementUtils, MeshUtils
@@ -47,13 +48,14 @@ __all__ = [
     "LazyModel",
     "ArrayType",
     "PackableStore",
+    "PackableCache",
     "AssetProvider",
     # Mesh classes
     "Mesh",
     "TMesh",
     # Array types and utilities
     "Array",
-    "VertexBuffer",
+    "InlineArray",
     "IndexSequence",
     "ExtractedArray",
     "ArrayEncoding",

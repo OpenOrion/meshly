@@ -61,3 +61,15 @@ export {
     getDefaultAssetCache
 } from './cache'
 
+// Export from packable-worker module
+export {
+    DecodeArrayMessage,
+    DecodeArrayResponse,
+    DecodeMessage,
+    DecodeResponse, PackableWorkerClient,
+    PackableWorkerMessage,
+    PackableWorkerResponse,
+    ReconstructMessage,
+    ReconstructResponse, initPackableWorker
+} from './packable-worker'
+

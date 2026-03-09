@@ -43,7 +43,7 @@ class TestPydanticMesh:
 
     def test_mesh_creation(self):
         """Test that a Mesh can be created with vertices and indices."""
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
         assert mesh.vertex_count == len(self.vertices)
         assert mesh.index_count == len(self.indices)
         np.testing.assert_array_equal(mesh.vertices, self.vertices)
@@ -51,15 +51,11 @@ class TestPydanticMesh:
 
     def test_mesh_validation(self):
         """Test that Mesh validation works correctly."""
-        # Test that vertices are required
-        with pytest.raises(ValidationError):
-            Mesh(indices=self.indices)
-
-        # Test that indices are optional
-        mesh = Mesh(vertices=self.vertices)
+        # Test that vertices-only mesh can be created with empty indices
+        mesh = Mesh.create(vertices=self.vertices)
         assert mesh.vertex_count == len(self.vertices)
         assert mesh.index_count == 0
-        assert mesh.indices is None
+        assert len(mesh.indices) == 0
 
         # Test that vertices are converted to float32
         vertices_int = np.array([
@@ -69,17 +65,17 @@ class TestPydanticMesh:
             [-1, 1, -1]
         ], dtype=np.int32)
 
-        mesh = Mesh(vertices=vertices_int)
+        mesh = Mesh.create(vertices=vertices_int)
         assert mesh.vertices.dtype == np.float32
 
         # Test that indices are converted to uint32
         indices_int = np.array([0, 1, 2, 2, 3, 0], dtype=np.int32)
-        mesh = Mesh(vertices=self.vertices, indices=indices_int)
+        mesh = Mesh.create(vertices=self.vertices, indices=indices_int)
         assert mesh.indices.dtype == np.uint32
 
     def test_mesh_optimization(self):
         """Test that mesh optimization methods work correctly."""
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
 
         # Test optimize_vertex_cache
         optimized_mesh = mesh.optimize_vertex_cache()
@@ -110,7 +106,7 @@ class TestPydanticMesh:
             [4, 5, 6, 7]
         ], dtype=np.uint32)
 
-        quad_mesh = Mesh(vertices=self.vertices, indices=quad_indices)
+        quad_mesh = Mesh.create(vertices=self.vertices, indices=quad_indices)
         assert quad_mesh.polygon_count == 2
         assert quad_mesh.is_uniform_polygons
         np.testing.assert_array_equal(quad_mesh.index_sizes, [4, 4])
@@ -121,7 +117,7 @@ class TestPydanticMesh:
             [3, 4, 5, 6]      # Quad
         ]
 
-        mixed_mesh = Mesh(vertices=self.vertices, indices=mixed_indices)
+        mixed_mesh = Mesh.create(vertices=self.vertices, indices=mixed_indices)
         assert mixed_mesh.polygon_count == 2
         assert not mixed_mesh.is_uniform_polygons
         np.testing.assert_array_equal(mixed_mesh.index_sizes, [3, 4])
@@ -136,7 +132,7 @@ class TestPydanticMesh:
     def test_mesh_copy(self):
         """Test mesh copying functionality."""
         # Create a simple mesh
-        mesh = Mesh(vertices=self.vertices, indices=self.indices)
+        mesh = Mesh.create(vertices=self.vertices, indices=self.indices)
         copied_mesh = mesh.model_copy(deep=True)
 
         # Verify the copy has the same data
@@ -213,7 +209,7 @@ class TestCustomMesh:
 
     def test_custom_mesh_creation(self):
         """Test that a custom mesh can be created with additional attributes."""
-        mesh = CustomMesh(
+        mesh = CustomMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             normals=self.normals,
@@ -236,13 +232,14 @@ class TestCustomMesh:
     def test_custom_mesh_validation(self):
         """Test that custom mesh validation works correctly."""
         with pytest.raises(ValidationError):
-            CustomMesh(
+            # normals is required for CustomMesh
+            CustomMesh.create(
                 vertices=self.vertices,
                 indices=self.indices,
                 colors=self.colors
             )
 
-        mesh = CustomMesh(
+        mesh = CustomMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             normals=self.normals
@@ -255,7 +252,7 @@ class TestCustomMesh:
 
     def test_custom_mesh_serialization(self):
         """Test that a custom mesh can be serialized and deserialized."""
-        mesh = CustomMesh(
+        mesh = CustomMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             normals=self.normals,
@@ -286,7 +283,7 @@ class TestCustomMesh:
 
     def test_custom_mesh_optimization(self):
         """Test that custom mesh optimization methods work correctly."""
-        mesh = CustomMesh(
+        mesh = CustomMesh.create(
             vertices=self.vertices,
             indices=self.indices,
             normals=self.normals,
@@ -319,7 +316,7 @@ class TestCustomMesh:
         # Test with mixed polygon types: triangle, quad, pentagon
         mixed_indices = [[0, 1, 2], [2, 3, 4, 5], [5, 6, 7, 0, 1]]
 
-        mesh = CustomMesh(
+        mesh = CustomMesh.create(
             vertices=self.vertices,
             indices=mixed_indices,
             normals=self.normals,
@@ -344,7 +341,7 @@ class TestCustomMesh:
         """Test copying custom mesh with index_sizes."""
         quad_indices = np.array([[0, 1, 2, 3], [4, 5, 6, 7]], dtype=np.uint32)
 
-        mesh = CustomMesh(
+        mesh = CustomMesh.create(
             vertices=self.vertices,
             indices=quad_indices,
             normals=self.normals,
@@ -388,7 +385,7 @@ class TestMeshMarkers:
             "corners": [[0, 1, 2]]
         }
 
-        mesh = Mesh(
+        mesh = Mesh.create(
             vertices=self.vertices,
             indices=self.indices,
             markers=markers,
@@ -414,7 +411,7 @@ class TestMeshMarkers:
             "faces": [[0, 1, 2, 3]]
         }
 
-        mesh = Mesh(
+        mesh = Mesh.create(
             vertices=self.vertices,
             indices=self.indices,
             markers=original_markers,
@@ -434,7 +431,7 @@ class TestMeshMarkers:
             "quads": [[0, 1, 2, 3]]
         }
 
-        mesh = Mesh(
+        mesh = Mesh.create(
             vertices=self.vertices,
             indices=self.indices,
             markers=markers,
@@ -452,7 +449,7 @@ class TestMeshMarkers:
         """Test that markers with large element sizes are now supported."""
         markers = {"large_polygon": [[0, 1, 2, 3, 4, 5, 6]]}
 
-        mesh = Mesh(
+        mesh = Mesh.create(
             vertices=np.array([
                 [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
                 [0.5, 0.5, 1.0], [2.0, 0.0, 0.0], [2.0, 1.0, 0.0]
@@ -473,7 +470,7 @@ class TestMeshMarkers:
             "center": [[0, 1, 2]]
         }
 
-        mesh = Mesh(
+        mesh = Mesh.create(
             vertices=self.vertices,
             indices=self.indices,
             markers=markers,
@@ -497,56 +494,22 @@ class TestMeshMarkers:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def test_marker_auto_sizes(self):
-        """Test that marker_sizes is automatically calculated from marker_cell_types."""
-        marker_data = np.array([0, 1, 2, 3], dtype=np.uint32)
-        marker_cell_types = np.array([VTKCellType.VTK_LINE, VTKCellType.VTK_LINE], dtype=np.uint8)
-
-        mesh = Mesh(
-            vertices=self.vertices,
-            indices=self.indices,
-            markers={'boundary': marker_data},
-            marker_cell_types={'boundary': marker_cell_types}
-        )
-
-        assert 'boundary' in mesh.marker_sizes
-        expected_sizes = np.array([2, 2], dtype=np.uint32)
-        np.testing.assert_array_equal(mesh.marker_sizes['boundary'], expected_sizes)
-
-    def test_marker_auto_sizes_mixed(self):
-        """Test automatic size calculation with mixed cell types."""
-        extended_vertices = np.array([
-            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0], [0.5, 0.5, 0.0]
-        ], dtype=np.float32)
-
-        marker_data = np.array([0, 1, 2, 0, 1, 4], dtype=np.uint32)
-        marker_cell_types = np.array([
-            VTKCellType.VTK_VERTEX,
-            VTKCellType.VTK_LINE,
-            VTKCellType.VTK_TRIANGLE
-        ], dtype=np.uint8)
-
-        mesh = Mesh(
-            vertices=extended_vertices,
-            indices=self.indices,
-            markers={'mixed': marker_data},
-            marker_cell_types={'mixed': marker_cell_types}
-        )
-
-        assert 'mixed' in mesh.marker_sizes
-        expected_sizes = np.array([1, 2, 3], dtype=np.uint32)
-        np.testing.assert_array_equal(mesh.marker_sizes['mixed'], expected_sizes)
-
     def test_marker_manual_sizes_preserved(self):
-        """Test that manually provided marker_sizes is preserved."""
+        """Test that manually provided marker fields are preserved."""
+        # Create indices array with all required fields
+        indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+        index_sizes = np.array([3, 3], dtype=np.uint8)
+        cell_types = np.array([VTKCellType.VTK_TRIANGLE, VTKCellType.VTK_TRIANGLE], dtype=np.uint8)
+        
         marker_data = np.array([0, 1, 1, 2], dtype=np.uint32)
         marker_cell_types = np.array([VTKCellType.VTK_LINE, VTKCellType.VTK_LINE], dtype=np.uint8)
-        marker_sizes = np.array([2, 2], dtype=np.uint32)
+        marker_sizes = np.array([2, 2], dtype=np.uint8)
 
         mesh = Mesh(
             vertices=self.vertices,
-            indices=self.indices,
+            indices=indices,
+            index_sizes=index_sizes,
+            cell_types=cell_types,
             markers={'boundary': marker_data},
             marker_cell_types={'boundary': marker_cell_types},
             marker_sizes={'boundary': marker_sizes}
@@ -554,3 +517,39 @@ class TestMeshMarkers:
 
         assert 'boundary' in mesh.marker_sizes
         np.testing.assert_array_equal(mesh.marker_sizes['boundary'], marker_sizes)
+
+
+class TestMeshToPyvista:
+    """Test Mesh.to_pyvista() conversion."""
+
+    @pytest.mark.skipif(
+        not pytest.importorskip("pyvista", minversion=None),
+        reason="pyvista not installed"
+    )
+    def test_to_pyvista_large_mesh_no_uint8_overflow(self):
+        """to_pyvista must not overflow when offset exceeds uint8 range (>255).
+
+        index_sizes has dtype uint8; iterating ``offset += size`` would promote
+        offset to uint8 and silently wrap around, corrupting the cell array.
+        Regression test for CellSizeError on meshes with >85 triangles.
+        """
+        import pyvista as pv
+
+        n_triangles = 200
+        n_verts = n_triangles * 3
+        vertices = np.random.rand(n_verts, 3).astype(np.float32)
+        indices = np.arange(n_verts, dtype=np.uint32)
+        index_sizes = np.full(n_triangles, 3, dtype=np.uint8)
+        cell_types = np.full(n_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
+
+        mesh = Mesh(
+            vertices=vertices,
+            indices=indices,
+            index_sizes=index_sizes,
+            cell_types=cell_types,
+        )
+
+        grid = mesh.to_pyvista()
+        assert isinstance(grid, pv.UnstructuredGrid)
+        assert grid.n_cells == n_triangles
+        assert grid.n_points == n_verts

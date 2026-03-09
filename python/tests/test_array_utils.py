@@ -64,7 +64,7 @@ class TestArrayUtils:
         test_arrays = [
             np.array([1, 2, 3, 4, 5], dtype=np.int32),
             np.array([1.1, 2.2, 3.3], dtype=np.float64),
-            np.array([[1, 2], [3, 4]], dtype=np.uint16),
+            np.array([[1, 2], [3, 4]], dtype=np.uint32),
             np.random.random((5, 5)).astype(np.float32),
         ]
 

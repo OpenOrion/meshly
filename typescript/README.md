@@ -105,7 +105,7 @@ mesh.zip
     "x-module": "meshly.mesh.Mesh",
     "x-base": "Mesh",
     "properties": {
-      "vertices": { "type": "vertex_buffer" },
+      "vertices": { "type": "array" },
       "indices": { "type": "index_sequence" }
     }
   }
@@ -203,6 +203,52 @@ const cachedFetcher = await createCachedProvider(async (checksum) => {
 const result = await Packable.reconstruct(data, cachedFetcher, schema)
 ```
 
+## Web Worker Offloading
+
+Offload CPU-intensive Packable reconstruction to a background thread:
+
+```typescript
+import { PackableWorkerClient } from 'meshly'
+
+// Create a worker client (handles worker lifecycle)
+const client = new PackableWorkerClient()
+
+// Reconstruct in background thread
+const assets = new Map<string, Uint8Array>()
+// ... populate assets ...
+const result = await client.reconstruct(data, assets, jsonSchema)
+
+// Decode a full zip in the worker
+const decoded = await client.decode(zipArrayBuffer)
+
+// Decode individual arrays
+const vertices = await client.decodeArray(vertexBuffer, {
+  shape: [100, 3],
+  dtype: 'float32',
+  itemsize: 4
+})
+
+// Clean up when done
+client.terminate()
+```
+
+### Worker Entry Point
+
+Import the worker entry point in your bundler:
+
+```typescript
+// Vite/Rollup
+const worker = new Worker(
+  new URL('meshly/worker', import.meta.url), 
+  { type: 'module' }
+)
+
+// Or use the worker directly
+import { initPackableWorker } from 'meshly'
+// In worker file:
+initPackableWorker()
+```
+
 ## API Reference
 
 ### AssetProvider
@@ -244,12 +290,12 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   // Properties
   vertices: Float32Array
   indices?: Uint32Array
-  indexSizes?: Uint32Array
-  cellTypes?: Uint32Array
+  indexSizes?: TypedArray
+  cellTypes?: TypedArray
   dim?: number
   markers?: Record<string, Uint32Array>
-  markerSizes?: Record<string, Uint32Array>
-  markerCellTypes?: Record<string, Uint32Array>
+  markerSizes?: Record<string, TypedArray>
+  markerCellTypes?: Record<string, TypedArray>
   
   // Utility methods
   getPolygonCount(): number
@@ -274,12 +320,12 @@ class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
 interface MeshData {
   vertices: Float32Array
   indices?: Uint32Array
-  indexSizes?: Uint32Array
-  cellTypes?: Uint32Array
+  indexSizes?: TypedArray
+  cellTypes?: TypedArray
   dim?: number
   markers?: Record<string, Uint32Array>
-  markerSizes?: Record<string, Uint32Array>
-  markerCellTypes?: Record<string, Uint32Array>
+  markerSizes?: Record<string, TypedArray>
+  markerCellTypes?: Record<string, TypedArray>
 }
 ```
 
@@ -292,9 +338,10 @@ interface ArrayRefInfo {
   shape: number[]     // Array shape
   dtype: string       // Data type ('float32', 'uint32', etc.)
   itemsize: number    // Bytes per element
-  pad_bytes?: number  // Optional padding bytes
 }
 ```
+
+> **Note:** All dtypes are supported. Arrays with non-4-byte dtypes (e.g., `float16`, `int8`, `uint8`) are automatically padded during encoding and unpadded during decoding. For best performance, prefer 4-byte aligned dtypes like `float32`, `int32`, or `float64`.
 
 ### JSON Schema Types
 
@@ -307,7 +354,7 @@ interface JsonSchema {
 }
 
 interface JsonSchemaProperty {
-  type?: string | 'array' | 'vertex_buffer' | 'index_sequence'
+  type?: string | 'array' | 'index_sequence'
   items?: JsonSchemaProperty
   properties?: Record<string, JsonSchemaProperty>
   $ref?: string
@@ -315,7 +362,7 @@ interface JsonSchemaProperty {
 }
 
 // Array encoding types
-type ArrayEncoding = 'array' | 'vertex_buffer' | 'index_sequence'
+type ArrayEncoding = 'array' | 'index_sequence'
 ```
 
 ### Reconstruct Schema Types
@@ -385,8 +432,7 @@ interface ArrayRefInfo {
   $ref?: string      // Checksum reference
   shape: number[]
   dtype: string
-  itemsize: number
-  pad_bytes?: number
+  itemsize: number   // Must be multiple of 4 (meshoptimizer requirement)
 }
 ```
 
@@ -487,6 +533,37 @@ interface AssetCacheConfig {
 // Convenience functions
 function getDefaultAssetCache(): AssetCache
 async function createCachedProvider(fetcher: AssetFetcher): Promise<AssetFetcher>
+```
+
+### PackableWorkerClient
+
+```typescript
+// Client for offloading Packable reconstruction to a Web Worker
+class PackableWorkerClient {
+  constructor(workerUrl?: URL)
+  
+  // Reconstruct data with pre-fetched assets (runs in worker)
+  async reconstruct<T>(
+    data: Record<string, unknown>,
+    assets: Map<string, Uint8Array> | Record<string, Uint8Array>,
+    jsonSchema?: JsonSchema
+  ): Promise<T>
+  
+  // Decode a Packable zip blob (runs in worker)
+  async decode<T>(zipData: ArrayBuffer): Promise<T>
+  
+  // Decode an array from binary data (runs in worker)
+  async decodeArray(
+    data: ArrayBuffer,
+    info: ArrayRefInfo
+  ): Promise<Float32Array | Int32Array | Uint32Array>
+  
+  // Terminate the worker
+  terminate(): void
+}
+
+// Initialize the worker-side message handler (call in worker file)
+function initPackableWorker(): void
 ```
 
 ## Python Compatibility

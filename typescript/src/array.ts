@@ -29,8 +29,6 @@ export interface ArrayRefInfo {
   dtype: string
   /** Bytes per element */
   itemsize: number
-  /** Padding bytes added for meshoptimizer alignment (optional) */
-  pad_bytes?: number
 }
 
 /**
@@ -154,41 +152,40 @@ export class ArrayUtils {
       return new TypedArrayCtor(destUint8Array.buffer)
     }
 
-    // Handle generic "array" encoding with optional padding
-    const padBytes = info.pad_bytes || 0
+    // Handle generic "array" encoding
+    // meshoptimizer requires vertex_size to be multiple of 4, handle padding
+    const originalItemsize = info.itemsize
 
-    if (padBytes > 0) {
-      // Decode with padded itemsize, then strip padding
-      const paddedItemsize = info.itemsize + padBytes
-      const destUint8Array = new Uint8Array(totalItems * paddedItemsize)
+    if (originalItemsize % 4 !== 0) {
+      // Padded encoding: decode with padded size, then strip padding
+      const paddedSize = Math.ceil(originalItemsize / 4) * 4
+      const destUint8Array = new Uint8Array(totalItems * paddedSize)
 
       MeshoptDecoder.decodeVertexBuffer(
         destUint8Array,
         totalItems,
-        paddedItemsize,
+        paddedSize,
         data
       )
 
       // Strip padding from each element
-      const unpadded = new Uint8Array(totalItems * info.itemsize)
+      const unpadded = new Uint8Array(totalItems * originalItemsize)
       for (let i = 0; i < totalItems; i++) {
-        const srcStart = i * paddedItemsize
         unpadded.set(
-          destUint8Array.subarray(srcStart, srcStart + info.itemsize),
-          i * info.itemsize
+          destUint8Array.subarray(i * paddedSize, i * paddedSize + originalItemsize),
+          i * originalItemsize
         )
       }
 
       return new TypedArrayCtor(unpadded.buffer)
     }
 
-    // Direct decode without padding
-    const destUint8Array = new Uint8Array(totalItems * info.itemsize)
+    const destUint8Array = new Uint8Array(totalItems * originalItemsize)
 
     MeshoptDecoder.decodeVertexBuffer(
       destUint8Array,
       totalItems,
-      info.itemsize,
+      originalItemsize,
       data
     )
 

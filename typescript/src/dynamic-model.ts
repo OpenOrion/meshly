@@ -122,16 +122,16 @@ export class DynamicModelBuilder {
         const zip = await JSZip.loadAsync(zipData)
 
         // Read extracted.json (contains data + json_schema)
-        const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE)
+        const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE_NAME)
         if (!extractedFile) {
-            throw new Error(`${ExportConstants.EXTRACTED_FILE} not found in zip file`)
+            throw new Error(`${ExportConstants.EXTRACTED_FILE_NAME} not found in zip file`)
         }
         const extractedText = await extractedFile.async("text")
         const extracted: { data: Record<string, unknown>; json_schema?: JsonSchema } = JSON.parse(extractedText)
         const { data, json_schema: schema } = extracted
 
         if (!schema) {
-            throw new Error(`json_schema not found in ${ExportConstants.EXTRACTED_FILE}`)
+            throw new Error(`json_schema not found in ${ExportConstants.EXTRACTED_FILE_NAME}`)
         }
 
         // Build assets dict
@@ -141,7 +141,7 @@ export class DynamicModelBuilder {
                 filePath.startsWith(ExportConstants.ASSETS_DIR + "/") &&
                 filePath.endsWith(ExportConstants.ASSET_EXT)
             ) {
-                const checksum = ExportConstants.checksumFromPath(filePath)
+                const checksum = ExportConstants.getRelativeAssetChecksum(filePath)
                 const file = zip.file(filePath)
                 if (file) {
                     assets[checksum] = await file.async("uint8array")

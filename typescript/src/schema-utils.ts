@@ -65,6 +65,83 @@ export function isArrayRef(ref: RefObject): ref is RefObject & ArrayRefInfo {
  * Utilities for resolving $ref values during deserialization.
  */
 export class SchemaUtils {
+    // =========================================================================
+    // Type helpers
+    // =========================================================================
+
+    /**
+     * Check if a schema variant matches data via a Literal discriminator field.
+     * 
+     * A discriminator field is a property with a `const` value or single-value `enum`.
+     * This is the TypeScript equivalent of Python's _matches_discriminator.
+     */
+    private static _matchesDiscriminator(
+        variant: JsonSchemaProperty,
+        data: Record<string, unknown>,
+        schema: JsonSchema
+    ): boolean {
+        // Resolve $ref if present
+        if (variant.$ref) {
+            const resolved = JsonSchemaUtils.resolveRef(schema, variant.$ref)
+            if (resolved) {
+                variant = resolved
+            }
+        }
+
+        const props = variant.properties
+        if (!props) return false
+
+        // Check each property for a discriminator (const or single-value enum)
+        for (const [fieldName, fieldProp] of Object.entries(props)) {
+            if (!(fieldName in data)) continue
+
+            // Check const
+            if (fieldProp.const !== undefined) {
+                if (data[fieldName] === fieldProp.const) {
+                    return true
+                }
+            }
+
+            // Check single-value enum
+            if (fieldProp.enum && fieldProp.enum.length === 1) {
+                if (data[fieldName] === fieldProp.enum[0]) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Resolve a Union type (anyOf/oneOf) by matching discriminators.
+     * Falls back to the first non-null variant if no discriminator matches.
+     */
+    private static _resolveUnionVariant(
+        variants: JsonSchemaProperty[],
+        data: Record<string, unknown>,
+        schema: JsonSchema
+    ): JsonSchemaProperty | undefined {
+        // Filter out null type
+        const nonNull = variants.filter(v => v.type !== "null")
+        if (nonNull.length === 0) return undefined
+        if (nonNull.length === 1) return nonNull[0]
+
+        // Try discriminator matching first
+        for (const variant of nonNull) {
+            if (SchemaUtils._matchesDiscriminator(variant, data, schema)) {
+                return variant
+            }
+        }
+
+        // Fallback to first non-null variant
+        return nonNull[0]
+    }
+
+    // =========================================================================
+    // Public: Resolution entry points
+    // =========================================================================
+
     /**
      * Resolve a data object from extracted data and assets using schema.
      *
@@ -109,12 +186,33 @@ export class SchemaUtils {
             return value
         }
 
-        // Resolve schema $ref and unwrap Optional
+        // Resolve schema $ref
         if (prop?.$ref) {
             prop = JsonSchemaUtils.resolveRef(schema, prop.$ref) || prop
         }
-        if (prop?.anyOf) {
-            prop = JsonSchemaUtils.getInnerType(prop) || prop
+
+        // Handle anyOf/oneOf with discriminator matching for objects
+        if (prop?.anyOf || prop?.oneOf) {
+            const variants = prop.anyOf || prop.oneOf || []
+
+            // For object values, try discriminator matching
+            if (typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value) && !isRefObject(value)) {
+                const matchedVariant = SchemaUtils._resolveUnionVariant(
+                    variants,
+                    value as Record<string, unknown>,
+                    schema
+                )
+                if (matchedVariant) {
+                    prop = matchedVariant
+                    // Resolve $ref if the matched variant is a reference
+                    if (prop.$ref) {
+                        prop = JsonSchemaUtils.resolveRef(schema, prop.$ref) || prop
+                    }
+                }
+            } else {
+                // For non-objects, just unwrap Optional
+                prop = JsonSchemaUtils.getInnerType(prop) || prop
+            }
         }
 
         // Handle $ref references in data

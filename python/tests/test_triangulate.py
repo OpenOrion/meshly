@@ -23,14 +23,11 @@ class TestMeshTriangulation:
             [2.0, 1.0, 0.0],
         ], dtype=np.float32)
         
-        indices = np.array([0, 1, 2, 1, 3, 4], dtype=np.uint32)
-        index_sizes = np.array([3, 3], dtype=np.uint32)
-        
-        mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+        mesh = Mesh.from_triangles(vertices=vertices, triangles=np.array([[0, 1, 2], [1, 3, 4]]))
         tri_mesh = mesh.triangulate()
         
         assert tri_mesh.polygon_count == 2
-        np.testing.assert_array_equal(tri_mesh.indices, indices)
+        np.testing.assert_array_equal(tri_mesh.indices, mesh.indices)
         np.testing.assert_array_equal(tri_mesh.index_sizes, np.array([3, 3]))
         np.testing.assert_array_equal(
             tri_mesh.cell_types,
@@ -47,10 +44,7 @@ class TestMeshTriangulation:
             [0.0, 1.0, 0.0],
         ], dtype=np.float32)
         
-        indices = np.array([0, 1, 2, 3], dtype=np.uint32)
-        index_sizes = np.array([4], dtype=np.uint32)
-        
-        mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+        mesh = Mesh.from_polygons(vertices=vertices, polygons=[[0, 1, 2, 3]])
         tri_mesh = mesh.triangulate()
         
         # Should have 2 triangles (quad splits into 2 triangles)
@@ -77,10 +71,7 @@ class TestMeshTriangulation:
             [-0.5, 0.9, 0.0],
         ], dtype=np.float32)
         
-        indices = np.array([0, 1, 2, 3, 4], dtype=np.uint32)
-        index_sizes = np.array([5], dtype=np.uint32)
-        
-        mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+        mesh = Mesh.from_polygons(vertices=vertices, polygons=[[0, 1, 2, 3, 4]])
         tri_mesh = mesh.triangulate()
         
         # Pentagon should produce 3 triangles (n-2 = 5-2 = 3)
@@ -102,16 +93,15 @@ class TestMeshTriangulation:
             [6.0, 1.732, 0.0], [5.5, 0.866, 0.0],
         ], dtype=np.float32)
         
-        indices = np.array([
-            0, 1, 2,
-            3, 4, 5, 6,
-            7, 8, 9, 10, 11,
-            12, 13, 14, 15, 16, 17,
-        ], dtype=np.uint32)
-        
-        index_sizes = np.array([3, 4, 5, 6], dtype=np.uint32)
-        
-        mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+        mesh = Mesh.from_polygons(
+            vertices=vertices, 
+            polygons=[
+                [0, 1, 2],           # triangle
+                [3, 4, 5, 6],        # quad
+                [7, 8, 9, 10, 11],   # pentagon
+                [12, 13, 14, 15, 16, 17],  # hexagon
+            ]
+        )
         
         assert mesh.polygon_count == 4
         assert mesh.index_count == 18
@@ -126,11 +116,11 @@ class TestMeshTriangulation:
         
         np.testing.assert_array_equal(
             tri_mesh.index_sizes,
-            np.full(expected_triangle_count, 3, dtype=np.uint32)
+            np.full(expected_triangle_count, 3, dtype=np.uint8)
         )
         np.testing.assert_array_equal(
             tri_mesh.cell_types,
-            np.full(expected_triangle_count, VTKCellType.VTK_TRIANGLE, dtype=np.uint32)
+            np.full(expected_triangle_count, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
         )
         
         quad_triangles = tri_mesh.indices[3:9]
@@ -146,10 +136,7 @@ class TestMeshTriangulation:
             [0.0, 1.0, 0.0],
         ], dtype=np.float32)
         
-        indices = np.array([0, 1, 2, 3], dtype=np.uint32)
-        index_sizes = np.array([4], dtype=np.uint32)
-        
-        mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+        mesh = Mesh.from_polygons(vertices=vertices, polygons=[[0, 1, 2, 3]])
         tri_mesh = mesh.triangulate()
         
         np.testing.assert_array_equal(tri_mesh.vertices, vertices)
@@ -164,30 +151,19 @@ class TestMeshTriangulation:
             [0.0, 1.0, 0.0],
         ], dtype=np.float32)
         
-        indices = np.array([0, 1, 2, 3], dtype=np.uint32)
-        index_sizes = np.array([4], dtype=np.uint32)
-        
-        markers = {"boundary": np.array([0, 1, 1, 2], dtype=np.uint32)}
-        marker_sizes = {"boundary": np.array([2, 2], dtype=np.uint32)}
-        marker_cell_types = {"boundary": np.array(
-            [VTKCellType.VTK_LINE, VTKCellType.VTK_LINE], dtype=np.uint32)}
-        
-        mesh = Mesh(
-            vertices=vertices,
-            indices=indices,
-            index_sizes=index_sizes,
-            markers=markers,
-            marker_sizes=marker_sizes,
-            marker_cell_types=marker_cell_types,
+        mesh = Mesh.from_polygons(
+            vertices=vertices, 
+            polygons=[[0, 1, 2, 3]],
+            markers={"boundary": [[0, 1], [1, 2]]},
         )
         
         tri_mesh = mesh.triangulate()
         
         assert "boundary" in tri_mesh.markers
-        np.testing.assert_array_equal(tri_mesh.markers["boundary"], markers["boundary"])
-        np.testing.assert_array_equal(tri_mesh.marker_sizes["boundary"], marker_sizes["boundary"])
+        np.testing.assert_array_equal(tri_mesh.markers["boundary"], mesh.markers["boundary"])
+        np.testing.assert_array_equal(tri_mesh.marker_sizes["boundary"], mesh.marker_sizes["boundary"])
         np.testing.assert_array_equal(
-            tri_mesh.marker_cell_types["boundary"], marker_cell_types["boundary"])
+            tri_mesh.marker_cell_types["boundary"], mesh.marker_cell_types["boundary"])
 
     def test_triangulate_no_indices_raises_error(self):
         """Test that triangulating a mesh without indices raises an error."""
@@ -197,7 +173,7 @@ class TestMeshTriangulation:
             [0.5, 1.0, 0.0],
         ], dtype=np.float32)
         
-        mesh = Mesh(vertices=vertices)
+        mesh = Mesh.create(vertices=vertices)
         
         with pytest.raises(ValueError, match="indices"):
             mesh.triangulate()
@@ -213,16 +189,15 @@ class TestMeshTriangulation:
             [7.3, 1.0, 0.0], [6.9, 1.4, 0.0], [6.4, 1.4, 0.0], [6.0, 1.0, 0.0],
         ], dtype=np.float32)
         
-        indices = np.array([
-            0, 1, 2,
-            3, 4, 5, 6,
-            7, 8, 9, 10, 11, 12, 13,
-            14, 15, 16, 17, 18, 19, 20, 21,
-        ], dtype=np.uint32)
-        
-        index_sizes = np.array([3, 4, 7, 8], dtype=np.uint32)
-        
-        mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+        mesh = Mesh.from_polygons(
+            vertices=vertices, 
+            polygons=[
+                [0, 1, 2],                       # triangle
+                [3, 4, 5, 6],                    # quad
+                [7, 8, 9, 10, 11, 12, 13],       # 7-gon
+                [14, 15, 16, 17, 18, 19, 20, 21], # 8-gon
+            ]
+        )
         tri_mesh = mesh.triangulate()
         
         expected_triangles = 14
@@ -232,11 +207,11 @@ class TestMeshTriangulation:
         
         np.testing.assert_array_equal(
             tri_mesh.index_sizes,
-            np.full(expected_triangles, 3, dtype=np.uint32)
+            np.full(expected_triangles, 3, dtype=np.uint8)
         )
         np.testing.assert_array_equal(
             tri_mesh.cell_types,
-            np.full(expected_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint32)
+            np.full(expected_triangles, VTKCellType.VTK_TRIANGLE, dtype=np.uint8)
         )
         
         assert np.all(tri_mesh.indices < len(vertices))
@@ -253,10 +228,7 @@ class TestMeshTriangulation:
             [-0.5, 0.9, 0.0], # vertex 4
         ], dtype=np.float32)
         
-        indices = np.array([0, 1, 2, 3, 4], dtype=np.uint32)
-        index_sizes = np.array([5], dtype=np.uint32)
-        
-        mesh = Mesh(vertices=vertices, indices=indices, index_sizes=index_sizes)
+        mesh = Mesh.from_polygons(vertices=vertices, polygons=[[0, 1, 2, 3, 4]])
         tri_mesh = mesh.triangulate()
         
         # Expected fan triangulation from vertex 0:

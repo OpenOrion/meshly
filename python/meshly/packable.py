@@ -112,7 +112,8 @@ class ExtractedPackable(BaseModel):
         json_bytes = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
         return ChecksumUtils.compute_bytes_checksum(json_bytes)
 
-    def extract_checksums(self) -> list[str]:
+    @staticmethod
+    def extract_checksums(data: dict[str, Any]) -> list[str]:
         """Extract all $ref checksums from a serialized data dict.
 
         Recursively walks the data structure to find all {"$ref": checksum} entries.
@@ -136,7 +137,7 @@ class ExtractedPackable(BaseModel):
                 for item in obj:
                     _extract(item)
 
-        _extract(self.data)
+        _extract(data)
         return list(checksums)
 
 

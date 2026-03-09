@@ -734,7 +734,8 @@ class ExtractedPackable(BaseModel):
     json_schema: Optional[Dict[str, Any]]  # JSON Schema with x-module and x-base hints
     assets: Dict[str, bytes]       # Map of checksum -> encoded bytes (excluded from model_dump)
     
-    def extract_checksums(self) -> list[str]  # Extract checksums from self.data
+    @staticmethod
+    def extract_checksums(data: dict) -> list[str]  # Extract $ref checksums from any data dict
 ```
 
 ### ExtractedArray

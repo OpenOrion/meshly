@@ -16,9 +16,6 @@ class ExportConstants:
     ASSET_EXT = ".bin"
     """Extension for binary assets (arrays, packables, resources)."""
 
-    EXTRACTED_DIR = "runs"
-    """Directory containing extracted packable JSON files."""
-
     @staticmethod
     def get_rel_asset_path(checksum: str) -> str:
         """Get the path for an asset in the zip archive.

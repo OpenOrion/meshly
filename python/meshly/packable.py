@@ -120,22 +120,21 @@ class PackableStore(BaseModel):
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
-    root_dir: Path = Field(..., description="Root directory for all storage")
-    extracted_dir: str
+    root_dir: PathLike = Field(..., description="Root directory for all storage")
 
     @property
     def assets_path(self) -> Path:
         """Directory for binary assets."""
-        return self.root_dir / ExportConstants.ASSETS_DIR
+        return Path(self.root_dir) / ExportConstants.ASSETS_DIR
 
     @property
     def extracted_path(self) -> Path:
         """Directory for extracted JSON files."""
-        return self.root_dir / self.extracted_dir
+        return Path(self.root_dir) / ExportConstants.EXTRACTED_DIR
 
     def asset_file(self, checksum: str) -> Path:
         """Get the filesystem path for a binary asset."""
-        return self.root_dir / ExportConstants.get_rel_asset_path(checksum)
+        return Path(self.root_dir) / ExportConstants.get_rel_asset_path(checksum)
     
     
     def get_extracted_path(self, key: str) -> Path:

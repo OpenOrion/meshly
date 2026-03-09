@@ -214,7 +214,7 @@ class SerializationUtils:
             return ExtractedResult(value=ref_dict, assets={checksum: encoded})
         
         # Expanded: use extract_basemodel to preserve type annotations (e.g., List)
-        return SerializationUtils.extract_basemodel(value)
+        return SerializationUtils.extract_basemodel(value, include_computed=True)
 
     @staticmethod
     def _extract_resource(value: "Resource") -> ExtractedResult:

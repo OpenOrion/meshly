@@ -31,36 +31,28 @@ class TestPackableStore:
     def test_create_store(self):
         """Test creating a PackableStore."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
-            assert store.assets_path == Path(tmpdir)
-            assert store.extracted_path is None
-
-    def test_create_store_separate_paths(self):
-        """Test creating a PackableStore with separate asset and extracted paths."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            assets_path = Path(tmpdir) / "assets"
-            extracted_path = Path(tmpdir) / "extracted"
-            store = PackableStore(assets_path=assets_path, extracted_path=extracted_path)
-            assert store.assets_path == assets_path
-            assert store.extracted_path == extracted_path
+            store = PackableStore(root_dir=Path(tmpdir))
+            assert store.root_dir == Path(tmpdir)
+            assert store.assets_path == Path(tmpdir) / "assets"
+            assert store.extracted_path == Path(tmpdir) / "runs"
 
     def test_asset_file_path(self):
         """Test asset_file returns correct path."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             checksum = "abc123"
             path = store.asset_file(checksum)
-            assert path == Path(tmpdir) / "abc123.bin"
+            assert path == Path(tmpdir) / "assets" / "abc123.bin"
 
     def test_extracted_file_path(self):
         """Test extracted_file returns correct path."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             key = "my/custom/path"
             path = store.get_extracted_path(key)
-            assert path == Path(tmpdir) / "my" / "custom" / "path.json"
+            assert path == Path(tmpdir) / "runs" / "my" / "custom" / "path.json"
 
 
 class TestPackableSaveToStore:
@@ -69,7 +61,7 @@ class TestPackableSaveToStore:
     def test_save_auto_key(self):
         """Test saving to store with auto-generated checksum key."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             data = SimpleData(
                 name="test",
@@ -85,7 +77,7 @@ class TestPackableSaveToStore:
     def test_save_explicit_key(self):
         """Test saving to store with explicit key."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             data = SimpleData(
                 name="test",
@@ -100,7 +92,7 @@ class TestPackableSaveToStore:
     def test_save_load_roundtrip(self):
         """Test save and load roundtrip."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             original = SimulationResult(
                 time=0.5,
@@ -117,12 +109,10 @@ class TestPackableSaveToStore:
             np.testing.assert_array_almost_equal(
                 loaded.velocity, original.velocity)
 
-    def test_save_load_separate_paths(self):
-        """Test save/load with separate asset and extracted paths."""
+    def test_save_load_directory_structure(self):
+        """Test save/load creates correct directory structure."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            assets_path = Path(tmpdir) / "assets"
-            extracted_path = Path(tmpdir) / "runs"
-            store = PackableStore(assets_path=assets_path, extracted_path=extracted_path)
+            store = PackableStore(root_dir=Path(tmpdir))
             
             original = SimpleData(
                 name="experiment",
@@ -131,8 +121,9 @@ class TestPackableSaveToStore:
             
             original.save(store, "exp001/result")
             
-            # Check directory structure - single json file
-            assert (extracted_path / "exp001" / "result.json").exists()
+            # Check directory structure
+            assert (Path(tmpdir) / "runs" / "exp001" / "result.json").exists()
+            assert (Path(tmpdir) / "assets").exists()
             
             # Load and verify
             loaded = SimpleData.load(store, "exp001/result")
@@ -142,7 +133,7 @@ class TestPackableSaveToStore:
     def test_load_nonexistent_key(self):
         """Test loading from non-existent key returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             result = SimpleData.load(store, "nonexistent/path")
             assert result is None
@@ -150,7 +141,7 @@ class TestPackableSaveToStore:
     def test_lazy_loading(self):
         """Test lazy loading from store."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             original = SimulationResult(
                 time=0.5,
@@ -175,7 +166,7 @@ class TestPackableSaveToStore:
     def test_deduplication_across_saves(self):
         """Test that identical arrays are deduplicated across saves."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             shared_temp = np.array([300.0, 301.0, 302.0], dtype=np.float32)
             
@@ -201,7 +192,7 @@ class TestPackableSaveToStore:
     def test_extracted_files_content(self):
         """Test that extracted files have correct content."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = PackableStore(assets_path=Path(tmpdir))
+            store = PackableStore(root_dir=Path(tmpdir))
             
             data = SimpleData(
                 name="test",

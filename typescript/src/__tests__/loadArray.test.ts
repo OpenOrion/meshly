@@ -28,7 +28,7 @@ async function createTestMeshZipNewFormat(): Promise<ArrayBuffer> {
     const checksum = `indexsizes_${indexSizesEncoded.length}`
 
     // Add extracted.json with data and json_schema
-    zip.file(ExportConstants.EXTRACTED_FILE, JSON.stringify({
+    zip.file(ExportConstants.EXTRACTED_FILE_NAME, JSON.stringify({
         data: {
             indexSizes: {
                 $ref: checksum,
@@ -55,7 +55,7 @@ async function createTestMeshZipNewFormat(): Promise<ArrayBuffer> {
     }))
 
     // Add asset
-    zip.file(ExportConstants.assetPath(checksum), indexSizesEncoded)
+    zip.file(ExportConstants.getRelativeAssetPath(checksum), indexSizesEncoded)
 
     return await zip.generateAsync({ type: 'arraybuffer' })
 }
@@ -80,7 +80,7 @@ async function createTestMeshWithMarkersZipNewFormat(): Promise<ArrayBuffer> {
     const offsetChecksum = `inlet_offsets_${inletOffsetsEncoded.length}`
 
     // Add extracted.json with data and json_schema
-    zip.file(ExportConstants.EXTRACTED_FILE, JSON.stringify({
+    zip.file(ExportConstants.EXTRACTED_FILE_NAME, JSON.stringify({
         data: {
             markerIndices: {
                 inlet: {
@@ -118,8 +118,8 @@ async function createTestMeshWithMarkersZipNewFormat(): Promise<ArrayBuffer> {
     }))
 
     // Add assets
-    zip.file(ExportConstants.assetPath(inletChecksum), inletIndicesEncoded)
-    zip.file(ExportConstants.assetPath(offsetChecksum), inletOffsetsEncoded)
+    zip.file(ExportConstants.getRelativeAssetPath(inletChecksum), inletIndicesEncoded)
+    zip.file(ExportConstants.getRelativeAssetPath(offsetChecksum), inletOffsetsEncoded)
 
     return await zip.generateAsync({ type: 'arraybuffer' })
 }

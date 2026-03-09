@@ -105,31 +105,42 @@ class PackableStore(BaseModel):
     Extracted packable data is stored at user-specified keys as JSON files.
     
     Directory structure:
-        assets_path/
-            <checksum1>.bin
-            <checksum2>.bin
-        extracted_path/
-            <key>.json  (contains both data and json_schema)
+        root_dir/
+            assets/           (ExportConstants.ASSETS_DIR)
+                <checksum1>.bin
+                <checksum2>.bin
+            runs/             (ExportConstants.EXTRACTED_DIR)
+                <key>.json
     
     Example:
-        store = PackableStore(assets_path=Path("/data/assets"), extracted_path=Path("/data/runs"))
+        store = PackableStore(root_dir=Path("/data/my_package"))
         my_mesh.save(store, "experiment/result")
         loaded = Mesh.load(store, "experiment/result")
     """
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
-    assets_path: Path = Field(..., description="Directory for binary assets")
-    extracted_path: Optional[Path] = Field(default=None, description="Directory for extracted JSON files. If None, uses assets_path")
-    
+    root_dir: Path = Field(..., description="Root directory for all storage")
+    extracted_dir: str
+
+    @property
+    def assets_path(self) -> Path:
+        """Directory for binary assets."""
+        return self.root_dir / ExportConstants.ASSETS_DIR
+
+    @property
+    def extracted_path(self) -> Path:
+        """Directory for extracted JSON files."""
+        return self.root_dir / self.extracted_dir
+
     def asset_file(self, checksum: str) -> Path:
         """Get the filesystem path for a binary asset."""
-        return self.assets_path / f"{checksum}.bin"
+        return self.root_dir / ExportConstants.get_rel_asset_path(checksum)
+    
     
     def get_extracted_path(self, key: str) -> Path:
         """Get the filesystem path for an extracted packable's JSON file."""
-        extracted_dir = self.extracted_path if self.extracted_path is not None else self.assets_path
-        return extracted_dir / f"{key}.json"
+        return self.extracted_path / f"{key}.json"
     
     def save_asset(self, data: bytes, checksum: str) -> None:
         """Save binary asset data to storage.
@@ -312,12 +323,12 @@ class Packable(BaseModel):
         # This avoids double-compression overhead
         with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as zf:
             # Write extracted data (data + schema) as single JSON
-            info = zipfile.ZipInfo(ExportConstants.EXTRACTED_FILE, date_time=ExportConstants.EXPORT_TIME)
+            info = zipfile.ZipInfo(ExportConstants.EXTRACTED_FILE_NAME, date_time=ExportConstants.EXPORT_TIME)
             zf.writestr(info, orjson.dumps(extracted.model_dump()))
 
             # Write assets by checksum (already compressed, skip compression)
             for checksum in sorted(extracted.assets.keys()):
-                info = zipfile.ZipInfo(ExportConstants.asset_path(checksum), date_time=ExportConstants.EXPORT_TIME)
+                info = zipfile.ZipInfo(ExportConstants.get_rel_asset_path(checksum), date_time=ExportConstants.EXPORT_TIME)
                 zf.writestr(info, extracted.assets[checksum])
 
         return destination.getvalue()
@@ -355,13 +366,13 @@ class Packable(BaseModel):
         """
         with zipfile.ZipFile(BytesIO(buf), "r") as zf:
             # Read extracted data (data + schema)
-            extracted_json = orjson.loads(zf.read(ExportConstants.EXTRACTED_FILE))
+            extracted_json = orjson.loads(zf.read(ExportConstants.EXTRACTED_FILE_NAME))
 
             # Build assets dict from files
             assets: dict[str, bytes] = {}
             for file_path in zf.namelist():
                 if file_path.startswith(ExportConstants.ASSETS_DIR) and file_path.endswith(ExportConstants.ASSET_EXT):
-                    checksum = ExportConstants.checksum_from_path(file_path)
+                    checksum = ExportConstants.get_relative_asset_checksum(file_path)
                     assets[checksum] = zf.read(file_path)
 
         # Create ExtractedPackable from zip contents
@@ -510,7 +521,7 @@ class Packable(BaseModel):
         Example:
             from meshly import PackableStore
             
-            store = PackableStore(assets_path=Path("/path/to/assets"))
+            store = PackableStore(root_dir=Path("/path/to/data"))
             
             # Save with auto-generated checksum key
             key = my_mesh.save(store)
@@ -558,7 +569,7 @@ class Packable(BaseModel):
         Example:
             from meshly import PackableStore, Mesh
             
-            store = PackableStore(assets_path=Path("/path/to/assets"))
+            store = PackableStore(root_dir=Path("/path/to/data"))
             mesh = Mesh.load(store, "abc123")
             
             # Load from specific key

@@ -15,6 +15,23 @@ as a single zip blob reference instead.
 Serialization options:
 - save_to_zip() / load_from_zip(): Single self-contained zip file
 - save() / load(): File-based asset store with deduplication
+
+Checksum Scheme:
+    Packable checksums are computed from the JSON representation of extracted data.
+    This makes checksum recreation straightforward outside this library.
+    
+    Format: SHA256 of compact JSON: {"data":<data>,"json_schema":<schema>}
+            Keys are sorted, no whitespace (single line).
+    
+    The `data` dict contains $ref entries (e.g. {"$ref":"abc123..."}) pointing
+    to asset checksums, so the packable checksum transitively covers all binary
+    content without embedding the actual bytes.
+    
+    To recreate a checksum externally:
+        import hashlib, json
+        payload = {"data": packable_data, "json_schema": schema}
+        compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+        checksum = hashlib.sha256(compact_json.encode()).hexdigest()
 """
 
 import time
@@ -68,8 +85,32 @@ class ExtractedPackable(BaseModel):
 
     data: dict[str, Any] = Field(..., description="Serializable dict with primitive fields and checksum refs for arrays")
     json_schema: Optional[dict[str, Any]] = Field(default=None, description="JSON Schema with encoding info")
-    checksum: Optional[str] = Field(default=None, description="Content checksum of the source Packable")
     assets: dict[str, bytes] = Field(default_factory=dict, exclude=True, description="Map of checksum -> encoded bytes for all arrays")
+
+    @cached_property
+    def checksum(self) -> str:
+        """SHA256 checksum computed from data and json_schema.
+        
+        Checksum Format:
+            SHA256 of compact JSON: {"data":<data>,"json_schema":<schema>}
+            Keys are sorted, no whitespace (single line).
+        
+        Why JSON-based:
+            The data dict contains $ref entries pointing to asset checksums,
+            so this checksum transitively covers all array/binary content.
+            This format makes checksum recreation straightforward outside meshly:
+            
+                import hashlib, json
+                payload = {"data": extracted_data, "json_schema": schema}
+                compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+                checksum = hashlib.sha256(compact_json.encode()).hexdigest()
+            
+        Returns:
+            SHA256 hex digest string
+        """
+        payload = {"data": self.data, "json_schema": self.json_schema}
+        json_bytes = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
+        return ChecksumUtils.compute_bytes_checksum(json_bytes)
 
     def extract_checksums(self) -> list[str]:
         """Extract all $ref checksums from a serialized data dict.
@@ -209,7 +250,6 @@ class PackableStore(BaseModel):
         return ExtractedPackable(
             data=extracted_data["data"],
             json_schema=extracted_data.get("json_schema"),
-            checksum=extracted_data.get("checksum"),
         )
     
     def extracted_exists(self, key: str) -> bool:
@@ -298,7 +338,7 @@ class Packable(BaseModel):
         Results are cached for efficiency. Subsequent calls return the cached result.
         
         Returns:
-            ExtractedPackable with metadata (data + schema) and binary assets.
+            ExtractedPackable with metadata (data + schema + checksum) and binary assets.
         """
         if self._cached_extract is not None:
             return self._cached_extract
@@ -310,11 +350,13 @@ class Packable(BaseModel):
 
         assert isinstance(extracted_result.value, dict), "Extracted value must be a dict for Packable models"
 
-        self._cached_extract = ExtractedPackable(
+        extracted = ExtractedPackable(
             data=extracted_result.value,
             json_schema=type(self).cached_json_schema(),
             assets=extracted_result.assets,
         )
+        
+        self._cached_extract = extracted
         return self._cached_extract
 
     @cached_property
@@ -351,8 +393,22 @@ class Packable(BaseModel):
 
     @cached_property
     def checksum(self) -> str:
-        """SHA256 checksum of this Packable's encoded bytes (cached)."""
-        return ChecksumUtils.compute_bytes_checksum(self._encoded)
+        """SHA256 checksum of this Packable's extracted JSON representation (cached).
+        
+        Checksum Format:
+            SHA256 of compact JSON: {"data":<extracted_data>,"json_schema":<schema>}
+            Keys are sorted, no whitespace (single line).
+        
+        The data dict contains $ref entries pointing to asset checksums (e.g., 
+        {"$ref":"abc123..."}), so this checksum transitively covers all binary content.
+        
+        To recreate this checksum outside meshly:
+            import hashlib, json
+            payload = {"data": packable_data, "json_schema": schema}
+            compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+            checksum = hashlib.sha256(compact_json.encode()).hexdigest()
+        """
+        return self.extract().checksum
 
     def set_checksum(self, checksum: str) -> None:
         """Pre-populate the cached checksum to avoid re-encoding."""
@@ -392,9 +448,8 @@ class Packable(BaseModel):
         )
         result = cls.reconstruct(extracted, array_type=array_type)
         
-        # Cache to ensure consistent checksums on re-encoding
+        # Cache for efficiency
         result._cached_encode = buf
-        result.set_checksum(ChecksumUtils.compute_bytes_checksum(buf))
         result._cached_extract = extracted
         return result
 
@@ -445,7 +500,7 @@ class Packable(BaseModel):
             resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
             result = cls(**resolved_data)
         
-        if extracted.checksum and isinstance(result, Packable):
+        if isinstance(result, Packable):
             result.set_checksum(extracted.checksum)
         return result
 

@@ -26,10 +26,11 @@ pip install meshly
 
 - **`Array`**: Generic array type with meshoptimizer compression
 - **`IndexSequence`**: Optimized encoding for mesh indices (1D array)
+- **`InlineArray`**: Array serialized as inline JSON list (no binary compression)
 
 ### Key Capabilities
 
-- Automatic encoding/decoding of numpy array attributes via `Array`, `IndexSequence` type annotations
+- Automatic encoding/decoding of numpy array attributes via `Array`, `IndexSequence`, `InlineArray` type annotations
 - Custom subclasses with additional array fields are automatically serialized
 - **Extract/Reconstruct API** for content-addressable storage with deduplication
 - **PackableStore** for file-based persistent storage with automatic deduplication
@@ -158,7 +159,7 @@ loaded = TexturedMesh.load_from_zip("textured.zip")
 Use specialized array types for optimized encoding:
 
 ```python
-from meshly import Packable, Array, IndexSequence
+from meshly import Packable, Array, IndexSequence, InlineArray
 from pydantic import Field
 
 class OptimizedMesh(Packable):
@@ -171,6 +172,9 @@ class OptimizedMesh(Packable):
     
     # IndexSequence: optimized for mesh indices
     indices: IndexSequence = Field(..., description="Triangle indices")
+    
+    # InlineArray: small arrays serialized inline (no binary compression)
+    color: InlineArray = Field(..., description="RGB color")
 ```
 
 > **Note:** All dtypes are supported. Arrays with non-4-byte dtypes (e.g., `float16`, `int8`, `uint8`) are automatically padded to 4-byte alignment during encoding and unpadded during decoding (meshoptimizer requirement). For best performance, prefer 4-byte aligned dtypes like `float32`, `int32`, or `float64`.
@@ -469,6 +473,7 @@ Packable (base class)
 ```
 Array          → Generic meshoptimizer compression
 IndexSequence  → Optimized for mesh indices
+InlineArray    → Serialized as inline JSON list (no binary $ref)
 ```
 
 The `Packable` base class provides:
@@ -625,13 +630,14 @@ jax_mesh = mesh.convert_to("jax")
 ### Array Type Annotations
 
 ```python
-from meshly import Array, IndexSequence
+from meshly import Array, IndexSequence, InlineArray
 
 # Use in Pydantic models for automatic encoding
 class MyData(Packable):
     generic_data: Array           # Generic meshoptimizer compression
     vertices: Array               # All arrays use meshoptimizer compression
     indices: IndexSequence        # Optimized for mesh indices
+    color: InlineArray            # Small arrays as inline JSON (no $ref)
 ```
 
 ### ArrayUtils

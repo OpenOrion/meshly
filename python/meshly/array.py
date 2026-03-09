@@ -85,7 +85,7 @@ class _ArrayAnnotation:
         return isinstance(other, _ArrayAnnotation) and self.encoding == other.encoding
 
 
-class _ListAnnotation:
+class _InlineArrayAnnotation:
     """Pydantic annotation for arrays serialized as inline JSON lists."""
 
     def __get_pydantic_core_schema__(
@@ -108,13 +108,13 @@ class _ListAnnotation:
     def __get_pydantic_json_schema__(
         self, core_schema: CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        return {"type": "list"}
+        return {"type": "inline_array"}
 
     def __hash__(self):
-        return hash("list")
+        return hash("inline_array")
 
     def __eq__(self, other):
-        return isinstance(other, _ListAnnotation)
+        return isinstance(other, _InlineArrayAnnotation)
 
 
 # Public type aliases for Pydantic models
@@ -124,8 +124,8 @@ Array = Annotated[np.ndarray, _ArrayAnnotation("array")]
 IndexSequence = Annotated[np.ndarray, _ArrayAnnotation("index_sequence")]
 """Optimized for mesh indices (1D array)."""
 
-List = Annotated[np.ndarray, _ListAnnotation()]
-"""Array serialized as inline JSON list (no binary $ref)."""
+InlineArray = Annotated[Union[list, np.ndarray], _InlineArrayAnnotation()]
+"""Array serialized as inline JSON list (no binary $ref). Accepts list or ndarray input."""
 
 
 # =============================================================================
@@ -225,20 +225,20 @@ class ArrayUtils:
         return "array"
 
     @staticmethod
-    def is_list_annotation(annotation: Any) -> bool:
-        """Check if a type annotation contains _ListAnnotation."""
+    def is_inlined_array_annotation(annotation: Any) -> bool:
+        """Check if a type annotation contains _InlineArrayAnnotation."""
         if annotation is None:
             return False
         origin = get_origin(annotation)
         if origin is Union or isinstance(annotation, types.UnionType):
             for arg in get_args(annotation):
                 if arg is not type(None):
-                    if ArrayUtils.is_list_annotation(arg):
+                    if ArrayUtils.is_inlined_array_annotation(arg):
                         return True
             return False
         if get_origin(annotation) is Annotated:
             for arg in get_args(annotation):
-                if isinstance(arg, _ListAnnotation):
+                if isinstance(arg, _InlineArrayAnnotation):
                     return True
         return False
 

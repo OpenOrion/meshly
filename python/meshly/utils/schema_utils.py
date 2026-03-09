@@ -180,7 +180,7 @@ class SchemaUtils:
             if SchemaUtils._is_resource_ref(expected_type):
                 asset_bytes = SerializationUtils.get_asset(assets, value["$ref"])
                 data = gzip.decompress(asset_bytes)
-                return Resource(data=data, ext=value.get("ext", ""), name=value.get("name", ""))
+                return Resource(data=data, ext=value.get("ext"), name=value.get("name"))
             if isinstance(expected_type, type) and issubclass(expected_type, Packable):
                 return expected_type.decode(
                     SerializationUtils.get_asset(assets, value["$ref"]), array_type
@@ -230,7 +230,7 @@ class SchemaUtils:
             return {k: SchemaUtils._resolve_with_type(v, object, assets, array_type) for k, v in value.items()}
 
         # List annotation → reconstruct numpy array from inline JSON list
-        if isinstance(value, list) and ArrayUtils.is_list_annotation(expected_type):
+        if isinstance(value, list) and ArrayUtils.is_inlined_array_annotation(expected_type):
             return ArrayUtils.convert_array(np.array(value), array_type)
 
         # List/tuple
@@ -313,7 +313,7 @@ class SchemaUtils:
             if prop and prop.is_resource_type():
                 # Resource - assets from _extract_resource are always gzip compressed
                 data = gzip.decompress(asset_bytes)
-                return Resource(data=data, ext=metadata.get("ext", ""), name=metadata.get("name", ""))
+                return Resource(data=data, ext=metadata.get("ext"), name=metadata.get("name"))
             
             if prop and prop.is_array_type():
                 # Array

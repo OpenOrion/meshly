@@ -253,7 +253,7 @@ class SerializationUtils:
                 continue
             
             if ArrayUtils.is_array(field_value):
-                if ArrayUtils.is_list_annotation(hints.get(name)):
+                if ArrayUtils.is_inlined_array_annotation(hints.get(name)):
                     data[name] = np.asarray(field_value).tolist()
                 else:
                     encoding = ArrayUtils.get_array_encoding(hints.get(name))

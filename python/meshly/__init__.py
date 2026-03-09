@@ -21,7 +21,7 @@ from meshly.array import (
     ExtractedArray,
     ArrayEncoding,
     IndexSequence,
-    List,
+    InlineArray,
 )
 from meshly.cell_types import (
     CellType,
@@ -55,7 +55,7 @@ __all__ = [
     "TMesh",
     # Array types and utilities
     "Array",
-    "List",
+    "InlineArray",
     "IndexSequence",
     "ExtractedArray",
     "ArrayEncoding",

@@ -73,3 +73,6 @@ export {
     ReconstructResponse, initPackableWorker
 } from './packable-worker'
 
+// Export from checksum-utils module
+export { ChecksumUtils } from './checksum-utils'
+

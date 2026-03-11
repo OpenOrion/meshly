@@ -3,7 +3,10 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
+
+import orjson
+from pydantic import BaseModel
 
 class ChecksumUtils:
     """Utility class for computing checksums."""
@@ -11,6 +14,31 @@ class ChecksumUtils:
     # Thresholds for switching to fast checksum strategy
     LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB
     LARGE_DIR_FILE_COUNT_THRESHOLD = 100
+
+    @staticmethod
+    def compute_dict_checksum(data: Union[dict, BaseModel]) -> str:
+        """SHA256 checksum computed from data and json_schema.
+        
+        Checksum Format:
+            SHA256 of compact JSON: {"data":<data>,"json_schema":<schema>}
+            Keys are sorted, no whitespace (single line).
+        
+        Why JSON-based:
+            The data dict contains $ref entries pointing to asset checksums,
+            so this checksum transitively covers all array/binary content.
+            This format makes checksum recreation straightforward outside meshly:
+            
+                import hashlib, json
+                payload = {"data": extracted_data, "json_schema": schema}
+                compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+                checksum = hashlib.sha256(compact_json.encode()).hexdigest()
+            
+        Returns:
+            SHA256 hex digest string
+        """
+        data_dict = data.model_dump() if isinstance(data, BaseModel) else data
+        json_bytes = orjson.dumps(data_dict, option=orjson.OPT_SORT_KEYS)
+        return ChecksumUtils.compute_bytes_checksum(json_bytes)
 
     @staticmethod
     def compute_bytes_checksum(data: bytes) -> str:
@@ -24,26 +52,7 @@ class ChecksumUtils:
         """
         return hashlib.sha256(data).hexdigest()[:16]
 
-    @staticmethod
-    def compute_dict_checksum(data: dict[str, Any], assets: dict[str, bytes] = {}) -> str:
-        """Compute checksum for a data dict with assets.
 
-        Combines data JSON + all asset bytes for deterministic hashing.
-
-        Args:
-            data: JSON-serializable dict
-            assets: Map of checksum -> bytes
-
-        Returns:
-            16-character hex string
-        """
-        data_json = json.dumps(data, sort_keys=True).encode("utf-8")
-        hasher = hashlib.sha256()
-        hasher.update(data_json)
-        hasher.update(b"\x00")
-        for checksum in sorted(assets.keys()):
-            hasher.update(assets[checksum])
-        return hasher.hexdigest()[:16]
 
     @staticmethod
     def compute_file_checksum(file_path: Path, fast: bool = False) -> str:

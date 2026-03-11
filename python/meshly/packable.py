@@ -17,23 +17,18 @@ Serialization options:
 - save() / load(): File-based asset store with deduplication
 
 Checksum Scheme:
-    Packable checksums are computed from the JSON representation of extracted data.
-    This makes checksum recreation straightforward outside this library.
+    Packable checksums are computed from the SHA256 of the encoded zip bytes.
+    This ensures the checksum captures the exact binary representation.
     
-    Format: SHA256 of compact JSON: {"data":<data>,"json_schema":<schema>}
-            Keys are sorted, no whitespace (single line).
-    
-    The `data` dict contains $ref entries (e.g. {"$ref":"abc123..."}) pointing
-    to asset checksums, so the packable checksum transitively covers all binary
-    content without embedding the actual bytes.
+    The checksum property is final and cannot be overridden by subclasses.
+    Attempting to override will raise a TypeError.
     
     To recreate a checksum externally:
-        import hashlib, json
-        payload = {"data": packable_data, "json_schema": schema}
-        compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
-        checksum = hashlib.sha256(compact_json.encode()).hexdigest()
+        import hashlib
+        checksum = hashlib.sha256(packable.encode()).hexdigest()
 """
 
+import os
 import time
 import zipfile
 from functools import cached_property, lru_cache
@@ -66,6 +61,7 @@ def _reconstruct_packable(cls, data: dict):
     return cls.model_construct(**data)
 
 
+
 class PackableRefInfo(RefInfo):
     """Ref model for self-contained packable $ref (encoded as zip)."""
     ref: str = Field(..., alias="$ref")
@@ -86,31 +82,6 @@ class ExtractedPackable(BaseModel):
     data: dict[str, Any] = Field(..., description="Serializable dict with primitive fields and checksum refs for arrays")
     json_schema: Optional[dict[str, Any]] = Field(default=None, description="JSON Schema with encoding info")
     assets: dict[str, bytes] = Field(default_factory=dict, exclude=True, description="Map of checksum -> encoded bytes for all arrays")
-
-    @cached_property
-    def checksum(self) -> str:
-        """SHA256 checksum computed from data and json_schema.
-        
-        Checksum Format:
-            SHA256 of compact JSON: {"data":<data>,"json_schema":<schema>}
-            Keys are sorted, no whitespace (single line).
-        
-        Why JSON-based:
-            The data dict contains $ref entries pointing to asset checksums,
-            so this checksum transitively covers all array/binary content.
-            This format makes checksum recreation straightforward outside meshly:
-            
-                import hashlib, json
-                payload = {"data": extracted_data, "json_schema": schema}
-                compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
-                checksum = hashlib.sha256(compact_json.encode()).hexdigest()
-            
-        Returns:
-            SHA256 hex digest string
-        """
-        payload = {"data": self.data, "json_schema": self.json_schema}
-        json_bytes = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
-        return ChecksumUtils.compute_bytes_checksum(json_bytes)
 
     @staticmethod
     def extract_checksums(data: dict[str, Any]) -> list[str]:
@@ -310,6 +281,16 @@ class Packable(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
+    def __init_subclass__(cls, **kwargs):
+        """Prevent subclasses from overriding the checksum property."""
+        super().__init_subclass__(**kwargs)
+        # Check if this class defines its own 'checksum' (not inherited)
+        if 'checksum' in cls.__dict__:
+            raise TypeError(
+                f"Cannot override 'checksum' property in {cls.__name__}. "
+                f"The checksum is computed from encoded bytes and is final."
+            )
+
     @classmethod
     def __get_pydantic_json_schema__(
         cls, core_schema_obj: pydantic_core_schema.CoreSchema, handler: GetJsonSchemaHandler
@@ -394,26 +375,16 @@ class Packable(BaseModel):
 
     @cached_property
     def checksum(self) -> str:
-        """SHA256 checksum of this Packable's extracted JSON representation (cached).
+        """SHA256 checksum of this Packable's encoded zip bytes (cached, final).
         
-        Checksum Format:
-            SHA256 of compact JSON: {"data":<extracted_data>,"json_schema":<schema>}
-            Keys are sorted, no whitespace (single line).
-        
-        The data dict contains $ref entries pointing to asset checksums (e.g., 
-        {"$ref":"abc123..."}), so this checksum transitively covers all binary content.
+        This property cannot be overridden by subclasses. Attempting to do so
+        will raise a TypeError at class definition time.
         
         To recreate this checksum outside meshly:
-            import hashlib, json
-            payload = {"data": packable_data, "json_schema": schema}
-            compact_json = json.dumps(payload, sort_keys=True, separators=(',', ':'))
-            checksum = hashlib.sha256(compact_json.encode()).hexdigest()
+            import hashlib
+            checksum = hashlib.sha256(packable.encode()).hexdigest()
         """
-        return self.extract().checksum
-
-    def set_checksum(self, checksum: str) -> None:
-        """Pre-populate the cached checksum to avoid re-encoding."""
-        self.__dict__["checksum"] = checksum
+        return ChecksumUtils.compute_bytes_checksum(self._encoded)
 
     @classmethod
     def decode(
@@ -501,8 +472,6 @@ class Packable(BaseModel):
             resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
             result = cls(**resolved_data)
         
-        if isinstance(result, Packable):
-            result.set_checksum(extracted.checksum)
         return result
 
     @staticmethod
@@ -610,10 +579,19 @@ class Packable(BaseModel):
         # print(f"Extracted packable in {elapsed_ms:.1f} ms with {len(extracted.assets)} assets")
         result_key = key or self.checksum
         
-        # Save all binary assets (deduplicated by checksum)
-        for asset_checksum, asset_bytes in extracted.assets.items():
-            if not store.asset_exists(asset_checksum):
-                store.save_asset(asset_bytes, asset_checksum)
+        # Save new binary assets (skip existing)
+        assets_dir = store.assets_path
+        assets_dir_exists = assets_dir.exists()
+        new_assets = {
+            cs: data for cs, data in extracted.assets.items()
+            if not assets_dir_exists or not store.asset_exists(cs)
+        }
+        if new_assets:
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            for cs, data in new_assets.items():
+                fd = os.open(str(store.asset_file(cs)), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+                os.write(fd, data)
+                os.close(fd)
         
         # Save extracted data (data + schema + checksum) as JSON
         store.save_extracted(result_key, extracted)

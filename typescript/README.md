@@ -21,6 +21,7 @@ pnpm add meshly
 - **Lazy loading** with `LazyModel` for on-demand field resolution
 - **Dynamic model building** with `DynamicModelBuilder` from JSON schema
 - **Asset caching** with IndexedDB-backed `AssetCache` (browser)
+- **Checksum utilities** with `ChecksumUtils` for SHA256 hashing (bytes and dicts)
 - Full TypeScript type definitions
 
 ## Quick Start
@@ -201,6 +202,28 @@ const cachedFetcher = await createCachedProvider(async (checksum) => {
 
 // Use with reconstruct
 const result = await Packable.reconstruct(data, cachedFetcher, schema)
+```
+
+## Checksum Computation
+
+Compute SHA256 checksums for data validation and deduplication:
+
+```typescript
+import { ChecksumUtils } from 'meshly'
+
+// Checksum for binary data (returns 16-char hex string)
+const bytes = new Uint8Array([1, 2, 3, 4])
+const checksum = await ChecksumUtils.computeBytesChecksum(bytes)
+console.log(checksum) // "9f64a1e..."
+
+// Checksum for a dictionary (JSON-serialized with sorted keys)
+const data = { name: 'mesh', vertices: { $ref: 'abc123...' } }
+const dictChecksum = await ChecksumUtils.computeDictChecksum(data)
+console.log(dictChecksum) // "e3b0c44..."
+
+// Full SHA256 (64-char hex string)
+const fullHash = await ChecksumUtils.computeFullChecksum(bytes)
+console.log(fullHash.length) // 64
 ```
 
 ## Web Worker Offloading
@@ -419,6 +442,22 @@ class ArrayUtils {
   // Decode array from zip file
   static async decode(zip: JSZip, name: string, encoding?: ArrayEncoding): Promise<TypedArray>
 }
+
+// Checksum computation utilities
+class ChecksumUtils {
+  // SHA256 checksum for bytes (truncated to 16 chars, matches Python)
+  static async computeBytesChecksum(data: Uint8Array | ArrayBuffer): Promise<string>
+  
+  // SHA256 checksum for dictionary/object (JSON-serialized with sorted keys)
+  static async computeDictChecksum(data: Record<string, unknown>): Promise<string>
+  
+  // Full 64-char SHA256 checksum for bytes
+  static async computeFullChecksum(data: Uint8Array | ArrayBuffer): Promise<string>
+  
+  // Convert object to compact JSON with recursively sorted keys
+  static toSortedJson(obj: unknown): string
+}
+
 
 // Extracted array with data and metadata (matches Python's ExtractedArray)
 interface ExtractedArray {

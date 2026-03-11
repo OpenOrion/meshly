@@ -10,6 +10,7 @@ import asyncio
 import gzip
 import inspect
 import typing
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
@@ -163,38 +164,47 @@ class SerializationUtils:
         if isinstance(value, BaseModel):
             return SerializationUtils.extract_basemodel(value)
 
+        # Common non-primitive types
+        if isinstance(value, datetime):
+            return ExtractedResult(value=value.isoformat())
+
         # Primitives: pass through unchanged
         return ExtractedResult(value=value)
 
     @staticmethod
     def _extract_list_items(items: list) -> list[ExtractedResult]:
-        """Extract list items, parallelizing when items are Packables.
+        """Extract list items, parallelizing when items are Packables or BaseModels.
         
-        Uses fork-based parallelism for lists of Packables (e.g., meshes)
-        which can be independently serialized. Falls back to sequential
-        for mixed types or non-Packable lists.
+        Uses fork-based parallelism for large homogeneous lists of Packables
+        or BaseModels (e.g., meshes, faces with Resources).
+        Falls back to sequential for mixed types or small lists.
         """
         from meshly.packable import Packable
         
         if not items:
             return []
         
-        # Check if all items are Packables (common for mesh lists)
-        # Only parallelize for larger lists where overhead is worth it
         MIN_ITEMS_FOR_PARALLEL = 50
-        all_packables = len(items) >= MIN_ITEMS_FOR_PARALLEL and all(
-            isinstance(item, Packable) for item in items
-        )
+        if len(items) >= MIN_ITEMS_FOR_PARALLEL:
+            first = items[0]
+            first_type = type(first)
+            all_same = all(type(item) is first_type for item in items)
+            
+            if all_same and isinstance(first, Packable):
+                return ForkPool.map(
+                    SerializationUtils._extract_subpackable, 
+                    items, 
+                    min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
+                )
+            
+            if all_same and isinstance(first, BaseModel):
+                return ForkPool.map(
+                    SerializationUtils.extract_value,
+                    items,
+                    min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
+                )
         
-        if all_packables:
-            # Parallel extraction for Packable lists
-            return ForkPool.map(
-                SerializationUtils._extract_subpackable, 
-                items, 
-                min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
-            )
-        
-        # Sequential fallback for mixed types
+        # Sequential fallback for mixed types or small lists
         return [SerializationUtils.extract_value(v) for v in items]
 
     # -------------------------------------------------------------------------
@@ -221,7 +231,7 @@ class SerializationUtils:
         """Extract a ResourceRef - gzip compress and store by checksum."""
         checksum = value.checksum
         # Use mtime=0 for deterministic compression (no timestamp in header)
-        compressed = gzip.compress(value.data, compresslevel=6, mtime=0)
+        compressed = gzip.compress(value.data, compresslevel=1, mtime=0)
         ref_dict = value.model_dump(by_alias=True, exclude_defaults=True)
         return ExtractedResult(value=ref_dict, assets={checksum: compressed})
 

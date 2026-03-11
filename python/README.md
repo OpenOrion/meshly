@@ -696,7 +696,10 @@ class Packable(BaseModel):
     # Extract/Encode (instance methods)
     def extract(self) -> ExtractedPackable  # Cached for efficiency
     def encode(self) -> bytes  # Calls extract() internally
-    def get_checksum(self) -> str  # SHA256 checksum of encoded bytes
+    
+    # Checksum (final property, cannot be overridden)
+    @cached_property
+    def checksum(self) -> str  # SHA256 checksum of encoded bytes
     
     # Decode/Reconstruct
     @classmethod

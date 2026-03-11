@@ -10,6 +10,7 @@ import asyncio
 import gzip
 import inspect
 import typing
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
@@ -162,6 +163,10 @@ class SerializationUtils:
         # BaseModels: extract fields
         if isinstance(value, BaseModel):
             return SerializationUtils.extract_basemodel(value)
+
+        # Common non-primitive types
+        if isinstance(value, datetime):
+            return ExtractedResult(value=value.isoformat())
 
         # Primitives: pass through unchanged
         return ExtractedResult(value=value)

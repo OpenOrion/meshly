@@ -70,8 +70,22 @@ def _resolve_packable_item(idx: int) -> object:
     return Packable.decode(asset_bytes, ctx.array_type)
 
 
+def _resolve_basemodel_item(idx: int) -> object:
+    """Worker: reconstruct a single BaseModel from serialized dict."""
+    ctx = _PACKABLE_CTX
+    if ctx is None:
+        raise RuntimeError("_packable_context not set")
+    
+    resolved = SchemaUtils.resolve_from_class(
+        ctx.expected_type, ctx.values[idx], ctx.assets, ctx.array_type
+    )
+    return ctx.expected_type(**resolved)
+
+
 class SchemaUtils:
     """Utilities for resolving $ref values during deserialization."""
+
+    _type_hints_cache: dict[type, dict] = {}
 
     # -------------------------------------------------------------------------
     # Type helpers
@@ -126,7 +140,10 @@ class SchemaUtils:
         array_type: ArrayType = "numpy",
     ) -> dict[str, object]:
         """Resolve $ref values using Pydantic model type hints."""
-        hints = typing.get_type_hints(model_class, include_extras=True)
+        hints = SchemaUtils._type_hints_cache.get(model_class)
+        if hints is None:
+            hints = typing.get_type_hints(model_class, include_extras=True)
+            SchemaUtils._type_hints_cache[model_class] = hints
         result: dict[str, object] = {}
 
         for field_name, field_info in model_class.model_fields.items():
@@ -249,32 +266,38 @@ class SchemaUtils:
         assets: AssetProvider,
         array_type: ArrayType,
     ) -> list:
-        """Resolve list items, parallelizing when items are Packable $refs.
+        """Resolve list items, parallelizing when items are Packable $refs or BaseModel dicts.
         
-        Uses fork-based parallelism for lists of Packable references.
-        Falls back to sequential for mixed types.
+        Uses fork-based parallelism for large homogeneous lists.
+        Falls back to sequential for mixed types or small lists.
         """
         from meshly.packable import Packable
         
         if not items:
             return []
         
-        # Check if all items are Packable $refs and type is Packable
         MIN_ITEMS_FOR_PARALLEL = 50
         is_packable_type = isinstance(elem_type, type) and issubclass(elem_type, Packable)
-        all_packable_refs = (
-            len(items) >= MIN_ITEMS_FOR_PARALLEL
-            and is_packable_type
-            and all(isinstance(v, dict) and "$ref" in v for v in items)
-        )
+        is_basemodel_type = isinstance(elem_type, type) and issubclass(elem_type, BaseModel)
         
-        if all_packable_refs:
-            with _packable_context(items, elem_type, assets, array_type):
-                return ForkPool.map(
-                    _resolve_packable_item,
-                    range(len(items)),
-                    min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
-                )
+        if len(items) >= MIN_ITEMS_FOR_PARALLEL:
+            all_dicts = all(isinstance(v, dict) for v in items)
+            
+            if is_packable_type and all_dicts and all("$ref" in v for v in items):
+                with _packable_context(items, elem_type, assets, array_type):
+                    return ForkPool.map(
+                        _resolve_packable_item,
+                        range(len(items)),
+                        min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
+                    )
+            
+            if is_basemodel_type and all_dicts:
+                with _packable_context(items, elem_type, assets, array_type):
+                    return ForkPool.map(
+                        _resolve_basemodel_item,
+                        range(len(items)),
+                        min_items_for_parallel=MIN_ITEMS_FOR_PARALLEL,
+                    )
         
         # Sequential fallback
         return [SchemaUtils._resolve_with_type(v, elem_type, assets, array_type) for v in items]

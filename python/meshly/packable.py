@@ -28,6 +28,7 @@ Checksum Scheme:
         checksum = hashlib.sha256(packable.encode()).hexdigest()
 """
 
+import os
 import time
 import zipfile
 from functools import cached_property, lru_cache
@@ -58,6 +59,7 @@ TModel = TypeVar("TModel", bound=BaseModel)
 def _reconstruct_packable(cls, data: dict):
     """Helper function for pickle reconstruction of Packable objects."""
     return cls.model_construct(**data)
+
 
 
 class PackableRefInfo(RefInfo):
@@ -577,10 +579,19 @@ class Packable(BaseModel):
         # print(f"Extracted packable in {elapsed_ms:.1f} ms with {len(extracted.assets)} assets")
         result_key = key or self.checksum
         
-        # Save all binary assets (deduplicated by checksum)
-        for asset_checksum, asset_bytes in extracted.assets.items():
-            if not store.asset_exists(asset_checksum):
-                store.save_asset(asset_bytes, asset_checksum)
+        # Save new binary assets (skip existing)
+        assets_dir = store.assets_path
+        assets_dir_exists = assets_dir.exists()
+        new_assets = {
+            cs: data for cs, data in extracted.assets.items()
+            if not assets_dir_exists or not store.asset_exists(cs)
+        }
+        if new_assets:
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            for cs, data in new_assets.items():
+                fd = os.open(str(store.asset_file(cs)), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+                os.write(fd, data)
+                os.close(fd)
         
         # Save extracted data (data + schema + checksum) as JSON
         store.save_extracted(result_key, extracted)

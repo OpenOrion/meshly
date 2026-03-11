@@ -62,7 +62,7 @@ class PackableCache(Generic[T]):
     Disk I/O uses ForkPool for parallelism on batch operations.
 
     Args:
-        store: PackableStore for disk persistence.
+        store: PackableStore for disk persistence. None for memory-only mode.
         decoder: Packable subclass used to decode bytes from disk.
         prefix: Key prefix for namespacing within the store's assets dir.
         max_memory: Maximum entries in the in-memory LRU cache.
@@ -70,8 +70,8 @@ class PackableCache(Generic[T]):
 
     def __init__(
         self,
-        store: PackableStore,
-        decoder: type[T],
+        store: PackableStore | None = None,
+        decoder: type[T] | None = None,
         prefix: str = "",
         max_memory: int = 10_000,
     ):
@@ -111,7 +111,7 @@ class PackableCache(Generic[T]):
 
         # Tier 2: disk (parallel via ForkPool)
         missing = keys - found.keys()
-        if not missing:
+        if not missing or self._store is None:
             return found
 
         disk_hits = self._load_many_disk(missing)
@@ -139,7 +139,8 @@ class PackableCache(Generic[T]):
             self._evict()
 
         # Disk (parallel via ForkPool)
-        self._save_many_disk(items)
+        if self._store is not None:
+            self._save_many_disk(items)
 
     def clear(self) -> None:
         """Clear in-memory cache (disk is not affected)."""
@@ -175,9 +176,11 @@ class PackableCache(Generic[T]):
         for k, v in items.items():
             store_key = self._store_key(k)
             path = str(self._store.asset_file(store_key))
-            work.append((path, v.encode()))
+            if not Path(path).exists():
+                work.append((path, v.encode()))
 
-        ForkPool.map(_save_one, work, min_items_for_parallel=4)
+        if work:
+            ForkPool.map(_save_one, work, min_items_for_parallel=4)
 
     # -- internal -------------------------------------------------------------
 

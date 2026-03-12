@@ -160,9 +160,9 @@ class SerializationUtils:
                 assets={k: v for e in items for k, v in e.assets.items()},
             )
 
-        # BaseModels: extract fields
+        # BaseModels: extract fields (include computed fields like bbox, render_order)
         if isinstance(value, BaseModel):
-            return SerializationUtils.extract_basemodel(value)
+            return SerializationUtils.extract_basemodel(value, include_computed=True)
 
         # Common non-primitive types
         if isinstance(value, datetime):

@@ -114,13 +114,19 @@ class SchemaUtils:
 
     @staticmethod
     def _matches_discriminator(model_type: type[BaseModel], value: dict) -> bool:
-        """Check if a BaseModel type matches data via a Literal discriminator field."""
+        """Check if a BaseModel type matches data via Literal discriminator fields.
+
+        All Literal fields present in both the model and the data must match.
+        Returns False if no discriminator fields are found or any mismatch.
+        """
         from typing import Literal
+        matched = False
         for field_name, field_info in model_type.model_fields.items():
             if field_name in value and get_origin(field_info.annotation) is Literal:
-                if value[field_name] in get_args(field_info.annotation):
-                    return True
-        return False
+                if value[field_name] not in get_args(field_info.annotation):
+                    return False
+                matched = True
+        return matched
 
     @staticmethod
     def _load_class(module_path: str) -> Union[type, None]:

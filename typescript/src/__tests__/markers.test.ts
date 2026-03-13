@@ -141,7 +141,7 @@ describe('Mesh Markers', () => {
       })
 
       expect(() => mesh.extractByMarker("incomplete")).toThrow(
-        "Marker 'incomplete' is missing sizes or cell type information"
+        "Marker 'incomplete' is missing sizes information"
       )
     })
 

@@ -1,3 +1,4 @@
+import earcut from 'earcut'
 import JSZip from 'jszip'
 import * as THREE from 'three'
 import { ArrayUtils, TypedArray } from './array'
@@ -45,12 +46,12 @@ export interface MeshData {
   markers?: Record<string, Uint32Array>
 
   /**
-   * Sizes of each marker element
+   * Number of vertices per marker element
    */
   markerSizes?: Record<string, TypedArray>
 
   /**
-   * VTK cell types for each marker element
+   * VTK cell type for each marker element (uint8)
    */
   markerCellTypes?: Record<string, TypedArray>
 }
@@ -80,8 +81,8 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   declare cellTypes?: TypedArray
   declare dim?: number
   declare markers?: Record<string, Uint32Array>
-  declare markerSizes?: Record<string, Uint32Array>
-  declare markerCellTypes?: Record<string, Uint32Array>
+  declare markerSizes?: Record<string, TypedArray>
+  declare markerCellTypes?: Record<string, TypedArray>
 
   // ============================================================
   // Decode from zip
@@ -137,7 +138,7 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
       indexSizes: (result.index_sizes || result.indexSizes) as Uint32Array | undefined,
       cellTypes: (result.cell_types || result.cellTypes) as Uint32Array | undefined,
       dim: result.dim as number | undefined,
-      markers: Mesh._convertMarkers(result.markers as Record<string, unknown> | undefined),
+      markers: Mesh._convertMarkers(result.markers as Record<string, unknown> | undefined) as Record<string, Uint32Array> | undefined,
       markerSizes: Mesh._convertMarkers(result.marker_sizes as Record<string, unknown> | undefined),
       markerCellTypes: Mesh._convertMarkers(result.marker_cell_types as Record<string, unknown> | undefined),
     }
@@ -212,16 +213,15 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   }
 
   /**
-   * Convert markers from Record<string, unknown> to Record<string, Uint32Array>
+   * Convert markers from Record<string, unknown> to Record<string, TypedArray>.
+   * Preserves the original typed array type (uint8 for cell types, uint32 for indices/sizes).
    */
-  private static _convertMarkers(markers: Record<string, unknown> | undefined): Record<string, Uint32Array> | undefined {
+  private static _convertMarkers(markers: Record<string, unknown> | undefined): Record<string, TypedArray> | undefined {
     if (!markers) return undefined
-    const result: Record<string, Uint32Array> = {}
+    const result: Record<string, TypedArray> = {}
     for (const [key, value] of Object.entries(markers)) {
-      if (value instanceof Uint32Array) {
-        result[key] = value
-      } else if (ArrayBuffer.isView(value)) {
-        result[key] = new Uint32Array((value as TypedArray).buffer)
+      if (ArrayBuffer.isView(value)) {
+        result[key] = value as TypedArray
       }
     }
     return Object.keys(result).length > 0 ? result : undefined
@@ -302,8 +302,8 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
     const markerSizes = this.markerSizes?.[markerName]
     const markerCellTypes = this.markerCellTypes?.[markerName]
 
-    if (!markerSizes || !markerCellTypes) {
-      throw new Error(`Marker '${markerName}' is missing sizes or cell type information`)
+    if (!markerSizes) {
+      throw new Error(`Marker '${markerName}' is missing sizes information`)
     }
 
     // Find all unique vertex indices
@@ -354,7 +354,8 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
   // ============================================================
 
   /**
-   * Convert this mesh to a THREE.js BufferGeometry
+   * Convert this mesh to a THREE.js BufferGeometry.
+   * Triangulates non-triangle faces using earcut (handles concave polygons).
    */
   toBufferGeometry(): THREE.BufferGeometry {
     const geometry = new THREE.BufferGeometry()
@@ -362,10 +363,231 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
     geometry.setAttribute('position', new THREE.BufferAttribute(this.vertices, 3))
 
     if (this.indices && this.indices.length > 0) {
-      geometry.setIndex(new THREE.BufferAttribute(this.indices, 1))
+      const triIndices = Mesh.triangulateIndices(this.indices, this.indexSizes, this.cellTypes, this.vertices)
+      geometry.setIndex(new THREE.BufferAttribute(triIndices, 1))
     }
 
+    geometry.computeVertexNormals()
     return geometry
+  }
+
+  /**
+   * Create a BufferGeometry from pre-computed raw arrays (from worker).
+   */
+  static rawToBufferGeometry(raw: { positions: Float32Array; indices: Uint32Array; normals: Float32Array }): THREE.BufferGeometry {
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(raw.positions, 3))
+    geometry.setAttribute('normal', new THREE.BufferAttribute(raw.normals, 3))
+    if (raw.indices.length > 0) {
+      geometry.setIndex(new THREE.BufferAttribute(raw.indices, 1))
+    }
+    return geometry
+  }
+
+  /**
+   * Triangulate indices into triangle indices. Handles 3D volume cells (tet, hex,
+   * wedge, pyramid) and surface cells (tri, quad, polygon with earcut).
+   * This is the single source of truth for all triangulation in meshly.
+   */
+  static triangulateIndices(
+    indices: Uint32Array,
+    indexSizes?: ArrayLike<number>,
+    cellTypes?: ArrayLike<number>,
+    vertices?: Float32Array
+  ): Uint32Array {
+    if (!indices || indices.length === 0) return new Uint32Array(0)
+
+    // Fast path: all triangles
+    if (!indexSizes || Mesh._allTriangles(indexSizes)) return indices
+
+    return Mesh._triangulateIndicesImpl(indices, indexSizes, cellTypes, vertices)
+  }
+
+  private static _allTriangles(sizes: ArrayLike<number>): boolean {
+    for (let i = 0; i < sizes.length; i++) {
+      if (sizes[i] !== 3) return false
+    }
+    return true
+  }
+
+  // VTK 3D cell type constants
+  private static readonly VTK_TETRA = 10
+  private static readonly VTK_HEXAHEDRON = 12
+  private static readonly VTK_WEDGE = 13
+  private static readonly VTK_PYRAMID = 14
+
+  // Face tables for 3D cells (VTK canonical winding, outward normals)
+  private static readonly TET_FACES = [[0, 1, 3], [1, 2, 3], [2, 0, 3], [0, 2, 1]]
+  private static readonly HEX_FACES = [
+    [0, 3, 2, 1], [4, 5, 6, 7],
+    [0, 1, 5, 4], [2, 3, 7, 6],
+    [0, 4, 7, 3], [1, 2, 6, 5],
+  ]
+  private static readonly WEDGE_FACES = [
+    [0, 2, 1], [3, 4, 5],
+    [0, 1, 4, 3], [1, 2, 5, 4], [0, 3, 5, 2],
+  ]
+  private static readonly PYRAMID_FACES = [
+    [0, 3, 2, 1],
+    [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4],
+  ]
+
+  /**
+   * Get the face table for a 3D VTK cell type, or null for surface cells.
+   */
+  private static _getCellFaces(cellType: number): number[][] | null {
+    switch (cellType) {
+      case Mesh.VTK_TETRA: return Mesh.TET_FACES
+      case Mesh.VTK_HEXAHEDRON: return Mesh.HEX_FACES
+      case Mesh.VTK_WEDGE: return Mesh.WEDGE_FACES
+      case Mesh.VTK_PYRAMID: return Mesh.PYRAMID_FACES
+      default: return null
+    }
+  }
+
+  /**
+   * Count the number of output triangles for a cell given its type and vertex count.
+   */
+  private static _cellTriCount(cellType: number | undefined, n: number): number {
+    if (cellType !== undefined) {
+      const faces = Mesh._getCellFaces(cellType)
+      if (faces) {
+        let count = 0
+        for (const f of faces) count += f.length - 2
+        return count
+      }
+    }
+    return Math.max(0, n - 2)
+  }
+
+  private static _triangulateIndicesImpl(
+    indices: Uint32Array,
+    sizes: ArrayLike<number>,
+    cellTypes?: ArrayLike<number>,
+    verts?: Float32Array
+  ): Uint32Array {
+
+    // First pass: count output triangles
+    let triCount = 0
+    for (let i = 0; i < sizes.length; i++) {
+      triCount += Mesh._cellTriCount(cellTypes?.[i], sizes[i])
+    }
+
+    const out = new Uint32Array(triCount * 3)
+    let srcOffset = 0
+    let dstOffset = 0
+
+    for (let i = 0; i < sizes.length; i++) {
+      const n = sizes[i]
+      const ct = cellTypes?.[i]
+
+      // Check for 3D volume cell types
+      const faces = ct !== undefined ? Mesh._getCellFaces(ct) : null
+      if (faces) {
+        for (const face of faces) {
+          const v0 = indices[srcOffset + face[0]]
+          if (face.length === 3) {
+            out[dstOffset++] = v0
+            out[dstOffset++] = indices[srcOffset + face[1]]
+            out[dstOffset++] = indices[srcOffset + face[2]]
+          } else {
+            // Quad face -> 2 triangles (fan)
+            const v1 = indices[srcOffset + face[1]]
+            const v2 = indices[srcOffset + face[2]]
+            const v3 = indices[srcOffset + face[3]]
+            out[dstOffset++] = v0; out[dstOffset++] = v1; out[dstOffset++] = v2
+            out[dstOffset++] = v0; out[dstOffset++] = v2; out[dstOffset++] = v3
+          }
+        }
+        srcOffset += n
+        continue
+      }
+
+      // Surface cells
+      if (n === 3) {
+        out[dstOffset++] = indices[srcOffset]
+        out[dstOffset++] = indices[srcOffset + 1]
+        out[dstOffset++] = indices[srcOffset + 2]
+      } else if (n === 4) {
+        const v0 = indices[srcOffset], v1 = indices[srcOffset + 1]
+        const v2 = indices[srcOffset + 2], v3 = indices[srcOffset + 3]
+        out[dstOffset++] = v0; out[dstOffset++] = v1; out[dstOffset++] = v2
+        out[dstOffset++] = v0; out[dstOffset++] = v2; out[dstOffset++] = v3
+      } else if (n > 4) {
+        // Use earcut for polygons with 5+ vertices (handles concave)
+        const projected = verts ? Mesh._projectFaceTo2D(indices, srcOffset, n, verts) : null
+        const localTris = projected ? earcut(projected, undefined, 2) : []
+
+        if (localTris.length > 0) {
+          for (let j = 0; j < localTris.length; j++) {
+            out[dstOffset++] = indices[srcOffset + localTris[j]]
+          }
+        } else {
+          const v0 = indices[srcOffset]
+          for (let j = 1; j < n - 1; j++) {
+            out[dstOffset++] = v0
+            out[dstOffset++] = indices[srcOffset + j]
+            out[dstOffset++] = indices[srcOffset + j + 1]
+          }
+        }
+      }
+
+      srcOffset += n
+    }
+
+    return dstOffset === out.length ? out : out.slice(0, dstOffset)
+  }
+
+  /**
+   * Project a 3D polygon face onto its dominant 2D plane for earcut.
+   * Computes face normal and projects vertices onto the plane perpendicular to the largest normal component.
+   */
+  private static _projectFaceTo2D(
+    indices: Uint32Array,
+    offset: number,
+    count: number,
+    verts: Float32Array
+  ): number[] {
+    // Compute face normal via Newell's method
+    let nx = 0, ny = 0, nz = 0
+    for (let i = 0; i < count; i++) {
+      const ci = indices[offset + i] * 3
+      const ni = indices[offset + (i + 1) % count] * 3
+      const cx = verts[ci], cy = verts[ci + 1], cz = verts[ci + 2]
+      const nnx = verts[ni], nny = verts[ni + 1], nnz = verts[ni + 2]
+      nx += (cy - nny) * (cz + nnz)
+      ny += (cz - nnz) * (cx + nnx)
+      nz += (cx - nnx) * (cy + nny)
+    }
+
+    const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz)
+    const coords: number[] = new Array(count * 2)
+
+    // Project onto the plane perpendicular to the dominant normal axis
+    if (ax >= ay && ax >= az) {
+      // Drop X, use Y-Z
+      for (let i = 0; i < count; i++) {
+        const vi = indices[offset + i] * 3
+        coords[i * 2] = verts[vi + 1]
+        coords[i * 2 + 1] = verts[vi + 2]
+      }
+    } else if (ay >= ax && ay >= az) {
+      // Drop Y, use X-Z
+      for (let i = 0; i < count; i++) {
+        const vi = indices[offset + i] * 3
+        coords[i * 2] = verts[vi]
+        coords[i * 2 + 1] = verts[vi + 2]
+      }
+    } else {
+      // Drop Z, use X-Y
+      for (let i = 0; i < count; i++) {
+        const vi = indices[offset + i] * 3
+        coords[i * 2] = verts[vi]
+        coords[i * 2 + 1] = verts[vi + 1]
+      }
+    }
+
+    return coords
   }
 
   /**

@@ -66,6 +66,8 @@ export {
     DecodeArrayMessage,
     DecodeArrayResponse,
     DecodeMessage,
+    DecodeMeshMessage,
+    DecodeMeshResponse,
     DecodeResponse, PackableWorkerClient,
     PackableWorkerMessage,
     PackableWorkerResponse,

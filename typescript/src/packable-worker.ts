@@ -16,6 +16,7 @@
 
 import { ArrayRefInfo, ArrayUtils } from './array'
 import { JsonSchema } from './json-schema'
+import { Mesh } from './mesh'
 import { Packable } from './packable'
 
 // ─── Worker Message Types ───
@@ -47,7 +48,13 @@ export interface DecodeArrayMessage {
   info: ArrayRefInfo
 }
 
-export type PackableWorkerMessage = ReconstructMessage | DecodeMessage | DecodeArrayMessage
+export interface DecodeMeshMessage {
+  type: 'decodeMesh'
+  requestId: string
+  zipData: ArrayBuffer
+}
+
+export type PackableWorkerMessage = ReconstructMessage | DecodeMessage | DecodeArrayMessage | DecodeMeshMessage
 
 // ─── Worker Response Types ───
 
@@ -75,7 +82,14 @@ export interface DecodeArrayResponse {
   error?: string
 }
 
-export type PackableWorkerResponse = ReconstructResponse | DecodeResponse | DecodeArrayResponse
+export interface DecodeMeshResponse {
+  type: 'meshDecoded'
+  requestId: string
+  result: Record<string, { positions: Float32Array; indices: Uint32Array; normals: Float32Array }> | null
+  error?: string
+}
+
+export type PackableWorkerResponse = ReconstructResponse | DecodeResponse | DecodeArrayResponse | DecodeMeshResponse
 
 // ─── Worker Implementation ───
 
@@ -107,6 +121,35 @@ function collectTransferables(obj: unknown, transferables: Set<ArrayBuffer>): vo
       collectTransferables(value, transferables)
     }
   }
+}
+
+/**
+ * Convert a Mesh to raw geometry arrays (positions, indices, normals) without THREE.js.
+ * Uses Mesh.triangulateIndices for cell-type-aware triangulation.
+ */
+function meshToRawGeometry(mesh: Mesh): { positions: Float32Array; indices: Uint32Array; normals: Float32Array } {
+  const positions = mesh.vertices
+  const triIndices = mesh.indices
+    ? Mesh.triangulateIndices(mesh.indices, mesh.indexSizes, mesh.cellTypes, mesh.vertices)
+    : new Uint32Array(0)
+
+  // Compute vertex normals
+  const normals = new Float32Array(positions.length)
+  for (let i = 0; i < triIndices.length; i += 3) {
+    const i0 = triIndices[i] * 3, i1 = triIndices[i + 1] * 3, i2 = triIndices[i + 2] * 3
+    const ax = positions[i1] - positions[i0], ay = positions[i1 + 1] - positions[i0 + 1], az = positions[i1 + 2] - positions[i0 + 2]
+    const bx = positions[i2] - positions[i0], by = positions[i2 + 1] - positions[i0 + 1], bz = positions[i2 + 2] - positions[i0 + 2]
+    const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx
+    normals[i0] += nx; normals[i0 + 1] += ny; normals[i0 + 2] += nz
+    normals[i1] += nx; normals[i1 + 1] += ny; normals[i1 + 2] += nz
+    normals[i2] += nx; normals[i2 + 1] += ny; normals[i2 + 2] += nz
+  }
+  for (let i = 0; i < normals.length; i += 3) {
+    const len = Math.sqrt(normals[i] ** 2 + normals[i + 1] ** 2 + normals[i + 2] ** 2)
+    if (len > 0) { normals[i] /= len; normals[i + 1] /= len; normals[i + 2] /= len }
+  }
+
+  return { positions, indices: triIndices, normals }
 }
 
 /**
@@ -206,6 +249,47 @@ export function initPackableWorker(): void {
       } catch (error) {
         const response: DecodeArrayResponse = {
           type: 'arrayDecoded',
+          requestId,
+          result: null,
+          error: error instanceof Error ? error.message : String(error),
+        }
+        self.postMessage(response)
+      }
+    } else if (message.type === 'decodeMesh') {
+      const { requestId, zipData } = message
+      try {
+        const mesh = await Mesh.decode(zipData)
+        const result: Record<string, { positions: Float32Array; indices: Uint32Array; normals: Float32Array }> = {}
+        const transferables = new Set<ArrayBuffer>()
+
+        const markerNames = mesh.markers ? Object.keys(mesh.markers) : []
+        if (markerNames.length > 0) {
+          for (const name of markerNames) {
+            const subMesh = mesh.extractByMarker(name)
+            const geo = meshToRawGeometry(subMesh)
+            result[name] = geo
+            transferables.add(geo.positions.buffer)
+            transferables.add(geo.indices.buffer)
+            transferables.add(geo.normals.buffer)
+          }
+        } else {
+          const geo = meshToRawGeometry(mesh)
+          result['default'] = geo
+          transferables.add(geo.positions.buffer)
+          transferables.add(geo.indices.buffer)
+          transferables.add(geo.normals.buffer)
+        }
+
+        const response: DecodeMeshResponse = {
+          type: 'meshDecoded',
+          requestId,
+          result,
+        }
+
+        self.postMessage(response, { transfer: Array.from(transferables) })
+      } catch (error) {
+        const response: DecodeMeshResponse = {
+          type: 'meshDecoded',
           requestId,
           result: null,
           error: error instanceof Error ? error.message : String(error),
@@ -398,6 +482,31 @@ export class PackableWorkerClient {
       }
 
       this.worker.postMessage(message, { transfer: [data] })
+    })
+  }
+
+  /**
+   * Decode a mesh zip, triangulate per marker, and compute normals in the worker.
+   * Handles 3D volume cell types (tet, hex, wedge, pyramid) by extracting boundary faces.
+   */
+  async decodeMesh(zipData: ArrayBuffer): Promise<Record<string, { positions: Float32Array; indices: Uint32Array; normals: Float32Array }>> {
+    await this.ready
+
+    const requestId = this.generateRequestId()
+
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(requestId, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      })
+
+      const message: DecodeMeshMessage = {
+        type: 'decodeMesh',
+        requestId,
+        zipData,
+      }
+
+      this.worker.postMessage(message, { transfer: [zipData] })
     })
   }
 

@@ -278,6 +278,9 @@ class Packable(BaseModel):
     _cached_encode: Optional[bytes] = PrivateAttr(default=None)
     """Cached encoded bytes for reconstructed Packables to avoid re-encoding."""
 
+    _original_json_schema: Optional[dict[str, Any]] = PrivateAttr(default=None)
+    """JSON schema carried from reconstruction, used when model_json_schema() is unavailable."""
+
     class Config:
         arbitrary_types_allowed = True
 
@@ -332,9 +335,17 @@ class Packable(BaseModel):
 
         assert isinstance(extracted_result.value, dict), "Extracted value must be a dict for Packable models"
 
+        try:
+            schema = type(self).cached_json_schema()
+        except Exception:
+            if self._original_json_schema is not None:
+                schema = self._original_json_schema
+            else:
+                raise
+
         extracted = ExtractedPackable(
             data=extracted_result.value,
-            json_schema=type(self).cached_json_schema(),
+            json_schema=schema,
             assets=extracted_result.assets,
         )
         
@@ -471,6 +482,11 @@ class Packable(BaseModel):
         else:
             resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
             result = cls(**resolved_data)
+        
+        # Carry the original JSON schema so extract() can reuse it if
+        # model_json_schema() is unavailable (e.g. dynamic models with numpy fields).
+        if hasattr(result, '_original_json_schema') and not is_lazy:
+            result._original_json_schema = extracted.json_schema
         
         return result
 

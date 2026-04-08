@@ -133,20 +133,40 @@ function meshToRawGeometry(mesh: Mesh): { positions: Float32Array; indices: Uint
     ? Mesh.triangulateIndices(mesh.indices, mesh.indexSizes, mesh.cellTypes, mesh.vertices)
     : new Uint32Array(0)
 
-  // Compute vertex normals
   const normals = new Float32Array(positions.length)
+
+  // Accumulate face normals onto each vertex
   for (let i = 0; i < triIndices.length; i += 3) {
-    const i0 = triIndices[i] * 3, i1 = triIndices[i + 1] * 3, i2 = triIndices[i + 2] * 3
-    const ax = positions[i1] - positions[i0], ay = positions[i1 + 1] - positions[i0 + 1], az = positions[i1 + 2] - positions[i0 + 2]
-    const bx = positions[i2] - positions[i0], by = positions[i2 + 1] - positions[i0 + 1], bz = positions[i2 + 2] - positions[i0 + 2]
-    const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx
+    const i0 = triIndices[i] * 3
+    const i1 = triIndices[i + 1] * 3
+    const i2 = triIndices[i + 2] * 3
+
+    // Edge vectors from v0
+    const ax = positions[i1] - positions[i0]
+    const ay = positions[i1 + 1] - positions[i0 + 1]
+    const az = positions[i1 + 2] - positions[i0 + 2]
+    const bx = positions[i2] - positions[i0]
+    const by = positions[i2 + 1] - positions[i0 + 1]
+    const bz = positions[i2 + 2] - positions[i0 + 2]
+
+    // Cross product (face normal, area-weighted)
+    const nx = ay * bz - az * by
+    const ny = az * bx - ax * bz
+    const nz = ax * by - ay * bx
+
     normals[i0] += nx; normals[i0 + 1] += ny; normals[i0 + 2] += nz
     normals[i1] += nx; normals[i1 + 1] += ny; normals[i1 + 2] += nz
     normals[i2] += nx; normals[i2 + 1] += ny; normals[i2 + 2] += nz
   }
+
+  // Normalize
   for (let i = 0; i < normals.length; i += 3) {
     const len = Math.sqrt(normals[i] ** 2 + normals[i + 1] ** 2 + normals[i + 2] ** 2)
-    if (len > 0) { normals[i] /= len; normals[i + 1] /= len; normals[i + 2] /= len }
+    if (len > 0) {
+      normals[i] /= len
+      normals[i + 1] /= len
+      normals[i + 2] /= len
+    }
   }
 
   return { positions, indices: triIndices, normals }

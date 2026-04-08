@@ -26,24 +26,33 @@ class ChecksumUtils:
         return hashlib.sha256(data).hexdigest()
 
     @staticmethod
-    def compute_dict_checksum(data: dict[str, Any], assets: dict[str, bytes] = {}) -> str:
-        """Compute checksum for a data dict with assets.
+    def compute_dict_checksum(
+        data: dict[str, Any],
+        assets: Optional[dict[str, bytes]] = None,
+    ) -> str:
+        """Compute checksum for a data dict, optionally including asset bytes.
 
-        Combines data JSON + all asset bytes for deterministic hashing.
+        Uses compact JSON (no whitespace) with sorted keys to match the
+        TypeScript ChecksumUtils.computeDictChecksum implementation.
+
+        When *assets* is provided and non-empty, a null-byte separator and
+        the concatenated asset bytes (in sorted-key order) are appended
+        before hashing.
 
         Args:
             data: JSON-serializable dict
-            assets: Map of checksum -> bytes
+            assets: Optional map of checksum -> bytes
 
         Returns:
-            16-character hex string
+            16-character hex string (truncated SHA256)
         """
-        data_json = json.dumps(data, sort_keys=True).encode("utf-8")
+        data_json = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
         hasher = hashlib.sha256()
         hasher.update(data_json)
-        hasher.update(b"\x00")
-        for checksum in sorted(assets.keys()):
-            hasher.update(assets[checksum])
+        if assets:
+            hasher.update(b"\x00")
+            for checksum in sorted(assets.keys()):
+                hasher.update(assets[checksum])
         return hasher.hexdigest()[:16]
 
     @staticmethod

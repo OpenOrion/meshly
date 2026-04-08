@@ -209,9 +209,12 @@ class SchemaUtils:
                     SerializationUtils.get_asset(assets, value["$ref"]), array_type
                 )
             # Untyped reference — no type info to determine how to decode.
-            # Return raw dict so e.g. JSON-patch values with $ref keys pass through.
+            # If it looks like an array ref (has shape/dtype), fall through to
+            # array decoding. Otherwise return raw dict so e.g. JSON-patch
+            # values with $ref keys pass through.
             if expected_type is object or expected_type is typing.Any:
-                return value
+                if "shape" not in value or "dtype" not in value:
+                    return value
             # Array - get encoding from type annotation
             encoding = ArrayUtils.get_array_encoding(expected_type)
             return ArrayUtils.reconstruct(

@@ -59,8 +59,13 @@ data = np.random.randn(1000, 3).astype(np.float32)
 # Extract to ExtractedArray (with meshoptimizer compression)
 extracted = ArrayUtils.extract(data)
 
-# Reconstruct back to numpy array
+# Reconstruct back to numpy array (preserves original shape)
 reconstructed = ArrayUtils.reconstruct(extracted)
+print(reconstructed.shape)  # (1000, 3)
+
+# Reconstruct as flat 1-D array (e.g. for GPU vertex buffers)
+flat = ArrayUtils.reconstruct(extracted, flat=True)
+print(flat.shape)  # (3000,)
 ```
 
 ### Basic Mesh Usage
@@ -648,7 +653,11 @@ class ArrayUtils:
     @staticmethod
     def extract(array: Array, encoding: ArrayEncoding = "array") -> ExtractedArray
     @staticmethod
-    def reconstruct(extracted: ExtractedArray, array_type: ArrayType = "numpy") -> np.ndarray
+    def reconstruct(
+        extracted: ExtractedArray,
+        array_type: ArrayType = "numpy",
+        flat: bool = False,           # If True, return flat 1-D array (e.g. for GPU buffers)
+    ) -> "np.ndarray | list[np.ndarray]"
     
     # Zip file I/O
     @staticmethod

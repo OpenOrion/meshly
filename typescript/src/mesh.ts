@@ -180,7 +180,7 @@ export class Mesh<TData extends MeshData = MeshData> extends Packable<TData> {
 
       // Check if it's an array ref (has shape and dtype)
       if (isArrayRef(value)) {
-        return ArrayUtils.reconstruct({ data: bytes, info: value, encoding: encoding as "array" | "vertex_buffer" | "index_sequence" })
+        return ArrayUtils.reconstruct({ data: bytes, info: value, encoding: encoding as "array" | "vertex_buffer" | "index_sequence" }, true) as TypedArray
       }
 
       // Otherwise it's a nested Packable (stored as a zip file)

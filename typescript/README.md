@@ -43,6 +43,10 @@ const material = new THREE.MeshStandardMaterial({ color: 0x2194ce })
 const threeMesh = new THREE.Mesh(geometry, material)
 ```
 
+> **Note:** `Mesh.decode` always returns flat `TypedArray` fields (vertices, indices, etc.)
+> even for 2-D shapes. This is because mesh data is consumed as interleaved GPU buffers.
+> For general `Packable` reconstruction, 2-D arrays are split into per-column arrays by default.
+
 ### Work with Mesh Data
 
 ```typescript
@@ -211,19 +215,19 @@ Compute SHA256 checksums for data validation and deduplication:
 ```typescript
 import { ChecksumUtils } from 'meshly'
 
-// Checksum for binary data (returns 16-char hex string)
+// Checksum for binary data (returns full 64-char SHA-256 hex string)
 const bytes = new Uint8Array([1, 2, 3, 4])
 const checksum = await ChecksumUtils.computeBytesChecksum(bytes)
-console.log(checksum) // "9f64a1e..."
+console.log(checksum.length) // 64
 
-// Checksum for a dictionary (JSON-serialized with sorted keys)
+// Checksum for a dictionary (returns 16-char truncated hex string)
 const data = { name: 'mesh', vertices: { $ref: 'abc123...' } }
 const dictChecksum = await ChecksumUtils.computeDictChecksum(data)
-console.log(dictChecksum) // "e3b0c44..."
+console.log(dictChecksum.length) // 16
 
-// Full SHA256 (64-char hex string)
-const fullHash = await ChecksumUtils.computeFullChecksum(bytes)
-console.log(fullHash.length) // 64
+// Dict checksum with assets included in the hash
+const assets = { 'abc123...': new Uint8Array([...]) }
+const dictChecksumWithAssets = await ChecksumUtils.computeDictChecksum(data, assets)
 ```
 
 ## Web Worker Offloading
@@ -436,23 +440,28 @@ const result = await Packable.reconstruct(data, fetcher, jsonSchema)
 ```typescript
 // Array encoding/decoding
 class ArrayUtils {
-  // Reconstruct array from ExtractedArray
-  static reconstruct(extracted: ExtractedArray): TypedArray
+  // Reconstruct array from ExtractedArray.
+  // By default, 2-D+ arrays (e.g. shape [N, 3]) are split into per-column
+  // TypedArray[] (one array per column). Pass flat=true to always return a
+  // single flat TypedArray (e.g. for GPU vertex buffers).
+  static reconstruct(extracted: ExtractedArray, flat?: boolean): TypedArray | TypedArray[]
   
   // Decode array from zip file
-  static async decode(zip: JSZip, name: string, encoding?: ArrayEncoding): Promise<TypedArray>
+  static async decode(zip: JSZip, name: string, encoding?: ArrayEncoding): Promise<TypedArray | TypedArray[]>
 }
 
 // Checksum computation utilities
 class ChecksumUtils {
-  // SHA256 checksum for bytes (truncated to 16 chars, matches Python)
+  // Full 64-char SHA-256 checksum for bytes
   static async computeBytesChecksum(data: Uint8Array | ArrayBuffer): Promise<string>
   
-  // SHA256 checksum for dictionary/object (JSON-serialized with sorted keys)
-  static async computeDictChecksum(data: Record<string, unknown>): Promise<string>
-  
-  // Full 64-char SHA256 checksum for bytes
-  static async computeFullChecksum(data: Uint8Array | ArrayBuffer): Promise<string>
+  // SHA-256 checksum for a data dict, optionally including asset bytes.
+  // Returns 16-char truncated hex string. Uses compact JSON with sorted keys
+  // to match the Python ChecksumUtils.compute_dict_checksum implementation.
+  static async computeDictChecksum(
+    data: Record<string, unknown>,
+    assets?: Record<string, Uint8Array>
+  ): Promise<string>
   
   // Convert object to compact JSON with recursively sorted keys
   static toSortedJson(obj: unknown): string
@@ -591,11 +600,16 @@ class PackableWorkerClient {
   // Decode a Packable zip blob (runs in worker)
   async decode<T>(zipData: ArrayBuffer): Promise<T>
   
-  // Decode an array from binary data (runs in worker)
+  // Decode an array from binary data (runs in worker, always returns flat)
   async decodeArray(
     data: ArrayBuffer,
     info: ArrayRefInfo
   ): Promise<Float32Array | Int32Array | Uint32Array>
+  
+  // Decode a mesh zip, triangulate per marker, and compute normals (runs in worker)
+  async decodeMesh(
+    zipData: ArrayBuffer
+  ): Promise<Record<string, { positions: Float32Array; indices: Uint32Array; normals: Float32Array }>>
   
   // Terminate the worker
   terminate(): void

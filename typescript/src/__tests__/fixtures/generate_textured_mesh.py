@@ -71,8 +71,8 @@ class TexturedMesh(Mesh):
 
 
 def create_textured_mesh() -> TexturedMesh:
-    """Create a simple textured cube mesh."""
-    # Create vertices for a cube
+    """Create a simple textured cube mesh using Mesh.from_triangles."""
+    # Cube vertices
     vertices = np.array([
         [-0.5, -0.5, -0.5],  # 0: bottom-left-back
         [0.5, -0.5, -0.5],   # 1: bottom-right-back
@@ -84,38 +84,26 @@ def create_textured_mesh() -> TexturedMesh:
         [-0.5, 0.5, 0.5]     # 7: top-left-front
     ], dtype=np.float32)
 
-    # Create indices for the cube (2 triangles per face, 6 faces)
-    indices = np.array([
-        0, 1, 2, 2, 3, 0,  # back face
-        1, 5, 6, 6, 2, 1,  # right face
-        5, 4, 7, 7, 6, 5,  # front face
-        4, 0, 3, 3, 7, 4,  # left face
-        3, 2, 6, 6, 7, 3,  # top face
-        4, 5, 1, 1, 0, 4   # bottom face
+    # Cube triangles (2 per face, 6 faces = 12 triangles)
+    triangles = np.array([
+        [0, 1, 2], [2, 3, 0],  # back face
+        [1, 5, 6], [6, 2, 1],  # right face
+        [5, 4, 7], [7, 6, 5],  # front face
+        [4, 0, 3], [3, 7, 4],  # left face
+        [3, 2, 6], [6, 7, 3],  # top face
+        [4, 5, 1], [1, 0, 4]   # bottom face
     ], dtype=np.uint32)
 
-    # Create texture coordinates (one for each vertex)
+    # Texture coordinates (per vertex)
     texture_coords = np.array([
-        [0.0, 0.0],  # 0
-        [1.0, 0.0],  # 1
-        [1.0, 1.0],  # 2
-        [0.0, 1.0],  # 3
-        [0.0, 0.0],  # 4
-        [1.0, 0.0],  # 5
-        [1.0, 1.0],  # 6
-        [0.0, 1.0]   # 7
+        [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+        [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]
     ], dtype=np.float32)
 
-    # Create normals (one for each vertex)
+    # Normals (per vertex)
     normals = np.array([
-        [0.0, 0.0, -1.0],  # 0: back
-        [0.0, 0.0, -1.0],  # 1: back
-        [0.0, 0.0, -1.0],  # 2: back
-        [0.0, 0.0, -1.0],  # 3: back
-        [0.0, 0.0, 1.0],   # 4: front
-        [0.0, 0.0, 1.0],   # 5: front
-        [0.0, 0.0, 1.0],   # 6: front
-        [0.0, 0.0, 1.0]    # 7: front
+        [0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]
     ], dtype=np.float32)
 
     # Create MaterialProperties instances
@@ -145,10 +133,11 @@ def create_textured_mesh() -> TexturedMesh:
         ], dtype=np.float32)
     )
 
-    # Create the textured mesh
-    mesh = TexturedMesh(
+    # Create the textured mesh using from_triangles
+    mesh = TexturedMesh.from_triangles(
         vertices=vertices,
-        indices=indices,
+        triangles=triangles,
+        dim=2,  # Surface mesh (triangles are 2D elements)
         texture_coords=texture_coords,
         normals=normals,
         physics=physics,

@@ -322,8 +322,19 @@ class ArrayUtils:
     def reconstruct(
         extracted: ExtractedArray,
         array_type: ArrayType = "numpy",
-    ) -> np.ndarray:
-        """Reconstruct array from ExtractedArray."""
+        flat: bool = False,
+    ) -> "np.ndarray | list[np.ndarray]":
+        """Reconstruct array from ExtractedArray.
+
+        Args:
+            extracted: Encoded array data with metadata.
+            array_type: Backend type ("numpy" or "jax").
+            flat: If True, return a flat 1-D array instead of reshaping.
+                  If False (default), reshape to original shape. For 2-D+
+                  arrays this returns an ndarray with shape (N, stride).
+                  Use ``flat=True`` when you need interleaved buffers
+                  (e.g. vertices for GPU upload).
+        """
         from meshoptimizer import decode_vertex_buffer, decode_index_sequence
         
         metadata = extracted.info
@@ -337,18 +348,16 @@ class ArrayUtils:
                 decoded = decoded.astype(dtype)
         else:
             total_items = int(np.prod(shape))
-            # Handle padded data (itemsize not multiple of 4)
             if original_itemsize % 4 != 0:
                 padded_size = ((original_itemsize + 3) // 4) * 4
-                # Decode as raw bytes (no dtype) - returns float32 by default, reinterpret as uint8
                 decoded_raw = decode_vertex_buffer(total_items, padded_size, extracted.data)
-                # Convert to bytes view
                 decoded_bytes = decoded_raw.view(np.uint8).reshape(total_items, padded_size)
-                # Strip padding from each element
                 unpadded_bytes = decoded_bytes[:, :original_itemsize].tobytes()
-                decoded = np.frombuffer(unpadded_bytes, dtype=dtype).reshape(shape)
+                decoded = np.frombuffer(unpadded_bytes, dtype=dtype)
             else:
                 decoded = decode_vertex_buffer(total_items, dtype.itemsize, extracted.data, dtype=dtype)
+
+            if not flat:
                 decoded = decoded.reshape(shape)
         
         return ArrayUtils.convert_array(decoded, array_type)

@@ -178,13 +178,13 @@ describe('Python Integration Tests', () => {
             expect(mesh.physics!.mass).toBe(2.5)
             expect(mesh.physics!.friction).toBe(0.7)
 
-            // Inertia tensor (3x3 = 9 elements)
-            expect(mesh.physics!.inertia_tensor).toBeInstanceOf(Float32Array)
-            expect(mesh.physics!.inertia_tensor.length).toBe(9)
+            // Inertia tensor [3, 3] → 3 columns of 3
+            expect(Array.isArray(mesh.physics!.inertia_tensor)).toBe(true)
+            expect(mesh.physics!.inertia_tensor.length).toBe(3)
 
-            // Collision points (3 points * 3 components = 9 elements)
-            expect(mesh.physics!.collision_points).toBeInstanceOf(Float32Array)
-            expect(mesh.physics!.collision_points.length).toBe(9)
+            // Collision points [3, 3] → 3 columns of 3
+            expect(Array.isArray(mesh.physics!.collision_points)).toBe(true)
+            expect(mesh.physics!.collision_points.length).toBe(3)
         })
 
         it('should have correct vertex values', async () => {
@@ -206,8 +206,9 @@ describe('Python Integration Tests', () => {
         it('should decode using base Packable class', async () => {
             const packable = await Packable.decode(zipData) as unknown as TexturedMeshData
 
-            // Should have basic fields
-            expect(packable.vertices).toBeInstanceOf(Float32Array)
+            // vertices [8, 3] → TypedArray[] (3 columns), indices [12] → Uint32Array
+            expect(Array.isArray(packable.vertices)).toBe(true)
+            expect(packable.vertices.length).toBe(3)
             expect(packable.indices).toBeInstanceOf(Uint32Array)
         })
     })

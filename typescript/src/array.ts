@@ -107,89 +107,73 @@ export class ArrayUtils {
 
   /**
    * Reconstruct array from ExtractedArray using meshoptimizer.
-   * Supports all encoding types: array, vertex_buffer, index_sequence.
    *
-   * @param extracted ExtractedArray containing data and metadata
-   * @returns Decoded array as a TypedArray
+   * @param extracted - ExtractedArray containing data and metadata
+   * @param flat - If true, always return a single flat TypedArray (default: false).
+   *               If false, 2-D+ arrays are split into per-column TypedArray[].
    */
-  static reconstruct(extracted: ExtractedArray): TypedArray {
+  static reconstruct(extracted: ExtractedArray, flat?: boolean): TypedArray | TypedArray[] {
     const { data, info } = extracted
+    const { shape } = info
     const encoding = extracted.encoding || "array"
 
-    // Calculate the total number of items
-    const totalItems = info.shape.reduce((acc, dim) => acc * dim, 1)
+    const totalItems = shape.reduce((acc, dim) => acc * dim, 1)
     const TypedArrayCtor = ArrayUtils.getTypedArrayConstructor(info.dtype)
 
-    // Handle vertex_buffer encoding (optimized for 2D vertex data)
+    let decoded: TypedArray
+
     if (encoding === "vertex_buffer") {
-      const vertexCount = info.shape[0]
-      const vertexSize = info.itemsize * (info.shape.length > 1 ? info.shape[1] : 1)
-      const destUint8Array = new Uint8Array(vertexCount * vertexSize)
+      const vertexCount = shape[0]
+      const vertexSize = info.itemsize * (shape.length > 1 ? shape[1] : 1)
+      const dest = new Uint8Array(vertexCount * vertexSize)
+      MeshoptDecoder.decodeVertexBuffer(dest, vertexCount, vertexSize, data)
+      decoded = new TypedArrayCtor(dest.buffer)
 
-      MeshoptDecoder.decodeVertexBuffer(
-        destUint8Array,
-        vertexCount,
-        vertexSize,
-        data
-      )
+    } else if (encoding === "index_sequence") {
+      const indexCount = shape[0]
+      const dest = new Uint8Array(indexCount * info.itemsize)
+      MeshoptDecoder.decodeIndexSequence(dest, indexCount, info.itemsize, data)
+      decoded = new TypedArrayCtor(dest.buffer)
 
-      return new TypedArrayCtor(destUint8Array.buffer)
-    }
+    } else {
+      const originalItemsize = info.itemsize
 
-    // Handle index_sequence encoding (optimized for 1D indices)
-    if (encoding === "index_sequence") {
-      const indexCount = info.shape[0]
-      const indexSize = info.itemsize
-      const destUint8Array = new Uint8Array(indexCount * indexSize)
+      if (originalItemsize % 4 !== 0) {
+        const paddedSize = Math.ceil(originalItemsize / 4) * 4
+        const dest = new Uint8Array(totalItems * paddedSize)
+        MeshoptDecoder.decodeVertexBuffer(dest, totalItems, paddedSize, data)
 
-      MeshoptDecoder.decodeIndexSequence(
-        destUint8Array,
-        indexCount,
-        indexSize,
-        data
-      )
-
-      return new TypedArrayCtor(destUint8Array.buffer)
-    }
-
-    // Handle generic "array" encoding
-    // meshoptimizer requires vertex_size to be multiple of 4, handle padding
-    const originalItemsize = info.itemsize
-
-    if (originalItemsize % 4 !== 0) {
-      // Padded encoding: decode with padded size, then strip padding
-      const paddedSize = Math.ceil(originalItemsize / 4) * 4
-      const destUint8Array = new Uint8Array(totalItems * paddedSize)
-
-      MeshoptDecoder.decodeVertexBuffer(
-        destUint8Array,
-        totalItems,
-        paddedSize,
-        data
-      )
-
-      // Strip padding from each element
-      const unpadded = new Uint8Array(totalItems * originalItemsize)
-      for (let i = 0; i < totalItems; i++) {
-        unpadded.set(
-          destUint8Array.subarray(i * paddedSize, i * paddedSize + originalItemsize),
-          i * originalItemsize
-        )
+        const unpadded = new Uint8Array(totalItems * originalItemsize)
+        for (let i = 0; i < totalItems; i++) {
+          unpadded.set(
+            dest.subarray(i * paddedSize, i * paddedSize + originalItemsize),
+            i * originalItemsize
+          )
+        }
+        decoded = new TypedArrayCtor(unpadded.buffer)
+      } else {
+        const dest = new Uint8Array(totalItems * originalItemsize)
+        MeshoptDecoder.decodeVertexBuffer(dest, totalItems, originalItemsize, data)
+        decoded = new TypedArrayCtor(dest.buffer)
       }
-
-      return new TypedArrayCtor(unpadded.buffer)
     }
 
-    const destUint8Array = new Uint8Array(totalItems * originalItemsize)
+    if (flat || shape.length < 2 || shape[1] <= 1) {
+      return decoded
+    }
 
-    MeshoptDecoder.decodeVertexBuffer(
-      destUint8Array,
-      totalItems,
-      originalItemsize,
-      data
-    )
-
-    return new TypedArrayCtor(destUint8Array.buffer)
+    const N = shape[0]
+    const stride = shape[1]
+    const Ctor = decoded.constructor as new (len: number) => TypedArray
+    const columns: TypedArray[] = []
+    for (let c = 0; c < stride; c++) {
+      const col = new Ctor(N)
+      for (let r = 0; r < N; r++) {
+        col[r] = decoded[r * stride + c]
+      }
+      columns.push(col)
+    }
+    return columns
   }
 
   /**
@@ -206,7 +190,7 @@ export class ArrayUtils {
     zip: JSZip,
     name: string,
     encoding: ArrayEncoding = "array"
-  ): Promise<TypedArray> {
+  ): Promise<TypedArray | TypedArray[]> {
     // Convert dotted name to path
     const arrayPath = name.replace(/\./g, "/")
     const arraysFolder = zip.folder("arrays")

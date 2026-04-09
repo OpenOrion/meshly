@@ -306,6 +306,29 @@ describe('Packable.reconstruct', () => {
 
             expect(decoded).toBeInstanceOf(Uint32Array)
             expect(Array.from(decoded as Uint32Array)).toEqual([10, 20, 30])
+
+        })
+
+        it('splits 2D arrays into per-column TypedArrays', async () => {
+            // [N=2, 3] row-major: [1,2,3, 4,5,6]
+            const original = new Float32Array([1, 2, 3, 4, 5, 6])
+            const encoded = await encodeArray(original)
+            const refInfo: ArrayRefInfo = {
+                $ref: 'test-checksum',
+                shape: [2, 3],
+                dtype: 'float32',
+                itemsize: 4,
+            }
+
+            const { ArrayUtils } = await import('../array')
+            const decoded = ArrayUtils.reconstruct({ data: encoded, info: refInfo })
+
+            expect(Array.isArray(decoded)).toBe(true)
+            const cols = decoded as Float32Array[]
+            expect(cols).toHaveLength(3)
+            expect(Array.from(cols[0])).toEqual([1, 4])  // column 0
+            expect(Array.from(cols[1])).toEqual([2, 5])  // column 1
+            expect(Array.from(cols[2])).toEqual([3, 6])  // column 2
         })
     })
 

@@ -257,7 +257,7 @@ export function initPackableWorker(): void {
           data: bytes,
           info,
           encoding: 'array',
-        }) as Float32Array | Int32Array | Uint32Array
+        }, true) as Float32Array | Int32Array | Uint32Array
 
         const response: DecodeArrayResponse = {
           type: 'arrayDecoded',

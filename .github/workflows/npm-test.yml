@@ -27,6 +27,18 @@ jobs:
       uses: pnpm/action-setup@v2
       with:
         version: 8
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Python dependencies and generate fixtures
+      run: |
+        cd python
+        pip install -e .
+        cd ../typescript/src/__tests__/fixtures
+        python generate_textured_mesh.py
     
     - name: Install dependencies
       run: |

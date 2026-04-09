@@ -278,6 +278,10 @@ class Packable(BaseModel):
     _cached_encode: Optional[bytes] = PrivateAttr(default=None)
     """Cached encoded bytes for reconstructed Packables to avoid re-encoding."""
 
+    _original_json_schema: Optional[dict[str, Any]] = PrivateAttr(default=None)
+    """JSON schema carried from reconstruction, used when model_json_schema() is unavailable
+    (e.g. dynamic models with numpy fields that Pydantic cannot generate a schema for)."""
+
     class Config:
         arbitrary_types_allowed = True
 
@@ -314,6 +318,21 @@ class Packable(BaseModel):
         """
         return cls.model_json_schema()
 
+    def _get_json_schema(self) -> dict[str, Any]:
+        """Return the JSON schema for this instance.
+
+        Prefers the class-level cached schema from ``cached_json_schema()``.
+        Falls back to ``_original_json_schema`` carried from reconstruction
+        when the class-level call fails (e.g. dynamic models whose numpy
+        fields prevent Pydantic from generating a schema).
+        """
+        try:
+            return type(self).cached_json_schema()
+        except Exception:
+            if self._original_json_schema is not None:
+                return self._original_json_schema
+            raise
+
     def extract(self) -> "ExtractedPackable":
         """Extract arrays and Packables from this model into serializable data and assets.
         
@@ -332,9 +351,17 @@ class Packable(BaseModel):
 
         assert isinstance(extracted_result.value, dict), "Extracted value must be a dict for Packable models"
 
+        try:
+            schema = type(self).cached_json_schema()
+        except Exception:
+            if self._original_json_schema is not None:
+                schema = self._original_json_schema
+            else:
+                raise
+
         extracted = ExtractedPackable(
             data=extracted_result.value,
-            json_schema=type(self).cached_json_schema(),
+            json_schema=self._get_json_schema(),
             assets=extracted_result.assets,
         )
         
@@ -471,6 +498,12 @@ class Packable(BaseModel):
         else:
             resolved_data = SchemaUtils.resolve_from_class(cls, extracted.data, asset_provider, array_type)
             result = cls(**resolved_data)
+        
+        # Preserve the original schema on Packable instances so that
+        # _get_json_schema() can fall back to it when the class-level
+        # cached_json_schema() is unavailable (dynamic models).
+        if isinstance(result, Packable) and not is_lazy:
+            result._original_json_schema = extracted.json_schema
         
         return result
 

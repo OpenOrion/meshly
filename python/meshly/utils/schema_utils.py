@@ -114,13 +114,19 @@ class SchemaUtils:
 
     @staticmethod
     def _matches_discriminator(model_type: type[BaseModel], value: dict) -> bool:
-        """Check if a BaseModel type matches data via a Literal discriminator field."""
+        """Check if a BaseModel type matches data via Literal discriminator fields.
+
+        All Literal fields present in both the model and the data must match.
+        Returns False if no discriminator fields are found or any mismatch.
+        """
         from typing import Literal
+        matched = False
         for field_name, field_info in model_type.model_fields.items():
             if field_name in value and get_origin(field_info.annotation) is Literal:
-                if value[field_name] in get_args(field_info.annotation):
-                    return True
-        return False
+                if value[field_name] not in get_args(field_info.annotation):
+                    return False
+                matched = True
+        return matched
 
     @staticmethod
     def _load_class(module_path: str) -> Union[type, None]:
@@ -202,6 +208,13 @@ class SchemaUtils:
                 return expected_type.decode(
                     SerializationUtils.get_asset(assets, value["$ref"]), array_type
                 )
+            # Untyped reference — no type info to determine how to decode.
+            # If it looks like an array ref (has shape/dtype), fall through to
+            # array decoding. Otherwise return raw dict so e.g. JSON-patch
+            # values with $ref keys pass through.
+            if expected_type is object or expected_type is typing.Any:
+                if "shape" not in value or "dtype" not in value:
+                    return value
             # Array - get encoding from type annotation
             encoding = ArrayUtils.get_array_encoding(expected_type)
             return ArrayUtils.reconstruct(

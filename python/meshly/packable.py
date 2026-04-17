@@ -664,6 +664,97 @@ class Packable(BaseModel):
         extracted = store.load_extracted(key)
         return cls.reconstruct(extracted, assets=store.load_asset, array_type=array_type, is_lazy=is_lazy)
 
+    # -------------------------------------------------------------------------
+    # Param-aware helpers
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def to_example(cls) -> "Packable":
+        """Create an instance using example values from Param() fields.
+
+        For each Param field, uses example if defined, else falls back to default.
+        Handles both native ParamInfo fields and InlineArray fields where
+        Pydantic converts ParamInfo to plain FieldInfo.
+        """
+        from meshly.param import ParamInfo
+
+        example_data: dict[str, Any] = {}
+        for field_name, field_info in cls.model_fields.items():
+            is_param = isinstance(field_info, ParamInfo)
+            has_units_extra = (
+                isinstance(field_info.json_schema_extra, dict)
+                and "units" in field_info.json_schema_extra
+            )
+            if not is_param and not has_units_extra:
+                continue
+
+            # Try example from ParamInfo, then FieldInfo.examples, then default
+            example = None
+            if is_param and field_info.example is not None:
+                example = field_info.example
+            elif field_info.examples and len(field_info.examples) > 0:
+                example = field_info.examples[0]
+
+            if example is not None:
+                example_data[field_name] = example
+            elif field_info.default is not None and field_info.default is not ...:
+                example_data[field_name] = field_info.default
+            elif field_info.default_factory is not None:
+                example_data[field_name] = field_info.default_factory()
+            else:
+                raise ValueError(
+                    f"Parameter '{field_name}' has no example or default value. "
+                    f"Provide example=... or default=... in Param()."
+                )
+        return cls(**example_data)
+
+    def with_units(self, base_units: bool = False) -> "Packable":
+        """Clone with numeric/array Param fields converted to pint Quantities.
+
+        Reads units from either ParamInfo (for fields defined with Param()) or
+        json_schema_extra (for InlineArray fields where Pydantic converts
+        ParamInfo to plain FieldInfo but preserves the extra dict).
+
+        Args:
+            base_units: If True, convert to SI base units.
+        """
+        try:
+            from pint import UnitRegistry
+            ureg = UnitRegistry()
+        except ImportError:
+            raise ImportError("pint is required for with_units(). Install with: pip install pint")
+
+        from meshly.param import ParamInfo
+
+        cloned = self.model_copy()
+        for field_name, field_info in self.model_fields.items():
+            # Get units from ParamInfo or json_schema_extra
+            units: str | None = None
+            if isinstance(field_info, ParamInfo):
+                units = field_info.units
+            elif isinstance(field_info.json_schema_extra, dict):
+                units = field_info.json_schema_extra.get("units")
+
+            value = getattr(self, field_name)
+
+            # Recurse into nested Packable fields
+            if isinstance(value, Packable):
+                object.__setattr__(cloned, field_name, value.with_units(base_units=base_units))
+                continue
+
+            if not units or units == "dimensionless":
+                continue
+
+            try:
+                quantity = ureg.Quantity(value, units)
+                if base_units:
+                    quantity = quantity.to_base_units()
+                object.__setattr__(cloned, field_name, quantity)
+            except Exception:
+                pass
+
+        return cloned
+
     def __reduce__(self):
         """Support for pickle serialization using standard dict approach."""
         return (

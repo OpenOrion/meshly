@@ -23,6 +23,7 @@ from meshly.array import (
     IndexSequence,
     InlineArray,
 )
+from meshly.param import Param, ParamInfo
 from meshly.cell_types import (
     CellType,
     CellTypeUtils,
@@ -53,6 +54,9 @@ __all__ = [
     # Mesh classes
     "Mesh",
     "TMesh",
+    # Parameter metadata
+    "Param",
+    "ParamInfo",
     # Array types and utilities
     "Array",
     "InlineArray",

@@ -40,7 +40,8 @@ dependencies = [
 
 [project.optional-dependencies]
 jax = ["jax", "jaxlib"]
-dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "pyvista>=0.40.0"]
+units = ["pint>=0.20"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "pyvista>=0.40.0", "pint>=0.20"]
 
 [project.urls]
 Homepage = "https://github.com/OpenOrion/meshly"

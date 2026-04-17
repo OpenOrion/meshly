@@ -6,6 +6,9 @@ A Python library for efficient 3D mesh serialization using [meshoptimizer](https
 
 ```bash
 pip install meshly
+
+# With unit conversion support (pint)
+pip install meshly[units]
 ```
 
 ## Features
@@ -15,6 +18,7 @@ pip install meshly
 - **`Packable`**: Base class for automatic numpy/JAX array serialization to zip files
 - **`Mesh`**: 3D mesh representation extending Packable with meshoptimizer encoding. Use factory methods: `from_triangles()`, `from_polygons()`, `create()`
 - **`ArrayUtils`**: Utility class for extracting/reconstructing individual arrays
+- **`Param`**: Unit-aware parameter field for Pydantic models (drop-in replacement for `Field`)
 - **`PackableStore`**: File-based store for persistent storage with deduplication
 - **`LazyModel`**: Lazy proxy that defers asset loading until field access
 - **`Resource`**: Binary data reference that serializes by content checksum
@@ -27,6 +31,13 @@ pip install meshly
 - **`Array`**: Generic array type with meshoptimizer compression
 - **`IndexSequence`**: Optimized encoding for mesh indices (1D array)
 - **`InlineArray`**: Array serialized as inline JSON list (no binary compression)
+
+### Unit-Aware Parameters
+
+- **`Param()`**: Drop-in replacement for `pydantic.Field()` that adds `units`, `shape`, and `example` metadata to the JSON schema
+- **`ParamInfo`**: `FieldInfo` subclass backing `Param()` — carries units/shape/example through Pydantic's schema generation
+- **`Packable.to_example()`**: Class method that builds an instance from `Param()` example/default values
+- **`Packable.with_units()`**: Returns a clone with numeric/array fields converted to `pint.Quantity` objects
 
 ### Key Capabilities
 
@@ -183,6 +194,54 @@ class OptimizedMesh(Packable):
 ```
 
 > **Note:** All dtypes are supported. Arrays with non-4-byte dtypes (e.g., `float16`, `int8`, `uint8`) are automatically padded to 4-byte alignment during encoding and unpadded during decoding (meshoptimizer requirement). For best performance, prefer 4-byte aligned dtypes like `float32`, `int32`, or `float64`.
+
+### Unit-Aware Parameters with Param()
+
+`Param()` is a drop-in replacement for `pydantic.Field()` that adds units, shape, and example metadata to the JSON schema. It works on any Pydantic `BaseModel` or `Packable` field, including `InlineArray`:
+
+```python
+from meshly import Packable, Param, InlineArray
+
+class Simulation(Packable):
+    velocity: InlineArray = Param(units="m/s", example=[30.0, 0, 0], shape=(3,),
+                                  description="Flow velocity vector [vx, vy, vz]")
+    temperature: float = Param(300.0, units="K", description="Fluid temperature")
+    pressure: float = Param(101325.0, units="Pa", description="Outlet pressure")
+    name: str = Param("default", units="dimensionless", description="Simulation name")
+
+# Units appear in the JSON schema
+schema = Simulation.model_json_schema()
+print(schema["properties"]["temperature"])
+# {'default': 300.0, 'description': 'Fluid temperature', 'title': 'Temperature',
+#  'type': 'number', 'units': 'K'}
+
+# Create from example values
+sim = Simulation.to_example()
+print(sim.velocity)     # [30.  0.  0.]
+print(sim.temperature)  # 300.0
+
+# Convert to pint Quantities (requires `pip install meshly[units]`)
+sim_units = sim.with_units()
+print(sim_units.velocity)                # [30.0 0.0 0.0] meter / second
+print(sim_units.velocity.to("km/h"))     # [108.0 0.0 0.0] kilometer / hour
+print(sim_units.temperature.to("degC"))  # 26.85 degree_Celsius
+
+# Convert to SI base units
+sim_base = sim.with_units(base_units=True)
+print(sim_base.pressure)  # 101325.0 kilogram / meter / second ** 2
+```
+
+`Param()` requires either a default value or an `example`:
+```python
+# With default
+velocity: float = Param(10.0, units="m/s")
+
+# With example (no default, field is required)
+velocity: float = Param(units="m/s", example=10.0)
+
+# Error: neither default nor example
+velocity: float = Param(units="m/s")  # ValueError!
+```
 
 ### Dict of Pydantic BaseModel Objects
 
@@ -645,6 +704,34 @@ class MyData(Packable):
     color: InlineArray            # Small arrays as inline JSON (no $ref)
 ```
 
+### Param
+
+```python
+def Param(
+    default: Any = ...,
+    *,
+    units: str,                    # Required: unit string (e.g., "m/s", "Pa", "dimensionless")
+    shape: tuple[int, ...] = None, # Optional: expected array shape
+    example: Any = None,           # Optional: example value for to_example()
+    description: str = None,       # Optional: field description
+    # ... all other pydantic.Field kwargs supported (gt, ge, lt, le, etc.)
+) -> ParamInfo
+```
+
+### ParamInfo
+
+```python
+class ParamInfo(FieldInfo):
+    """FieldInfo subclass that adds units, shape, and example to the JSON schema.
+    
+    Works on any Pydantic BaseModel. When used with InlineArray, the units
+    are preserved in the JSON schema output via json_schema_extra.
+    """
+    units: str
+    shape: tuple[int, ...] | None
+    example: Any
+```
+
 ### ArrayUtils
 
 ```python
@@ -701,6 +788,11 @@ class Packable(BaseModel):
     
     # Array conversion
     def convert_to(self, array_type: ArrayType) -> T
+    
+    # Param-aware helpers
+    @classmethod
+    def to_example(cls) -> T         # Build instance from Param() example/default values
+    def with_units(self, base_units: bool = False) -> T  # Clone with pint Quantities (requires pint)
     
     # Extract/Encode (instance methods)
     def extract(self) -> ExtractedPackable  # Cached for efficiency

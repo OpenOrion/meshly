@@ -86,7 +86,11 @@ class _ArrayAnnotation:
 
 
 class _InlineArrayAnnotation:
-    """Pydantic annotation for arrays serialized as inline JSON lists."""
+    """Pydantic annotation for arrays serialized as inline JSON lists.
+
+    When the field is defined with Param(units=...), the units/shape/description
+    are preserved in the JSON schema output via json_schema_extra on the FieldInfo.
+    """
 
     def __get_pydantic_core_schema__(
         self, source_type: Any, handler: GetCoreSchemaHandler

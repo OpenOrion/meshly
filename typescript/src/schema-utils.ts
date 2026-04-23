@@ -9,7 +9,7 @@
  */
 
 import { ArrayRefInfo, ArrayUtils } from "./array"
-import { AssetProvider } from "./common"
+import { AssetProvider, getAsset } from "./common"
 import { ArrayEncoding, JsonSchema, JsonSchemaProperty, JsonSchemaUtils } from "./json-schema"
 
 // ============================================================
@@ -256,18 +256,8 @@ export class SchemaUtils {
     ): Promise<unknown> {
         const checksum = ref.$ref
 
-        // Get asset bytes
-        let assetBytes: Uint8Array | ArrayBuffer
-        if (typeof assets === "function") {
-            assetBytes = await assets(checksum)
-        } else {
-            const asset = assets[checksum]
-            if (!asset) {
-                throw new Error(`Missing asset with checksum '${checksum}'`)
-            }
-            assetBytes = asset
-        }
-        const bytes = assetBytes instanceof Uint8Array ? assetBytes : new Uint8Array(assetBytes)
+        // Get asset bytes using helper (supports sync/async and dict/callable)
+        const bytes = await getAsset(assets, checksum)
 
         // Use explicit field schema if provided
         if (fieldSchema?.type === "packable" && fieldSchema.decode) {

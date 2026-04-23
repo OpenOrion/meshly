@@ -59,7 +59,71 @@ export class Packable<TData = Record<string, unknown>> {
   }
 
   // ============================================================
-  // Decode from zip (new format)
+  // Parse zip (raw extraction)
+  // ============================================================
+
+  /**
+   * Parse a zip buffer and return raw ExtractedPackable without reconstruction.
+   * 
+   * This method reads the zip structure and extracts:
+   * - data dict with $ref references
+   * - json_schema if present
+   * - binary assets
+   * 
+   * Unlike decode(), no reconstruction is performed. Useful for validation
+   * and storage operations where you need raw access to the bundle contents.
+   *
+   * @param zipData - Zip file bytes
+   * @returns ExtractedPackable with data, json_schema, and assets
+   * 
+   * @example
+   * ```ts
+   * const extracted = await Packable.parseZip(zipBuffer)
+   * const checksums = Packable.extractChecksums(extracted.data)
+   * for (const [checksum, bytes] of Object.entries(extracted.assets)) {
+   *   // validate or store assets
+   * }
+   * ```
+   */
+  static async parseZip(
+    zipData: ArrayBuffer | Uint8Array
+  ): Promise<ExtractedPackable> {
+    const zip = await JSZip.loadAsync(zipData)
+
+    // Read extracted.json (contains data + json_schema)
+    const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE_NAME)
+    if (!extractedFile) {
+      throw new Error(`${ExportConstants.EXTRACTED_FILE_NAME} not found in zip file`)
+    }
+    const extractedText = await extractedFile.async("text")
+    const extracted: { data: Record<string, unknown>; json_schema?: JsonSchema } = JSON.parse(extractedText)
+
+    if (!extracted.data || typeof extracted.data !== "object") {
+      throw new Error("Invalid extracted.json: missing or invalid data field")
+    }
+
+    // Build assets dict from files in assets/ directory
+    const assets: Record<string, Uint8Array> = {}
+    for (const filePath of Object.keys(zip.files)) {
+      if (filePath.startsWith(ExportConstants.ASSETS_DIR + "/") &&
+        filePath.endsWith(ExportConstants.ASSET_EXT)) {
+        const checksum = ExportConstants.getRelativeAssetChecksum(filePath)
+        const file = zip.file(filePath)
+        if (file) {
+          assets[checksum] = await file.async("uint8array")
+        }
+      }
+    }
+
+    return {
+      data: extracted.data,
+      json_schema: extracted.json_schema,
+      assets
+    }
+  }
+
+  // ============================================================
+  // Decode from zip
   // ============================================================
 
   /**
@@ -75,32 +139,8 @@ export class Packable<TData = Record<string, unknown>> {
   static async decode<TData extends Record<string, unknown> = Record<string, unknown>>(
     zipData: ArrayBuffer | Uint8Array
   ): Promise<Packable<TData>> {
-    const zip = await JSZip.loadAsync(zipData)
-
-    // Read extracted.json (contains data + json_schema)
-    const extractedFile = zip.file(ExportConstants.EXTRACTED_FILE_NAME)
-    if (!extractedFile) {
-      throw new Error(`${ExportConstants.EXTRACTED_FILE_NAME} not found in zip file`)
-    }
-    const extractedText = await extractedFile.async("text")
-    const extracted: { data: Record<string, unknown>; json_schema?: JsonSchema } = JSON.parse(extractedText)
-    const { data, json_schema: schema } = extracted
-
-    // Build assets dict from files in assets/ directory
-    const assets: Record<string, Uint8Array> = {}
-    for (const filePath of Object.keys(zip.files)) {
-      if (filePath.startsWith(ExportConstants.ASSETS_DIR + "/") &&
-        filePath.endsWith(ExportConstants.ASSET_EXT)) {
-        const checksum = ExportConstants.getRelativeAssetChecksum(filePath)
-        const file = zip.file(filePath)
-        if (file) {
-          assets[checksum] = await file.async("uint8array")
-        }
-      }
-    }
-
-    // Reconstruct using schema
-    const reconstructed = await Packable.reconstruct<TData>(data, assets, schema)
+    const extracted = await Packable.parseZip(zipData)
+    const reconstructed = await Packable.reconstruct<TData>(extracted.data, extracted.assets, extracted.json_schema)
     return new Packable<TData>(reconstructed)
   }
 
@@ -199,6 +239,44 @@ export class Packable<TData = Record<string, unknown>> {
 
     extract(data)
     return Array.from(checksums)
+  }
+
+  /**
+   * Encode an ExtractedPackable to zip bytes.
+   *
+   * Creates a zip file with:
+   * - extracted.json: Contains data and json_schema
+   * - assets/{checksum}.bin: Binary assets
+   *
+   * @param extracted - The ExtractedPackable to encode
+   * @returns Zip file as Uint8Array
+   *
+   * @example
+   * ```ts
+   * const extracted: ExtractedPackable = {
+   *   data: { name: "test", vertices: { $ref: "abc123" } },
+   *   json_schema: { type: "object" },
+   *   assets: { "abc123": new Uint8Array([1, 2, 3]) }
+   * }
+   * const zipBytes = await Packable.encode(extracted)
+   * ```
+   */
+  static async encode(extracted: ExtractedPackable): Promise<Uint8Array> {
+    const zip = new JSZip()
+
+    // Add extracted.json (data + schema)
+    const extractedJson = {
+      data: extracted.data,
+      json_schema: extracted.json_schema ?? null
+    }
+    zip.file(ExportConstants.EXTRACTED_FILE_NAME, JSON.stringify(extractedJson))
+
+    // Add assets
+    for (const [checksum, bytes] of Object.entries(extracted.assets)) {
+      zip.file(ExportConstants.getRelativeAssetPath(checksum), bytes)
+    }
+
+    return await zip.generateAsync({ type: "uint8array" })
   }
 }
 

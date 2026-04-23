@@ -20,13 +20,13 @@ export {
 export {
     DynamicModel,
     DynamicModelBuilder, ExtractedPackable,
-    FieldSchema, InstantiateOptions, LazyModel,
+    FieldSchema, InstantiateOptions, isArrayRef,
+    isRefObject, LazyModel,
     LazyModelProps, Packable,
     PackableDecoder,
     ReconstructSchema,
     RefObject,
-    SerializedPackableData, isArrayRef,
-    isRefObject
+    SerializedPackableData
 } from './packable'
 
 // Export schema utils directly as well
@@ -35,7 +35,8 @@ export { SchemaUtils } from './schema-utils'
 // Export from common module
 export {
     AssetFetcher,
-    AssetProvider
+    AssetProvider,
+    getAsset
 } from './common'
 
 // Export from array module
@@ -53,26 +54,27 @@ export {
     MeshData
 } from './mesh'
 
-// Export from cache module
+// Export from store module
 export {
-    AssetCache,
-    AssetCacheConfig,
-    createCachedProvider,
-    getDefaultAssetCache
-} from './cache'
+    BrowserStoreConfig,
+    createBrowserStore,
+    FileSystemAdapter,
+    getDefaultCache,
+    PackableCache,
+    PackableCacheConfig,
+    PackableStore,
+    PackableStoreConfig
+} from './store'
 
 // Export from packable-worker module
 export {
     DecodeArrayMessage,
-    DecodeArrayResponse,
-    DecodeMessage,
-    DecodeMeshMessage,
-    DecodeMeshResponse,
-    DecodeResponse, PackableWorkerClient,
+    DecodeArrayResponse, DecodeMeshMessage,
+    DecodeMeshResponse, DecodeMessage, DecodeResponse, initPackableWorker, PackableWorkerClient,
     PackableWorkerMessage,
     PackableWorkerResponse,
     ReconstructMessage,
-    ReconstructResponse, initPackableWorker
+    ReconstructResponse
 } from './packable-worker'
 
 // Export from checksum-utils module

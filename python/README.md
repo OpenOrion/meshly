@@ -114,6 +114,14 @@ print(f"Loaded {loaded.vertex_count} vertices, {loaded.polygon_count} polygons")
 # Or use encode/decode for in-memory operations
 encoded = mesh.encode()  # Returns bytes
 decoded = Mesh.decode(encoded)
+
+# Parse zip without reconstruction (for validation/storage)
+extracted = Packable.parse_zip(encoded)
+print(extracted.data)  # Raw data dict with $ref references
+print(extracted.json_schema)  # JSON schema with encoding info
+checksums = ExtractedPackable.extract_checksums(extracted.data)
+for checksum in checksums:
+    asset_bytes = extracted.assets[checksum]  # Binary asset data
 ```
 
 #### Direct Constructor (Advanced)
@@ -802,9 +810,13 @@ class Packable(BaseModel):
     @cached_property
     def checksum(self) -> str  # SHA256 checksum of encoded bytes
     
+    # Parse (raw extraction without reconstruction)
+    @classmethod
+    def parse_zip(cls, buf: bytes) -> ExtractedPackable  # Extract raw data + assets from zip
+    
     # Decode/Reconstruct
     @classmethod
-    def decode(cls, buf: bytes, array_type="numpy") -> T  # Decodes and reconstructs
+    def decode(cls, buf: bytes, array_type="numpy") -> T  # Decodes and reconstructs (uses parse_zip internally)
     @classmethod
     def reconstruct(
         cls,

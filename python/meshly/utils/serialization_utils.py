@@ -228,12 +228,9 @@ class SerializationUtils:
 
     @staticmethod
     def _extract_resource(value: "Resource") -> ExtractedResult:
-        """Extract a ResourceRef - gzip compress and store by checksum."""
-        checksum = value.checksum
-        # Use mtime=0 for deterministic compression (no timestamp in header)
-        compressed = gzip.compress(value.data, compresslevel=1, mtime=0)
+        """Extract a Resource - uses cached compressed bytes and checksum."""
         ref_dict = value.model_dump(by_alias=True, exclude_defaults=True)
-        return ExtractedResult(value=ref_dict, assets={checksum: compressed})
+        return ExtractedResult(value=ref_dict, assets={value.checksum: value.compressed})
 
     @staticmethod
     def extract_basemodel(value: BaseModel, include_computed: bool = False) -> ExtractedResult:

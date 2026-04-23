@@ -111,6 +111,30 @@ class ExtractedPackable(BaseModel):
         _extract(data)
         return list(checksums)
 
+    def encode(self) -> bytes:
+        """Encode this ExtractedPackable to zip bytes.
+
+        Creates a zip file with:
+        - extracted.json: Contains data and json_schema
+        - assets/{checksum}.bin: Binary assets
+
+        Returns:
+            Zip file bytes
+        """
+        destination = BytesIO()
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as zf:
+            # Write extracted.json (data + schema)
+            extracted_json = orjson.dumps(self.model_dump())
+            info = zipfile.ZipInfo(ExportConstants.EXTRACTED_FILE_NAME, date_time=ExportConstants.EXPORT_TIME)
+            zf.writestr(info, extracted_json)
+
+            # Write assets
+            for checksum in sorted(self.assets.keys()):
+                info = zipfile.ZipInfo(ExportConstants.get_rel_asset_path(checksum), date_time=ExportConstants.EXPORT_TIME)
+                zf.writestr(info, self.assets[checksum])
+
+        return destination.getvalue()
+
 
 class PackableStore(BaseModel):
     """Configuration for file-based Packable asset storage.
@@ -461,6 +485,51 @@ class Packable(BaseModel):
         return ChecksumUtils.compute_bytes_checksum(self._encoded)
 
     @classmethod
+    def parse_zip(
+        cls,
+        buf: bytes,
+    ) -> "ExtractedPackable":
+        """Parse a zip buffer and return raw ExtractedPackable without reconstruction.
+        
+        This method reads the zip structure and extracts:
+        - data dict with $ref references
+        - json_schema if present
+        - binary assets
+        
+        Unlike decode(), no reconstruction is performed. Useful for validation
+        and storage operations where you need raw access to the bundle contents.
+        
+        Args:
+            buf: Encoded bytes (zip format)
+        
+        Returns:
+            ExtractedPackable with data, json_schema, and assets.
+        
+        Example:
+            extracted = Packable.parse_zip(zip_bytes)
+            checksums = ExtractedPackable.extract_checksums(extracted.data)
+            for checksum, asset_bytes in extracted.assets.items():
+                # validate or store assets
+                pass
+        """
+        with zipfile.ZipFile(BytesIO(buf), "r") as zf:
+            # Read extracted data (data + schema)
+            extracted_json = orjson.loads(zf.read(ExportConstants.EXTRACTED_FILE_NAME))
+
+            # Build assets dict from files
+            assets: dict[str, bytes] = {}
+            for file_path in zf.namelist():
+                if file_path.startswith(ExportConstants.ASSETS_DIR) and file_path.endswith(ExportConstants.ASSET_EXT):
+                    checksum = ExportConstants.get_relative_asset_checksum(file_path)
+                    assets[checksum] = zf.read(file_path)
+
+        return ExtractedPackable(
+            data=extracted_json["data"],
+            json_schema=extracted_json.get("json_schema"),
+            assets=assets,
+        )
+
+    @classmethod
     def decode(
         cls,
         buf: bytes,
@@ -475,23 +544,7 @@ class Packable(BaseModel):
         Returns:
             Reconstructed Packable instance with cached encode/checksum.
         """
-        with zipfile.ZipFile(BytesIO(buf), "r") as zf:
-            # Read extracted data (data + schema)
-            extracted_json = orjson.loads(zf.read(ExportConstants.EXTRACTED_FILE_NAME))
-
-            # Build assets dict from files
-            assets: dict[str, bytes] = {}
-            for file_path in zf.namelist():
-                if file_path.startswith(ExportConstants.ASSETS_DIR) and file_path.endswith(ExportConstants.ASSET_EXT):
-                    checksum = ExportConstants.get_relative_asset_checksum(file_path)
-                    assets[checksum] = zf.read(file_path)
-
-        # Create ExtractedPackable from zip contents
-        extracted = ExtractedPackable(
-            data=extracted_json["data"],
-            json_schema=extracted_json.get("json_schema"),
-            assets=assets,
-        )
+        extracted = cls.parse_zip(buf)
         result = cls.reconstruct(extracted, array_type=array_type)
         
         # Cache for efficiency

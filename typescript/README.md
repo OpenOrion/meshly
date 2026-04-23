@@ -64,6 +64,55 @@ console.log(`Uniform: ${mesh.isUniformPolygons()}`)
 console.log(`Dimension: ${mesh.dim}`)
 ```
 
+### Parse Zip (Raw Extraction)
+
+Extract raw data and assets without reconstruction, useful for validation and storage:
+
+```typescript
+import { Packable } from 'meshly'
+
+// Parse zip without reconstructing arrays
+const extracted = await Packable.parseZip(zipData)
+
+// Access raw data dict with $ref references
+console.log(extracted.data)
+console.log(extracted.json_schema)
+
+// Get checksums referenced in data
+const checksums = Packable.extractChecksums(extracted.data)
+
+// Access binary assets by checksum
+for (const [checksum, bytes] of Object.entries(extracted.assets)) {
+  console.log(`Asset ${checksum}: ${bytes.length} bytes`)
+}
+```
+
+### Encode to Zip
+
+Create a packable zip from data and assets:
+
+```typescript
+import { Packable, ExtractedPackable } from 'meshly'
+
+// Build an ExtractedPackable
+const extracted: ExtractedPackable = {
+  data: {
+    name: "test",
+    vertices: { $ref: "abc123", shape: [100, 3], dtype: "float32", itemsize: 4 }
+  },
+  json_schema: { type: "object", "x-module": "my.module.MyClass" },
+  assets: {
+    "abc123": new Uint8Array([/* vertex data */])
+  }
+}
+
+// Encode to zip bytes
+const zipBytes = await Packable.encode(extracted)
+
+// Round-trip: decode back
+const decoded = await Packable.parseZip(zipBytes)
+```
+
 ## Architecture
 
 ### Class Hierarchy
@@ -196,10 +245,11 @@ const resolved = await lazy.$resolve()
 Cache assets for repeated access (browser environments):
 
 ```typescript
-import { AssetCache, createCachedProvider } from 'meshly'
+import { getDefaultCache } from 'meshly'
 
-// Create a cached provider
-const cachedFetcher = await createCachedProvider(async (checksum) => {
+// Get the default cache and create a cached provider
+const cache = await getDefaultCache()
+const cachedFetcher = cache.createProvider(async (checksum) => {
   const response = await fetch(`/api/assets/${checksum}`)
   return new Uint8Array(await response.arrayBuffer())
 })
@@ -281,11 +331,18 @@ initPackableWorker()
 ### AssetProvider
 
 ```typescript
-// Asset fetch function type
-type AssetFetcher = (checksum: string) => Promise<Uint8Array | ArrayBuffer>
+// Asset fetch function type - supports sync/async and nullable returns
+// Matches Python: Callable[[str], Union[bytes, None, Awaitable[Optional[bytes]]]]
+type AssetFetcher = (checksum: string) => 
+    | Uint8Array | ArrayBuffer | null | undefined
+    | Promise<Uint8Array | ArrayBuffer | null | undefined>
 
 // Asset provider: either a dict of assets or a fetcher function
 type AssetProvider = Record<string, Uint8Array | ArrayBuffer> | AssetFetcher
+
+// Get asset bytes from a provider (dict or callable)
+// Matches Python's SerializationUtils.get_asset()
+async function getAsset(assets: AssetProvider, checksum: string): Promise<Uint8Array>
 ```
 
 ### Packable (Base Class)
@@ -296,6 +353,12 @@ class Packable<TData> {
   
   // Decode from zip data
   static async decode<TData>(zipData: ArrayBuffer | Uint8Array): Promise<Packable<TData>>
+  
+  // Encode ExtractedPackable to zip bytes
+  static async encode(extracted: ExtractedPackable): Promise<Uint8Array>
+  
+  // Parse zip without reconstruction (raw access to data/assets)
+  static async parseZip(zipData: ArrayBuffer | Uint8Array): Promise<ExtractedPackable>
   
   // Reconstruct from extracted data and assets
   static async reconstruct<T>(
@@ -555,32 +618,77 @@ interface InstantiateOptions {
 }
 ```
 
-### AssetCache
+### PackableCache
 
 ```typescript
-// IndexedDB-backed LRU cache for binary assets (browser)
-class AssetCache {
-  constructor(config?: AssetCacheConfig)
+// Two-tier LRU cache: in-memory + disk via PackableStore
+// Matches Python's PackableCache
+class PackableCache {
+  constructor(config?: PackableCacheConfig)
   
-  async initialize(): Promise<void>
-  async get(checksum: string): Promise<Uint8Array | undefined>
-  async put(checksum: string, data: Uint8Array): Promise<void>
-  async has(checksum: string): Promise<boolean>
-  async clear(): Promise<void>
+  // Single item operations
+  async get(key: string): Promise<Uint8Array | undefined>
+  async put(key: string, value: Uint8Array): Promise<void>
   
-  // Create cached asset fetcher
-  createProvider(fetcher: AssetFetcher): AssetFetcher
+  // Batch operations
+  async getMany(keys: Set<string>): Promise<Map<string, Uint8Array>>
+  async putMany(items: Record<string, Uint8Array>): Promise<void>
+  
+  // Cache management
+  clear(): void           // Clear memory cache (disk not affected)
+  get size(): number      // Items in memory cache
+  has(key: string): boolean
+  
+  // Create cached asset fetcher with upstream provider
+  createProvider(upstream: AssetFetcher): AssetFetcher
 }
 
-interface AssetCacheConfig {
-  dbName?: string   // Default: 'meshly-asset-cache'
-  maxItems?: number // Default: 500
-  maxSize?: number  // Default: 500MB
+interface PackableCacheConfig {
+  store?: PackableStore  // Disk storage (null for memory-only)
+  prefix?: string        // Key prefix for namespacing
+  maxMemory?: number     // Max items in memory (default: 10_000)
 }
 
-// Convenience functions
-function getDefaultAssetCache(): AssetCache
-async function createCachedProvider(fetcher: AssetFetcher): Promise<AssetFetcher>
+// Get the default browser cache instance (IndexedDB-backed)
+async function getDefaultCache(): Promise<PackableCache>
+```
+
+### PackableStore
+
+```typescript
+// File-based storage for Packable assets and extracted data
+// Matches Python's PackableStore
+class PackableStore {
+  constructor(config: PackableStoreConfig)
+  
+  // Paths
+  rootDir: string
+  assetsPath: string
+  extractedPath: string
+  
+  // Asset operations
+  async saveAsset(data: Uint8Array, checksum: string): Promise<void>
+  async loadAsset(checksum: string): Promise<Uint8Array>
+  async assetExists(checksum: string): Promise<boolean>
+  
+  // Extracted packable operations
+  async saveExtracted(key: string, extracted: ExtractedPackable): Promise<void>
+  async loadExtracted(key: string): Promise<ExtractedPackable>
+  async extractedExists(key: string): Promise<boolean>
+}
+
+interface PackableStoreConfig {
+  rootDir: string         // Base directory for storage
+  fs?: FileSystemAdapter  // Custom fs implementation (default: node fs/promises)
+}
+
+// Create browser-compatible store with IndexedDB via lightning-fs
+async function createBrowserStore(config: BrowserStoreConfig): Promise<PackableStore>
+
+interface BrowserStoreConfig {
+  rootDir: string    // Virtual path in IndexedDB
+  dbName?: string    // IndexedDB database name
+}
 ```
 
 ### PackableWorkerClient

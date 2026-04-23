@@ -3,10 +3,11 @@
 ResourceRef allows bytes data to be serialized by checksum when extracted/reconstructed.
 """
 
+import gzip
 from pathlib import Path
 from typing import Optional, Union
 
-from pydantic import ConfigDict, Field, computed_field
+from pydantic import ConfigDict, Field, PrivateAttr, computed_field
 
 from meshly.common import RefInfo
 from meshly.utils.checksum_utils import ChecksumUtils
@@ -46,14 +47,33 @@ class Resource(RefInfo):
     ext: Optional[str] = None
     name: Optional[str] = None
 
+    # Cached compression results (computed once, reused)
+    _compressed: Optional[bytes] = PrivateAttr(default=None)
+    _checksum: Optional[str] = PrivateAttr(default=None)
+
     @staticmethod
     def from_path(path: Union[str, Path]) -> "Resource":
         """Create a ResourceRef from a file path."""
         p = Path(path)
         return Resource(data=p.read_bytes(), ext=p.suffix, name=p.stem)
 
+    @property
+    def compressed(self) -> bytes:
+        """Get gzip-compressed data (cached).
+        
+        Uses mtime=0 for deterministic compression (no timestamp in header).
+        """
+        if self._compressed is None:
+            object.__setattr__(self, '_compressed', gzip.compress(self.data, compresslevel=1, mtime=0))
+        return self._compressed  # type: ignore
+
     @computed_field(alias="$ref")
     @property
     def checksum(self) -> str:
-        """Get checksum - computed from data."""
-        return ChecksumUtils.compute_bytes_checksum(self.data)
+        """Get checksum of compressed data (cached).
+
+        Matches the bytes stored in assets, so upload-side hash checks stay consistent.
+        """
+        if self._checksum is None:
+            object.__setattr__(self, '_checksum', ChecksumUtils.compute_bytes_checksum(self.compressed))
+        return self._checksum  # type: ignore

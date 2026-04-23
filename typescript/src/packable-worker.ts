@@ -201,18 +201,18 @@ export function initPackableWorker(): void {
         // Reconstruct with all refs resolved
         const result = await Packable.reconstruct(data, assetProvider, jsonSchema)
 
-        // Collect transferables for zero-copy transfer
-        const transferables = new Set<ArrayBuffer>()
-        collectTransferables(result, transferables)
-
+        // Note: We intentionally do NOT transfer ArrayBuffers here.
+        // Transferring detaches the buffers from the TypedArrays before
+        // the message is serialized, causing the main thread to receive
+        // detached/empty arrays. Structured clone is used instead.
         const response: ReconstructResponse = {
           type: 'reconstructed',
           requestId,
           result,
-          transferables: Array.from(transferables),
+          transferables: [],
         }
 
-        self.postMessage(response, { transfer: Array.from(transferables) })
+        self.postMessage(response)
       } catch (error) {
         const response: ReconstructResponse = {
           type: 'reconstructed',
@@ -229,17 +229,17 @@ export function initPackableWorker(): void {
         // Extract plain object from Packable instance
         const result = { ...packable } as Record<string, unknown>
 
-        // Collect transferables
-        const transferables = new Set<ArrayBuffer>()
-        collectTransferables(result, transferables)
-
+        // Note: We intentionally do NOT transfer ArrayBuffers here.
+        // Transferring detaches the buffers from the TypedArrays before
+        // the message is serialized, causing the main thread to receive
+        // detached/empty arrays. Structured clone is used instead.
         const response: DecodeResponse = {
           type: 'decoded',
           requestId,
           result,
         }
 
-        self.postMessage(response, { transfer: Array.from(transferables) })
+        self.postMessage(response)
       } catch (error) {
         const response: DecodeResponse = {
           type: 'decoded',

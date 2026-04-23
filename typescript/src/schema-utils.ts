@@ -274,7 +274,9 @@ export class SchemaUtils {
                     encoding = innerProp.type as ArrayEncoding
                 }
             }
-            return ArrayUtils.reconstruct({ data: bytes, info: ref, encoding })
+            // Always use flat=true for mesh data (vertices, indices, normals)
+            // THREE.js and other graphics APIs expect flat interleaved arrays
+            return ArrayUtils.reconstruct({ data: bytes, info: ref, encoding }, true)
         }
 
         // Check if it's a resource reference (has ext field)
